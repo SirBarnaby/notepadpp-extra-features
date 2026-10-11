@@ -26,7 +26,7 @@ void log(const wchar_t* fmt, ...)
     }
     if (!g_log && !settings.dir().empty())
     {
-        std::wstring p = settings.dir() + L"\\KexSuite.log";
+        std::wstring p = settings.dir() + L"\\kex.log";
         g_log = _wfopen(p.c_str(), L"w, ccs=UTF-8");
     }
     if (g_log)
@@ -124,16 +124,31 @@ LRESULT CALLBACK MsgWindow::proc(HWND h, UINT m, WPARAM w, LPARAM l)
 
 void Settings::init()
 {
+    // Notepad++'s own settings folder (%APPDATA%\\Notepad++, or the program folder when portable)
     wchar_t dir[MAX_PATH * 2] = {};
-    nppMsg(NPPM_GETPLUGINSCONFIGDIR, MAX_PATH * 2 - 1, reinterpret_cast<LPARAM>(dir));
+    nppMsg(NPPM_GETNPPSETTINGSDIRPATH, MAX_PATH * 2 - 1, reinterpret_cast<LPARAM>(dir));
     _dir = dir;
+    if (!_dir.empty() && _dir.back() == L'\\') _dir.pop_back();
     if (_dir.empty())
     {
         wchar_t tmp[MAX_PATH]; ::GetTempPathW(MAX_PATH, tmp); _dir = tmp;
         if (!_dir.empty() && _dir.back() == L'\\') _dir.pop_back();
     }
     ::CreateDirectoryW(_dir.c_str(), nullptr);
-    _path = _dir + L"\\KexSuite.ini";
+    _path = _dir + L"\\kex.ini";
+
+    // the suite used to be the KexSuite plugin: take over its settings and quick note once
+    wchar_t old[MAX_PATH * 2] = {};
+    nppMsg(NPPM_GETPLUGINSCONFIGDIR, MAX_PATH * 2 - 1, reinterpret_cast<LPARAM>(old));
+    if (old[0])
+    {
+        std::wstring o = old;
+        if (::GetFileAttributesW(_path.c_str()) == INVALID_FILE_ATTRIBUTES)
+            ::CopyFileW((o + L"\\KexSuite.ini").c_str(), _path.c_str(), TRUE);
+        std::wstring note = _dir + L"\\kex-quicknote.txt";
+        if (::GetFileAttributesW(note.c_str()) == INVALID_FILE_ATTRIBUTES)
+            ::CopyFileW((o + L"\\KexQuickNote.txt").c_str(), note.c_str(), TRUE);
+    }
 }
 
 int Settings::getInt(const wchar_t* sec, const wchar_t* key, int def) const

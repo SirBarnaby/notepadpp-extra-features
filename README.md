@@ -4,7 +4,7 @@ An unofficial build of [Notepad++](https://github.com/notepad-plus-plus/notepad-
 
 - **Four editing views** in a 2×2 grid instead of two. Move or clone a document to any view, rotate the grid with the splitter, and give every new command a shortcut.
 - **Snap-out views.** Drag a tab outside Notepad++ (or use *Move to New Window*) and that view becomes its own window; close it or drop it on the tab bar to snap it back.
-- **The KEX Suite plugin**, each feature switchable in *Plugins > KEX Suite*:
+- **Built-in KEX features**, each switchable in *Settings > KEX Features* (two pages in Preferences):
   - the same Notepad++ on every virtual desktop, with each desktop keeping its own active tab and position
   - falling letters when you delete text
   - a smooth, gliding caret
@@ -27,9 +27,9 @@ Not affiliated with the Notepad++ project. Built from the official source of eac
 
 1. clones that release and runs [`patch/codemod.py`](patch/codemod.py), which extends every per-view setting to views 3 and 4,
 2. applies [the KEX patch](patch/) with a three-way merge (`patch/base/` holds the files it was written against),
-3. cross-compiles Notepad++ and [the plugin](plugin/) with MinGW-w64,
-4. runs [the core tests](tests/KexTest.cpp) and the plugin's self-test under Wine,
-5. publishes the official portable zip with the KEX `notepad++.exe` and plugin added.
+3. copies in [the KEX features](suite/) and cross-compiles Notepad++ with MinGW-w64,
+4. runs [the core tests](tests/KexTest.cpp) and the features' self-test under Wine,
+5. publishes the official portable zip with the KEX `notepad++.exe` in it.
 
 If a release changes Notepad++ too much for the patch, nothing is published and an issue is opened. To update the patch: `bash patch/kex-patch.sh <tag>`, resolve the conflicts, commit, export with `git format-patch -1`, copy the new pre-image files into `patch/base/`, and push. `ci/build.sh <tag> out` runs the whole build locally on Linux.
 

@@ -1,11 +1,12 @@
 #!/bin/bash
-# kex-patch.sh: put the KEX four-view patch on any Notepad++ version and build it.
+# kex-patch.sh: put the KEX patch on any Notepad++ version, add the KEX suite and build it.
 #
 #   bash kex-patch.sh [version] [workdir]      version: a tag like v8.9.8.1, or "latest" (default)
 #
 # Steps: clone that version, run codemod.py (adds views 3 and 4 to every per-view settings pair,
 # including pairs added upstream since), then apply the hand-written patch with a 3-way merge.
 # base/ holds the files the patch was written against, so git can merge even across versions.
+# The KEX suite (../suite) is then copied in as PowerEditor/src/KexSuite and built into notepad++.exe.
 # Exits 2 on a merge conflict, with the conflicting files listed; 4 if the build fails.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -31,6 +32,11 @@ if ! git log -1 --format=%s | grep -q '^KEX'; then
     exit 2
   fi
 fi
+# the suite is our own code, not a patch: always take the current copy
+SUITE="$HERE/../suite"
+rm -rf PowerEditor/src/KexSuite; mkdir -p PowerEditor/src/KexSuite
+cp "$SUITE"/*.cpp "$SUITE"/*.h "$SUITE"/*.rc PowerEditor/src/KexSuite/
+grep -qx 'PowerEditor/src/KexSuite/' .git/info/exclude 2>/dev/null || echo 'PowerEditor/src/KexSuite/' >> .git/info/exclude
 echo "== patched: $SRC"
 if [ "${KEX_BUILD:-1}" = 1 ]; then
   export PATH="${KEX_XBIN:-$HOME/npp-work/xbin}:$PATH"
@@ -42,6 +48,8 @@ lex=$(grep '#define VERSION_LEXILLA ' "$R/lexilla/src/LexillaVersion.rc" | awk '
 bst=$(grep '#define BOOST_LIB_VERSION ' "$R/boostregex/boost/version.hpp" | awk '{print $3}')
 printf '// NppLibsVersion.h\n#define NPP_SCINTILLA_VERSION %s\n#define NPP_LEXILLA_VERSION %s\n#define NPP_BOOST_REGEX_VERSION %s\n' "${sci:-\"N/A\"}" "${lex:-\"N/A\"}" "${bst:-\"N/A\"}" > "$R/PowerEditor/src/NppLibsVersion.h"
 G
+  # a build folder left by an earlier build doesn't have the suite's object folder yet
+  for b in PowerEditor/gcc/bin.*.build; do [ -d "$b" ] && mkdir -p "$b/KexSuite"; done
   make -C PowerEditor/gcc -j"$(nproc)" PREBUILD_EVENT_CMD="sh $sh_gen $SRC" \
     CPP_DEFINE="UNICODE _UNICODE OEMRESOURCE NOMINMAX _WIN32_WINNT=_WIN32_WINNT_WIN7 NTDDI_VERSION=NTDDI_WIN7 NDEBUG STRSAFE_NO_DEPRECATE" ||
     { echo "== BUILD FAILED for $VERSION"; exit 4; }

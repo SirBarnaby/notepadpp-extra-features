@@ -1,8 +1,8 @@
-# Install-KEX.ps1 - installs the KEX four-view Notepad++ and the KEX Suite plugin into your
-# installed Notepad++, and keeps them up to date.
+# Install-KEX.ps1 - installs Notepad++ KEX (four views, snap-out windows and the built-in KEX
+# features) into your installed Notepad++, and keeps it up to date.
 #
 #   Install-KEX.cmd      install from this folder, then offer automatic updates
-#   Uninstall-KEX.cmd    put the official notepad++.exe back; remove the plugin and the update task
+#   Uninstall-KEX.cmd    put the official notepad++.exe back and remove the update task
 #   -Target DIR          use a Notepad++ folder that isn't found automatically
 #
 # Your settings, sessions and other plugins are left alone. The official notepad++.exe of the same
@@ -128,6 +128,25 @@ function Wait-NppClosed($why) {
 
 # Puts the KEX build in $pkg (an unpacked KEX zip) into the Notepad++ folder $npp. When the installed
 # Notepad++ is older than the build, the official installer of the build's release is run first.
+# a KEX build with the suite built in; it registers the quick note's window class
+function Test-BuiltinSuite($file) {
+    $text = [Text.Encoding]::Unicode.GetString([IO.File]::ReadAllBytes($file))
+    return $text.Contains('KexQuickNote')
+}
+
+# The KEX features used to be the plugin plugins\KexSuite. A KEX build with them built in never loads
+# that folder, so it is removed (the package only carries an empty KexSuite.dll for older copies of
+# this script, which expect the file).
+function Remove-OldPlugin($npp) {
+    $old = Join-Path $npp 'plugins\KexSuite'
+    if (-not (Test-Path $old)) { return }
+    if (Test-Path (Join-Path $old 'kex-created-disableNppAutoUpdate')) {
+        New-Item -ItemType File -Force -Path (Join-Path $npp 'kex-created-disableNppAutoUpdate') | Out-Null
+    }
+    Remove-Item $old -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path $old)) { Log 'Removed the old KEX Suite plugin folder; its features are built into Notepad++ now.' }
+}
+
 function Install-Package($pkg, $npp) {
     $exe = Join-Path $npp 'notepad++.exe'
     $backup = Join-Path $npp 'notepad++.exe.kex-original'
@@ -163,13 +182,11 @@ function Install-Package($pkg, $npp) {
     elseif (-not (Test-Kex $exe)) { Copy-Item $exe $backup -Force }
 
     Copy-Item $newExe $exe -Force
-    $pluginDir = Join-Path $npp 'plugins\KexSuite'
-    New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
-    Copy-Item (Join-Path $pkg 'plugins\KexSuite\KexSuite.dll') (Join-Path $pluginDir 'KexSuite.dll') -Force
+    Remove-OldPlugin $npp
     $noUpdate = Join-Path $npp 'disableNppAutoUpdate.xml'
     if (-not (Test-Path $noUpdate)) {
         Copy-Item (Join-Path $pkg 'disableNppAutoUpdate.xml') $noUpdate
-        New-Item -ItemType File -Force -Path (Join-Path $pluginDir 'kex-created-disableNppAutoUpdate') | Out-Null
+        New-Item -ItemType File -Force -Path (Join-Path $npp 'kex-created-disableNppAutoUpdate') | Out-Null
     }
     Log "Installed Notepad++ $want with KEX into $npp."
 }
@@ -207,6 +224,7 @@ function Do-Check {
     $have = Get-Version $exe
     $isKex = Test-Kex $exe
     $st = Read-State
+    if ($isKex -and (Test-BuiltinSuite $exe)) { Remove-OldPlugin $npp }
 
     if ($isKex -and $have -eq $want -and -not $st.installed) { $st.installed = $stamp; Save-State $st; Log "Up to date: $have."; return }
     if ($isKex -and $have -eq $want -and $st.installed -eq $stamp) { Log "Up to date: $have."; return }
@@ -244,7 +262,9 @@ function Do-Uninstall {
         else { Remove-Item $backup }
     }
     if (Test-Kex $exe) { Write-Host 'The official notepad++.exe could not be restored; reinstall Notepad++ from notepad-plus-plus.org.' -ForegroundColor Yellow }
-    if (Test-Path (Join-Path $pluginDir 'kex-created-disableNppAutoUpdate')) { Remove-Item (Join-Path $npp 'disableNppAutoUpdate.xml') -ErrorAction SilentlyContinue }
+    foreach ($m in (Join-Path $npp 'kex-created-disableNppAutoUpdate'), (Join-Path $pluginDir 'kex-created-disableNppAutoUpdate')) {
+        if (Test-Path $m) { Remove-Item (Join-Path $npp 'disableNppAutoUpdate.xml') -ErrorAction SilentlyContinue; Remove-Item $m }
+    }
     Remove-Item $pluginDir -Recurse -Force -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
     Remove-Item $State -Recurse -Force -ErrorAction SilentlyContinue
@@ -282,7 +302,7 @@ try {
             $answer = if ($Yes) { 'y' } else { Read-Host 'Install new Notepad++ releases with KEX automatically? [Y/n]' }
             if ($answer -notmatch '^[nN]') { Enable-AutoUpdate $npp }
         }
-        Write-Host 'Done. Start Notepad++ as usual; the plugin options are under Plugins > KEX Suite.' -ForegroundColor Green
+        Write-Host 'Done. Start Notepad++ as usual; the KEX settings are under Settings > KEX Features.' -ForegroundColor Green
     }
 }
 catch {

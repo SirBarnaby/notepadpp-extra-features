@@ -1,33 +1,57 @@
-From ab755a96e3b1de9a74ff3f9ae9feafabaa3d05a5 Mon Sep 17 00:00:00 2001
+From 9618aabb094698cde63ce745732591938fad13dc Mon Sep 17 00:00:00 2001
 From: KEX patch <noreply@anthropic.com>
 Date: Sun, 11 Oct 2026 15:07:35 +0000
-Subject: [PATCH] KEX: four views in a 2x2 grid, snap-out windows, plugin
- gating
+Subject: [PATCH] KEX: four views in a 2x2 grid, snap-out windows, built-in KEX
+ suite
+
+Four views, snap-out view windows and plugin gating for two-view
+plugins. The KEX suite (PowerEditor/src/KexSuite, copied in by
+kex-patch.sh) is built into notepad++.exe and gets its settings pages in
+Settings > Preferences ("KEX Editing", "KEX Windows"), reachable from
+Settings > KEX Features.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
 ---
+ PowerEditor/gcc/makefile                      |   1 +
  PowerEditor/src/KexViews.cpp                  | 852 ++++++++++++++++++
  PowerEditor/src/MISC/PluginsManager/KexApi.h  |  42 +
- .../MISC/PluginsManager/PluginsManager.cpp    |  41 +-
- .../src/MISC/PluginsManager/PluginsManager.h  |   4 +
+ .../src/MISC/PluginsManager/KexSuiteHost.h    |  21 +
+ .../MISC/PluginsManager/PluginsManager.cpp    |  52 +-
+ .../src/MISC/PluginsManager/PluginsManager.h  |   6 +
  PowerEditor/src/Notepad_plus.cpp              | 501 +++++-----
  PowerEditor/src/Notepad_plus.h                |  59 +-
+ PowerEditor/src/Notepad_plus.rc               |   1 +
  PowerEditor/src/NppBigSwitch.cpp              | 164 +++-
- PowerEditor/src/NppCommands.cpp               | 113 ++-
+ PowerEditor/src/NppCommands.cpp               | 116 ++-
  PowerEditor/src/NppIO.cpp                     | 311 ++++---
  PowerEditor/src/NppNotification.cpp           | 128 ++-
  PowerEditor/src/Parameters.cpp                |  55 +-
  PowerEditor/src/Parameters.h                  |  15 +
+ .../WinControls/Preference/preferenceDlg.cpp  |  41 +
+ .../WinControls/Preference/preferenceDlg.h    |  12 +
  .../SplitterContainer/SplitterContainer.cpp   |   2 +
  .../SplitterContainer/SplitterContainer.h     |  14 +
  .../VerticalFileSwitcher.cpp                  |  15 +-
  .../VerticalFileSwitcherListView.cpp          |  12 +-
- PowerEditor/src/menuCmdID.h                   |  20 +
- 17 files changed, 1859 insertions(+), 489 deletions(-)
+ PowerEditor/src/menuCmdID.h                   |  21 +
+ 22 files changed, 1952 insertions(+), 489 deletions(-)
  create mode 100644 PowerEditor/src/KexViews.cpp
  create mode 100644 PowerEditor/src/MISC/PluginsManager/KexApi.h
+ create mode 100644 PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
 
+diff --git a/PowerEditor/gcc/makefile b/PowerEditor/gcc/makefile
+index 3f38aa9..849daf5 100644
+--- a/PowerEditor/gcc/makefile
++++ b/PowerEditor/gcc/makefile
+@@ -266,6 +266,7 @@ THIRD_DIRS := $(SRC_DIRECTORY)/json \
+               $(SRC_DIRECTORY)/MISC/sha2 \
+               $(SRC_DIRECTORY)/MISC/sha512 \
+               $(SRC_DIRECTORY)/MISC/hmac \
++              $(SRC_DIRECTORY)/KexSuite \
+               $(SCINTILLA_DIRECTORY)/include \
+               $(LEXILLA_DIRECTORY)/include
+ 
 diff --git a/PowerEditor/src/KexViews.cpp b/PowerEditor/src/KexViews.cpp
 new file mode 100644
 index 0000000..fce06f4
@@ -934,8 +958,35 @@ index 0000000..a60b9c2
 +// wParam: view. LRESULT: top-level HWND currently hosting the view
 +// (the Notepad++ main window, or the view's own window when torn out).
 +#define NPPM_KEX_GETVIEWHOSTWINDOW    (KEX_USER + 11)
+diff --git a/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h b/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
+new file mode 100644
+index 0000000..12c5f38
+--- /dev/null
++++ b/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
+@@ -0,0 +1,21 @@
++// KexSuiteHost.h - the KEX suite (falling letters, smooth caret, quick note, F12 hover tabs, the same
++// Notepad++ on every virtual desktop) is built into notepad++.exe. Its sources live in
++// PowerEditor/src/KexSuite (kex-patch.sh copies them in from the KEX repository's suite/ folder).
++// It drives Notepad++ through the documented plugin messages, so the core only hands it the plugin
++// data, every notification, and the window procedure of its two Preferences pages.
++#pragma once
++
++// Settings > Preferences > "KEX Editing" and "KEX Windows" (dialog templates in KexSuite/KexSuite.rc)
++#define IDD_KEX_PREF_EDITING 30500
++#define IDD_KEX_PREF_WINDOWS 30501
++
++#ifndef RC_INVOKED
++#include <windows.h>
++#include "PluginInterface.h"
++
++namespace kexsuite {
++void setInfo(HINSTANCE hInst, const NppData& data);                           // once the Scintilla views exist
++void notify(SCNotification* n);                                                // every notification, views 3 and 4 included
++intptr_t prefPageProc(HWND page, UINT message, WPARAM wParam, LPARAM lParam);   // both Preferences pages
++}
++#endif
 diff --git a/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp b/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp
-index 0c57e5f..5828837 100644
+index 0c57e5f..9dbe932 100644
 --- a/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp
 +++ b/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp
 @@ -16,6 +16,7 @@
@@ -955,7 +1006,19 @@ index 0c57e5f..5828837 100644
  		pi->_pFuncSetInfo(_nppData);
  
  		pi->_pFuncGetFuncsArray = reinterpret_cast<PFUNCGETFUNCSARRAY>(::GetProcAddress(pi->_hLib, "getFuncsArray"));
-@@ -588,6 +591,7 @@ void PluginsManager::addInMenuFromPMIndex(int i)
+@@ -513,6 +516,11 @@ bool PluginsManager::loadPlugins(const wchar_t* dir, const PluginViewList* plugi
+ 
+ 	for (size_t i = 0, len = dllNames.size(); i < len; ++i)
+ 	{
++		// KEX: KexSuite.dll was the plugin form of the suite that is now built in; never run both
++		const size_t kexSlash = dllNames[i].find_last_of(L"\\/");
++		if (_wcsicmp(dllNames[i].c_str() + (kexSlash == std::wstring::npos ? 0 : kexSlash + 1), L"KexSuite.dll") == 0)
++			continue;
++
+ 		loadPluginFromPath(dllNames[i].c_str());
+ 	}
+ 
+@@ -588,6 +596,7 @@ void PluginsManager::addInMenuFromPMIndex(int i)
  		}
  
          _pluginsCommands.push_back(PluginCommand(_pluginInfos[i]->_moduleName.c_str(), j, _pluginInfos[i]->_funcItems[j]._pFunc));
@@ -963,7 +1026,7 @@ index 0c57e5f..5828837 100644
  
  		const int cmdID = ID_PLUGINS_CMD + static_cast<int>(_pluginsCommands.size() - 1);
  		_pluginInfos[i]->_funcItems[j]._cmdID = cmdID;
-@@ -645,7 +649,7 @@ void PluginsManager::runPluginCommand(size_t i)
+@@ -645,7 +654,7 @@ void PluginsManager::runPluginCommand(size_t i)
  {
  	if (i < _pluginsCommands.size())
  	{
@@ -972,7 +1035,7 @@ index 0c57e5f..5828837 100644
  		{
  			try {
  				_pluginsCommands[i]._pFunc();
-@@ -672,7 +676,7 @@ void PluginsManager::runPluginCommand(const wchar_t *pluginName, int commandID)
+@@ -672,7 +681,7 @@ void PluginsManager::runPluginCommand(const wchar_t *pluginName, int commandID)
  	{
  		if (!_wcsicmp(_pluginsCommands[i]._pluginName.c_str(), pluginName))
  		{
@@ -981,7 +1044,17 @@ index 0c57e5f..5828837 100644
  			{
  				try {
  					_pluginsCommands[i]._pFunc();
-@@ -736,6 +740,39 @@ void PluginsManager::notify(const SCNotification *notification)
+@@ -729,6 +738,9 @@ void PluginsManager::notify(const SCNotification *notification)
+ 		return;
+ 	_noMoreNotification = notification->nmhdr.code == NPPN_SHUTDOWN;
+ 
++	SCNotification kexNotif = *notification; // KEX: the built-in suite gets its own copy first
++	kexsuite::notify(&kexNotif);
++
+ 	for (size_t i = 0, len = _pluginInfos.size() ; i < len ; ++i)
+ 	{
+ 		notify(i, notification);
+@@ -736,6 +748,42 @@ void PluginsManager::notify(const SCNotification *notification)
  }
  
  
@@ -991,6 +1064,9 @@ index 0c57e5f..5828837 100644
 +{
 +	if (_noMoreNotification)
 +		return;
++
++	SCNotification kexNotif = *notification;
++	kexsuite::notify(&kexNotif);
 +
 +	for (size_t i = 0, len = _pluginInfos.size() ; i < len ; ++i)
 +	{
@@ -1022,10 +1098,18 @@ index 0c57e5f..5828837 100644
  {
  	for (size_t i = 0, len = _pluginInfos.size(); i < len ; ++i)
 diff --git a/PowerEditor/src/MISC/PluginsManager/PluginsManager.h b/PowerEditor/src/MISC/PluginsManager/PluginsManager.h
-index 5255325..746320b 100644
+index 5255325..673ace4 100644
 --- a/PowerEditor/src/MISC/PluginsManager/PluginsManager.h
 +++ b/PowerEditor/src/MISC/PluginsManager/PluginsManager.h
-@@ -42,6 +42,7 @@ struct PluginCommand
+@@ -32,6 +32,7 @@
+ #include "IDAllocator.h"
+ #include "NppDarkMode.h"
+ #include "PluginInterface.h"
++#include "KexSuiteHost.h"
+ #include "resource.h"
+ 
+ using PFUNCISUNICODE = BOOL (__cdecl*)();
+@@ -42,6 +43,7 @@ struct PluginCommand
  	std::wstring _pluginName;
  	int _funcID = 0;
  	PFUNCPLUGINCMD _pFunc = nullptr;
@@ -1033,7 +1117,7 @@ index 5255325..746320b 100644
  	PluginCommand(const wchar_t* pluginName, int funcID, PFUNCPLUGINCMD pFunc): _pluginName(pluginName), _funcID(funcID), _pFunc(pFunc) {}
  };
  
-@@ -66,6 +67,7 @@ struct PluginInfo
+@@ -66,6 +68,7 @@ struct PluginInfo
  	PFUNCGETFUNCSARRAY _pFuncGetFuncsArray = nullptr;
  	PMESSAGEPROC _pMessageProc = nullptr;
  	PFUNCISUNICODE _pFuncIsUnicode = nullptr;
@@ -1041,7 +1125,15 @@ index 5255325..746320b 100644
  
  	FuncItem *_funcItems = nullptr;
  	int _nbFuncItem = 0;
-@@ -110,6 +112,8 @@ public:
+@@ -96,6 +99,7 @@ public:
+ 	void init(const NppData & nppData)
+ 	{
+ 		_nppData = nppData;
++		kexsuite::setInfo(::GetModuleHandle(nullptr), nppData); // KEX: the built-in suite starts before any plugin
+ 	}
+ 
+ 	bool loadPlugins(const wchar_t* dir = nullptr, const PluginViewList* pluginUpdateInfoList = nullptr, PluginViewList* pluginIncompatibleList = nullptr);
+@@ -110,6 +114,8 @@ public:
  
  	void notify(size_t indexPluginInfo, const SCNotification *notification); // to a plugin
  	void notify(const SCNotification *notification); // broadcast
@@ -2141,6 +2233,18 @@ index fefc2bd..9aeb5b9 100644
  	void docOpenInNewInstance(FileTransferMode mode, int x = 0, int y = 0);
  
  	void loadBufferIntoView(BufferID id, int whichOne, bool dontClose = false);		//Doesn't _activate_ the buffer
+diff --git a/PowerEditor/src/Notepad_plus.rc b/PowerEditor/src/Notepad_plus.rc
+index 66486af..99bbdda 100644
+--- a/PowerEditor/src/Notepad_plus.rc
++++ b/PowerEditor/src/Notepad_plus.rc
+@@ -1266,6 +1266,7 @@ BEGIN
+     POPUP "Se&ttings"
+     BEGIN
+         MENUITEM "Preferences...",          IDM_SETTING_PREFERENCE
++        MENUITEM "KEX Features...",         IDM_SETTING_KEX
+         MENUITEM "Style Configurator...",   IDM_LANGSTYLE_CONFIG_DLG
+         MENUITEM "Shortcut Mapper...",      IDM_SETTING_SHORTCUT_MAPPER
+         MENUITEM SEPARATOR
 diff --git a/PowerEditor/src/NppBigSwitch.cpp b/PowerEditor/src/NppBigSwitch.cpp
 index 3a8dad0..889c1f8 100644
 --- a/PowerEditor/src/NppBigSwitch.cpp
@@ -2521,7 +2625,7 @@ index 3a8dad0..889c1f8 100644
  				for (size_t i = 0, len = pTab[v]->nbItem(); i < len; ++i)
  				{
 diff --git a/PowerEditor/src/NppCommands.cpp b/PowerEditor/src/NppCommands.cpp
-index a1a5912..0dc15a2 100644
+index a1a5912..b599665 100644
 --- a/PowerEditor/src/NppCommands.cpp
 +++ b/PowerEditor/src/NppCommands.cpp
 @@ -1538,10 +1538,11 @@ void Notepad_plus::command(int id)
@@ -2599,7 +2703,24 @@ index a1a5912..0dc15a2 100644
  			for (auto pView : pViews)
  			{
  				Buffer* pBuf = pView->getCurrentBuffer();
-@@ -3591,8 +3583,7 @@ void Notepad_plus::command(int id)
+@@ -3532,6 +3524,7 @@ void Notepad_plus::command(int id)
+ 			break;
+ 		}
+ 		case IDM_SETTING_PREFERENCE:
++		case IDM_SETTING_KEX:
+ 		{
+ 			bool isFirstTime = !_preference.isCreated();
+ 			_preference.doDialog(_nativeLangSpeaker.isRTL());
+@@ -3540,6 +3533,8 @@ void Notepad_plus::command(int id)
+ 			{
+ 				_nativeLangSpeaker.changePreferenceDlgLang(_preference);
+ 			}
++			if (id == IDM_SETTING_KEX)
++				_preference.showDialogByName(L"KexEditing");
+ 			break;
+ 		}
+ 
+@@ -3591,8 +3586,7 @@ void Notepad_plus::command(int id)
  			HWND wnd = GetFocus();
  			if (_pEditView->getHSelf() == wnd)
  			{
@@ -2609,7 +2730,7 @@ index a1a5912..0dc15a2 100644
  			}
  			else
  			{
-@@ -3602,6 +3593,65 @@ void Notepad_plus::command(int id)
+@@ -3602,6 +3596,65 @@ void Notepad_plus::command(int id)
  			break;
  		}
  
@@ -2675,7 +2796,7 @@ index a1a5912..0dc15a2 100644
  		case IDM_TOOL_MD5_GENERATE:
  		{
  			bool isFirstTime = !_md5FromTextDlg.isCreated();
-@@ -4062,8 +4112,9 @@ void Notepad_plus::command(int id)
+@@ -4062,8 +4115,9 @@ void Notepad_plus::command(int id)
          case IDC_PREV_DOC :
          case IDC_NEXT_DOC :
          {
@@ -2687,7 +2808,7 @@ index a1a5912..0dc15a2 100644
  
  			bool doTaskList = ((NppParameters::getInstance()).getNppGUI())._doTaskList;
  			_isFolding = true;
-@@ -4547,6 +4598,18 @@ void Notepad_plus::command(int id)
+@@ -4547,6 +4601,18 @@ void Notepad_plus::command(int id)
  			case IDM_VIEW_GOTO_END:
  			case IDM_VIEW_GOTO_ANOTHER_VIEW:
  			case IDM_VIEW_CLONE_TO_ANOTHER_VIEW:
@@ -3868,6 +3989,109 @@ index 5db0df6..86a9482 100644
  };
  
  
+diff --git a/PowerEditor/src/WinControls/Preference/preferenceDlg.cpp b/PowerEditor/src/WinControls/Preference/preferenceDlg.cpp
+index 8dbc75c..3af9d29 100644
+--- a/PowerEditor/src/WinControls/Preference/preferenceDlg.cpp
++++ b/PowerEditor/src/WinControls/Preference/preferenceDlg.cpp
+@@ -39,6 +39,7 @@
+ #include "ContextMenu.h"
+ #include "ControlsTab.h"
+ #include "EncodingMapper.h"
++#include "KexSuiteHost.h"
+ #include "Notepad_plus_msgs.h"
+ #include "NppConstants.h"
+ #include "NppDarkMode.h"
+@@ -309,6 +310,12 @@ intptr_t CALLBACK PreferenceDlg::run_dlgProc(UINT message, WPARAM wParam, LPARAM
+ 			_searchEngineSubDlg.init(_hInst, _hSelf);
+ 			_searchEngineSubDlg.create(IDD_PREFERENCE_SUB_SEARCHENGINE, false, false);
+ 
++			_kexEditingSubDlg.init(_hInst, _hSelf);
++			_kexEditingSubDlg.create(IDD_KEX_PREF_EDITING, false, false);
++
++			_kexWindowsSubDlg.init(_hInst, _hSelf);
++			_kexWindowsSubDlg.create(IDD_KEX_PREF_WINDOWS, false, false);
++
+ 			_wVector.push_back(DlgInfo(&_generalSubDlg, L"General", L"Global"));
+ 			_wVector.push_back(DlgInfo(&_toolbarSubDlg, L"Toolbar", L"Toolbar"));
+ 			_wVector.push_back(DlgInfo(&_tabbarSubDlg, L"Tab Bar", L"Tabbar"));
+@@ -333,6 +340,8 @@ intptr_t CALLBACK PreferenceDlg::run_dlgProc(UINT message, WPARAM wParam, LPARAM
+ 			_wVector.push_back(DlgInfo(&_cloudAndLinkSubDlg, L"Cloud & Link", L"Cloud"));
+ 			_wVector.push_back(DlgInfo(&_searchEngineSubDlg, L"Search Engine", L"SearchEngine"));
+ 			_wVector.push_back(DlgInfo(&_miscSubDlg, L"MISC.", L"MISC"));
++			_wVector.push_back(DlgInfo(&_kexEditingSubDlg, L"KEX Editing", L"KexEditing"));
++			_wVector.push_back(DlgInfo(&_kexWindowsSubDlg, L"KEX Windows", L"KexWindows"));
+ 
+ 
+ 			makeCategoryList();
+@@ -662,6 +671,38 @@ void PreferenceDlg::destroy()
+ 	_multiInstanceSubDlg.destroy();
+ 	_delimiterSubDlg.destroy();
+ 	_performanceSubDlg.destroy();
++	_kexEditingSubDlg.destroy();
++	_kexWindowsSubDlg.destroy();
++}
++
++intptr_t CALLBACK KexSubDlg::run_dlgProc(UINT message, WPARAM wParam, LPARAM lParam)
++{
++	switch (message)
++	{
++		case WM_CTLCOLOREDIT:
++		{
++			return NppDarkMode::onCtlColorCtrl(reinterpret_cast<HDC>(wParam));
++		}
++
++		case WM_CTLCOLORDLG:
++		case WM_CTLCOLORSTATIC:
++		{
++			return NppDarkMode::onCtlColorDlg(reinterpret_cast<HDC>(wParam));
++		}
++
++		case WM_PRINTCLIENT:
++		{
++			if (NppDarkMode::isEnabled())
++			{
++				return TRUE;
++			}
++			break;
++		}
++
++		default:
++			break;
++	}
++	return kexsuite::prefPageProc(_hSelf, message, wParam, lParam);
+ }
+ 
+ void TabbarSubDlg::setTabbarAlternateIcons(bool enable)
+diff --git a/PowerEditor/src/WinControls/Preference/preferenceDlg.h b/PowerEditor/src/WinControls/Preference/preferenceDlg.h
+index 57f3f0c..512e0c9 100644
+--- a/PowerEditor/src/WinControls/Preference/preferenceDlg.h
++++ b/PowerEditor/src/WinControls/Preference/preferenceDlg.h
+@@ -386,6 +386,16 @@ private :
+ 	HWND _largeFileRestrictionTip = nullptr;
+ };
+ 
++// KEX: Settings > Preferences > "KEX Editing" and "KEX Windows"; the built-in KEX suite runs these pages
++class KexSubDlg : public StaticDialog
++{
++public:
++	KexSubDlg() = default;
++
++private:
++	intptr_t CALLBACK run_dlgProc(UINT message, WPARAM wParam, LPARAM lParam) override;
++};
++
+ class PreferenceDlg : public StaticDialog
+ {
+ friend class NativeLangSpeaker;
+@@ -447,6 +457,8 @@ private :
+ 	CloudAndLinkSubDlg _cloudAndLinkSubDlg;
+ 	SearchEngineSubDlg _searchEngineSubDlg;
+ 	SearchingSubDlg _searchingSubDlg;
++	KexSubDlg _kexEditingSubDlg;
++	KexSubDlg _kexWindowsSubDlg;
+ 
+ 	ControlInfoTip _gotoTip;
+ };
 diff --git a/PowerEditor/src/WinControls/SplitterContainer/SplitterContainer.cpp b/PowerEditor/src/WinControls/SplitterContainer/SplitterContainer.cpp
 index 08373c3..c96e8cf 100644
 --- a/PowerEditor/src/WinControls/SplitterContainer/SplitterContainer.cpp
@@ -4002,7 +4226,7 @@ index 3010685..a0bdd46 100644
  	int colIndex = 0;
  	if (isExtColumn)
 diff --git a/PowerEditor/src/menuCmdID.h b/PowerEditor/src/menuCmdID.h
-index 408b4ac..ffb733d 100644
+index 408b4ac..6559961 100644
 --- a/PowerEditor/src/menuCmdID.h
 +++ b/PowerEditor/src/menuCmdID.h
 @@ -410,6 +410,26 @@
@@ -4032,6 +4256,14 @@ index 408b4ac..ffb733d 100644
  #define    IDM_FORMAT    (IDM + 5000)
      #define    IDM_FORMAT_TODOS             (IDM_FORMAT + 1)
      #define    IDM_FORMAT_TOUNIX            (IDM_FORMAT + 2)
+@@ -617,6 +637,7 @@
+     #define    IDM_SETTING_SHORTCUT_MAPPER_MACRO    (IDM_SETTING + 16)
+     #define    IDM_SETTING_SHORTCUT_MAPPER_RUN      (IDM_SETTING + 17)
+     #define    IDM_SETTING_EDITCONTEXTMENU          (IDM_SETTING + 18)
++    #define    IDM_SETTING_KEX                      (IDM_SETTING + 40)   // KEX: Preferences, on the KEX pages
+ 
+ #define    IDM_TOOL  (IDM + 8500)
+     #define    IDM_TOOL_MD5_GENERATE                    (IDM_TOOL + 1)
 -- 
 2.43.0
 

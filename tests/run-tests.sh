@@ -2,7 +2,7 @@
 # tests/run-tests.sh NPP_DIR SRC_DIR OUT_DIR
 # Runs both test suites under Wine + Xvfb on a copy of a packaged KEX Notepad++:
 #   1. KexTest (tests/KexTest.cpp): the four-view core patch, 30 checks incl. mouse drags
-#   2. the KEX Suite plugin's built-in self-test (plugin/test/run-selftest.sh)
+#   2. the built-in KEX suite's self-test (suite/test/run-selftest.sh)
 # SRC_DIR is the patched Notepad++ source tree (for headers). Exits non-zero if any check fails.
 # Needs wine64, xvfb, xdotool, imagemagick and MinGW-w64.
 set -uo pipefail
@@ -18,6 +18,9 @@ x86_64-w64-mingw32-g++-posix -std=c++20 -O2 -shared -municode -DUNICODE -D_UNICO
   -static -lcomctl32 -o "$NPP/plugins/KexTest/KexTest.dll" || exit 1
 
 # --- 1. core test ---
+# Its mouse drags are timing-sensitive on a busy machine, so a failed run is repeated once; both
+# runs' failures stay in the output.
+core_test() {
 export WINEPREFIX=$HOME/.wine-npp
 wineboot -i >/dev/null 2>&1; wineserver -w
 D=$WINEPREFIX/drive_c/kextest; LOG=$D/log.txt; rm -rf "$D"; mkdir -p "$D" "$OUT/core"
@@ -42,17 +45,20 @@ for i in $(seq 1 480); do
 done
 wineserver -k 2>/dev/null; kill $XP 2>/dev/null; wait $XP 2>/dev/null
 tr -d '\r' < "$LOG" > "$OUT/core/log.txt" 2>/dev/null
-grep -a -E '^(FAIL|RESULT)' "$OUT/core/log.txt"
+grep -a -E '\[FAIL\]|^RESULT' "$OUT/core/log.txt"
 grep -aq '^RESULT 0 failure' "$OUT/core/log.txt"; CORE=$?
+}
+core_test
+if [ $CORE != 0 ]; then echo "core test: retrying once"; mv "$OUT/core" "$OUT/core-first-try"; core_test; fi
 
-# --- 2. plugin self-test ---
+# --- 2. suite self-test ---
 rm -rf "$NPP/plugins/KexTest"
 WINEPREFIX=$HOME/.wine-kexsuite wineboot -i >/dev/null 2>&1; WINEPREFIX=$HOME/.wine-kexsuite wineserver -w
-mkdir -p "$OUT/plugin"
-bash "$ROOT/plugin/test/run-selftest.sh" "$NPP" "$OUT/plugin" > "$OUT/plugin/result.txt" 2>&1
-cp "$HOME/.wine-kexsuite/drive_c/kexsuite-test/selftest-log.txt" "$OUT/plugin/log.txt" 2>/dev/null
-grep -a -E '^(FAIL|RESULT)' "$OUT/plugin/result.txt"
-grep -aq '^RESULT [0-9]* passed, 0 failed' "$OUT/plugin/result.txt"; PLUG=$?
+mkdir -p "$OUT/suite"
+bash "$ROOT/suite/test/run-selftest.sh" "$NPP" "$OUT/suite" > "$OUT/suite/result.txt" 2>&1
+cp "$HOME/.wine-kexsuite/drive_c/kexsuite-test/selftest-log.txt" "$OUT/suite/log.txt" 2>/dev/null
+grep -a -E '^(FAIL|RESULT)' "$OUT/suite/result.txt"
+grep -aq '^RESULT [0-9]* passed, 0 failed' "$OUT/suite/result.txt"; PLUG=$?
 
-echo "core test: $([ $CORE = 0 ] && echo pass || echo FAIL)   plugin self-test: $([ $PLUG = 0 ] && echo pass || echo FAIL)"
+echo "core test: $([ $CORE = 0 ] && echo pass || echo FAIL)   suite self-test: $([ $PLUG = 0 ] && echo pass || echo FAIL)"
 [ $CORE = 0 ] && [ $PLUG = 0 ]

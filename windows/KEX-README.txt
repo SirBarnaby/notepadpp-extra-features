@@ -1,9 +1,10 @@
 Notepad++ KEX
 =============
 
-This is the official Notepad++ portable package of the same version, with two changes:
-  * notepad++.exe is built from Notepad++'s source with the KEX patch (four views, snap-out windows).
-  * plugins\KexSuite\KexSuite.dll is the KEX Suite plugin.
+This is the official Notepad++ portable package of the same version, except that notepad++.exe
+is built from Notepad++'s source with the KEX patch: four views, snap-out windows and the KEX
+features below, built in. (plugins\KexSuite is an empty leftover for older update scripts; Notepad++
+KEX ignores it and Install-KEX.cmd removes it.)
 The updater folder is removed and disableNppAutoUpdate.xml is present, so an official update
 can't silently replace the KEX build. (The official notepad++.exe would drop the four views.)
 
@@ -36,17 +37,18 @@ Four views
   * Older plugins only know two views. Their commands are blocked (with a message) while view 3
     or 4 has focus, so they can't edit the wrong file.
 
-KEX Suite plugin (Plugins > KEX Suite)
+KEX features (Settings > KEX Features)
 --------------------------------------
-Each feature has an on/off tick in that menu, and Options... has its settings.
+Settings > KEX Features opens Preferences on the "KEX Editing" page; "KEX Windows" is just below
+it. Each feature has an on/off tick there and its settings next to it; changes apply at once.
   * Same Notepad++ on every desktop: opening Notepad++ on another virtual desktop shows the same
     window with the same tabs; each desktop keeps its own active tab, caret and scroll.
   * Falling letters: deleted text falls off the screen, CS2D style.
   * Smooth caret: the caret glides to its new position.
-  * Quick note (Ctrl+Alt+M by default, changeable in Options): a small note window fades in at
+  * Quick note (Ctrl+Alt+M by default, changeable on KEX Windows): a small note window fades in at
     the centre of the screen over whatever you're doing, even with Notepad++ minimised. Press it
     again (or Esc) to fade it out and go back to what you were doing. What you type is saved as
-    you go (plugins\Config\KexQuickNote.txt) and is there next time.
+    you go (kex-quicknote.txt in Notepad++'s settings folder) and is there next time.
   * F12 hover tabs: in F12 (post-it) mode, touching the top edge of any view shows a floating
     strip with that view's tabs.
 
@@ -57,5 +59,5 @@ release, tests it, and publishes the result (see kex-repo.txt for the repository
 ever changes Notepad++ too much for the patch, that build stops, an issue is opened in the
 repository, and you keep the version you have until the patch is updated.
 
-source\ holds everything this was built from (patch, plugin source, KexApi.h for plugin authors).
+source\ holds everything this was built from (patch, KEX feature source, KexApi.h for plugin authors).
 Notepad++ is GPL (license.txt); the KEX changes are under the same licence.

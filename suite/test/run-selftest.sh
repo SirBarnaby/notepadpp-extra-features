@@ -1,24 +1,24 @@
 #!/bin/bash
-# Runs the KEX Suite self-test in Notepad++ under Wine + Xvfb and collects the log and screenshots.
+# Runs the KEX suite's built-in self-test in a KEX Notepad++ under Wine + Xvfb and collects the log
+# and screenshots.
 #
-#   test/run-selftest.sh [NPP_DIR] [OUT_DIR]
+#   suite/test/run-selftest.sh NPP_DIR [OUT_DIR]
 #
-# NPP_DIR  portable Notepad++ to test in (default ~/nppt-kex; the plugin DLL is copied into it)
-# OUT_DIR  where screenshots and the log go (default: this plugin folder's screenshots/ and test/)
+# NPP_DIR  portable KEX Notepad++ to test in (its notepad++.exe has the suite built in)
+# OUT_DIR  where screenshots go (default: suite/test/screenshots); the log is also copied to suite/test/
 # Uses its own WINEPREFIX (~/.wine-kexsuite) and X display (:88).
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-NPP=${1:-$HOME/nppt-kex}
-SHOTS=${2:-$HERE/screenshots}
+NPP=$1
+SHOTS=${2:-$HERE/test/screenshots}
 export WINEDEBUG=-all WINEPREFIX=$HOME/.wine-kexsuite DISPLAY=:88
 TESTDIR=$WINEPREFIX/drive_c/kexsuite-test
 WTESTDIR='C:\kexsuite-test'
 LOG=$TESTDIR/selftest-log.txt
 
-[ -f "$HERE/build/KexSuite.dll" ] || "$HERE/build.sh"
-mkdir -p "$NPP/plugins/KexSuite" "$SHOTS"
-cp "$HERE/build/KexSuite.dll" "$NPP/plugins/KexSuite/KexSuite.dll"
-rm -f "$NPP/plugins/Config/KexSuite.ini" "$NPP/plugins/Config/KexSuite.log"
+mkdir -p "$SHOTS"
+rm -rf "$NPP/plugins/KexSuite"   # the old plugin form of the suite (Notepad++ KEX skips it anyway)
+rm -f "$NPP/kex.ini" "$NPP/kex.log" "$NPP/kex-quicknote.txt" "$NPP/plugins/Config/KexSuite.ini" "$NPP/plugins/Config/KexQuickNote.txt"
 rm -rf "$TESTDIR"; mkdir -p "$TESTDIR"
 rm -f "$SHOTS"/*.png
 
@@ -43,5 +43,5 @@ sleep 0.5
 wineserver -k 2>/dev/null
 kill $XPID 2>/dev/null
 cp "$LOG" "$HERE/test/selftest-log.txt" 2>/dev/null
-cp "$NPP/plugins/Config/KexSuite.ini" "$HERE/test/selftest-KexSuite.ini" 2>/dev/null
+cp "$NPP/kex.ini" "$HERE/test/selftest-kex.ini" 2>/dev/null
 grep -a -E '^(PASS|FAIL|SKIP|RESULT)' "$LOG" | tail -n 200

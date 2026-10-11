@@ -1,9 +1,9 @@
 #!/bin/bash
 # ci/build.sh TAG OUT_DIR - everything the GitHub Actions build does, runnable on any Linux box:
-#   1. clone Notepad++ TAG, apply the KEX patch and build notepad++.exe (MinGW-w64 cross-compile)
-#   2. build the KEX Suite plugin
-#   3. put both into the official portable zip of that release -> OUT_DIR/Notepad++-<ver>-KEX.zip
-#   4. run both test suites under Wine (skip with KEX_TEST=0)
+#   1. clone Notepad++ TAG, apply the KEX patch, add the KEX suite and build notepad++.exe
+#      (MinGW-w64 cross-compile)
+#   2. put it into the official portable zip of that release -> OUT_DIR/Notepad++-<ver>-KEX.zip
+#   3. run both test suites under Wine (skip with KEX_TEST=0)
 # Exit codes: 2 = the patch doesn't apply to this release (needs updating), 4 = build failed, 3 = tests failed.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -19,7 +19,6 @@ ln -sf "$(command -v x86_64-w64-mingw32-gcc-posix)" "$XBIN/gcc"
 KEX_XBIN=$XBIN bash "$ROOT/patch/kex-patch.sh" "$TAG" "$W"
 SRC=$W/npp-$TAG
 EXE=$SRC/PowerEditor/gcc/bin.gcc.x86_64/notepad++.exe
-bash "$ROOT/plugin/build.sh"
 
 NAME="Notepad++ $VER KEX"; PKG=$OUT/$NAME
 rm -rf "$PKG"; mkdir -p "$PKG"
@@ -28,7 +27,9 @@ curl -fsSL -o "$W/portable.zip" \
 python3 -I -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$W/portable.zip" "$PKG"
 rm -rf "$PKG/updater"
 cp "$EXE" "$PKG/notepad++.exe"
-mkdir -p "$PKG/plugins/KexSuite"; cp "$ROOT/plugin/build/KexSuite.dll" "$PKG/plugins/KexSuite/"
+# placeholder for update scripts installed before the suite was built in (see ci/legacy-plugin-stub.c)
+mkdir -p "$PKG/plugins/KexSuite"
+x86_64-w64-mingw32-gcc -shared -s -o "$PKG/plugins/KexSuite/KexSuite.dll" "$ROOT/ci/legacy-plugin-stub.c"
 cp "$ROOT"/windows/* "$PKG/"
 echo "${KEX_REPO:-${GITHUB_REPOSITORY:-}}" > "$PKG/kex-repo.txt"
 echo "$TAG" > "$PKG/kex-version.txt"
@@ -36,7 +37,7 @@ echo "$TAG" > "$PKG/kex-version.txt"
   echo '<!-- KEX: keeps the official updater from replacing the KEX build -->' > "$PKG/disableNppAutoUpdate.xml"
 mkdir -p "$PKG/source"
 if git -C "$ROOT" rev-parse HEAD >/dev/null 2>&1; then git -C "$ROOT" archive HEAD | tar -x -C "$PKG/source"
-else cp -r "$ROOT"/{patch,plugin,include,tests,windows,ci,README.md,LICENSE} "$PKG/source/" 2>/dev/null || true; rm -rf "$PKG/source/plugin/build"; fi
+else cp -r "$ROOT"/{patch,suite,include,tests,windows,ci,README.md,LICENSE} "$PKG/source/" 2>/dev/null || true; rm -rf "$PKG/source/suite/test/screenshots"; fi
 
 if [ "${KEX_TEST:-1}" = 1 ]; then
   bash "$ROOT/tests/run-tests.sh" "$PKG" "$SRC" "$OUT/test" || exit 3

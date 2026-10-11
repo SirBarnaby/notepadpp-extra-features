@@ -1,4 +1,4 @@
-// Core.cpp - plugin entry points, Plugins > KEX Suite menu, module lifecycle, startup self-check,
+// Core.cpp - the suite's entry points (KexSuiteHost.h), module lifecycle, startup self-check,
 // the shared main-window subclass and the non-modal note window.
 #include "KexSuite.h"
 #include <cwchar>
@@ -18,31 +18,7 @@ static bool g_ready = false, g_shutdown = false, g_subclassed = false;
 static const UINT_PTR kSubclassId = 0x4B455853;   // 'KEXS'
 
 // ---------------------------------------------------------------------------------------------
-// menu
-
-enum { MENU_COUNT = 7, MENU_OPTIONS = 6 };
-static FuncItem g_funcs[MENU_COUNT];
-
-static void toggleModule(int id)
-{
-    Module* m = modules[id];
-    if (!m) return;
-    setModuleEnabled(id, !m->isEnabled(), true);
-}
-static void cmdLetters() { toggleModule(M_LETTERS); }
-static void cmdCaret() { toggleModule(M_CARET); }
-static void cmdHotkey() { toggleModule(M_HOTKEY); }
-static void cmdTabs() { toggleModule(M_TABS); }
-static void cmdDesktop() { toggleModule(M_DESKTOP); }
-static void cmdOptions() { openOptions(); }
-
-void refreshMenuChecks()
-{
-    if (!npp._nppHandle) return;
-    for (int i = 0; i < M_COUNT; ++i)
-        if (modules[i] && g_funcs[i]._cmdID)
-            nppMsg(NPPM_SETMENUITEMCHECK, g_funcs[i]._cmdID, modules[i]->isEnabled() ? TRUE : FALSE);
-}
+// switching features on and off (Settings > Preferences > KEX Editing / KEX Windows)
 
 bool setModuleEnabled(int id, bool on, bool interactive)
 {
@@ -71,7 +47,7 @@ bool setModuleEnabled(int id, bool on, bool interactive)
         if (!ok)
         {
             log(L"%ls: not enabled (%ls)", m->title(), m->_checkMsg.c_str());
-            if (interactive) showNote(std::wstring(L"KEX Suite: ") + m->title() + L" is unavailable: " + m->_checkMsg, 7000);
+            if (interactive) showNote(std::wstring(L"KEX: ") + m->title() + L" is unavailable: " + m->_checkMsg, 7000);
             result = false;
         }
         else log(L"%ls: enabled", m->title());
@@ -83,7 +59,7 @@ bool setModuleEnabled(int id, bool on, bool interactive)
         log(L"%ls: disabled", m->title());
     }
     if (interactive && result) settings.setInt(m->key(), L"Enabled", on ? 1 : 0);
-    refreshMenuChecks();
+    refreshPrefPages();
     return result;
 }
 
@@ -143,7 +119,7 @@ void showNote(const std::wstring& text, int ms)
         wc.lpfnWndProc = noteProc; wc.hInstance = hInst; wc.lpszClassName = L"KexSuiteNote";
         wc.hCursor = ::LoadCursor(nullptr, IDC_HAND);
         ::RegisterClassW(&wc);
-        g_note = ::CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, L"KexSuiteNote", L"KEX Suite",
+        g_note = ::CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, L"KexSuiteNote", L"KEX",
             WS_POPUP, 0, 0, 10, 10, npp._nppHandle, nullptr, hInst, nullptr);
         if (!g_note) return;
     }
@@ -228,7 +204,7 @@ protected:
                 if (modules[i]->_checkOk) ++ok;
                 else failed += std::wstring(L"\n- ") + modules[i]->title() + L": " + modules[i]->_checkMsg;
             }
-            wchar_t s[128]; swprintf(s, 128, L"KEX Suite: %d/%d features OK", ok, M_COUNT);
+            wchar_t s[128]; swprintf(s, 128, L"KEX: %d/%d features OK", ok, M_COUNT);
             nppMsg(NPPM_SETSTATUSBAR, STATUSBAR_DOC_TYPE, reinterpret_cast<LPARAM>(s));
             if (!failed.empty() || settings.getInt(L"General", L"AlwaysShowSummary", 0))
                 showNote(std::wstring(s) + (failed.empty() ? L"" : L" (switched off:)") + failed, 9000);
@@ -270,7 +246,7 @@ static void onReady()
         if (settings.getInt(m->key(), L"Enabled", 1) && m->_checkOk)
             setModuleEnabled(i, true, false);
     }
-    refreshMenuChecks();
+    refreshPrefPages();
     ::SetTimer(g_core.hwnd(), 1, 600, nullptr);   // status bar summary once the first buffer is shown
     if (selfTestMode) selfTestStart(g_cmdlineArgs);
 }
@@ -287,81 +263,59 @@ static void onShutdown()
         }
     if (g_subclassed) { ::RemoveWindowSubclass(npp._nppHandle, mainSubclass, kSubclassId); g_subclassed = false; }
     if (g_note) { ::DestroyWindow(g_note); g_note = nullptr; }
-    if (HWND o = optionsWindow()) ::DestroyWindow(o);
     g_core.destroyMsgWindow();
 }
 
 } // namespace kex
 
+// ---------------------------------------------------------------------------------------------
+// entry points (KexSuiteHost.h)
+
+namespace kexsuite {
+
 using namespace kex;
 
-BOOL APIENTRY DllMain(HANDLE h, DWORD reason, LPVOID)
+void setInfo(HINSTANCE inst, const NppData& d)
 {
-    if (reason == DLL_PROCESS_ATTACH)
-    {
-        hInst = static_cast<HINSTANCE>(h);
-        underWine = ::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"), "wine_get_version") != nullptr;
-    }
-    return TRUE;
-}
-
-extern "C" __declspec(dllexport) void setInfo(NppData d)
-{
+    hInst = inst;
+    underWine = ::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"), "wine_get_version") != nullptr;
     npp = d;
-    settings.init();
-    modules[M_LETTERS] = createFallingLetters();
-    modules[M_CARET] = createSmoothCaret();
-    modules[M_HOTKEY] = createHotkeyDrop();
-    modules[M_TABS] = createHoverTabs();
-    modules[M_DESKTOP] = createDesktopSync();
+    try
+    {
+        settings.init();
+        modules[M_LETTERS] = createFallingLetters();
+        modules[M_CARET] = createSmoothCaret();
+        modules[M_HOTKEY] = createHotkeyDrop();
+        modules[M_TABS] = createHoverTabs();
+        modules[M_DESKTOP] = createDesktopSync();
+    }
+    catch (...) { for (Module*& m : modules) m = nullptr; }
 }
 
-extern "C" __declspec(dllexport) const wchar_t* getName() { return L"KEX Suite"; }
-
-// Tells a KEX-patched Notepad++ that this plugin knows about views 3 and 4 (see KexApi.h):
-// it then gets their notifications and its commands also run while view 3 or 4 has focus.
-extern "C" __declspec(dllexport) BOOL kexAware() { return TRUE; }
-
-extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* n)
+void notify(SCNotification* n)
 {
-    PFUNCPLUGINCMD fns[M_COUNT] = { cmdLetters, cmdCaret, cmdHotkey, cmdTabs, cmdDesktop };
-    for (int i = 0; i < M_COUNT; ++i)
+    if (!modules[0]) return;
+    try
     {
-        wcsncpy(g_funcs[i]._itemName, modules[i]->title(), menuItemSize - 1);
-        g_funcs[i]._pFunc = fns[i];
-        g_funcs[i]._init2Check = settings.getInt(modules[i]->key(), L"Enabled", 1) != 0;
-        g_funcs[i]._pShKey = nullptr;
-        modules[i]->_cmdIndex = i;
+        switch (n->nmhdr.code)
+        {
+        case NPPN_CMDLINEPLUGINMSG:
+        {
+            const wchar_t* s = reinterpret_cast<const wchar_t*>(n->nmhdr.idFrom);
+            if (s && wcsstr(s, L"KexSuite_selftest=1")) { selfTestMode = true; g_cmdlineArgs = s; }
+            return;
+        }
+        case NPPN_READY:
+            onReady();
+            return;
+        case NPPN_SHUTDOWN:
+            for (int i = 0; i < M_COUNT; ++i)
+                if (modules[i] && modules[i]->isEnabled()) { try { modules[i]->onNotify(n); } catch (...) {} }
+            onShutdown();
+            return;
+        }
     }
-    g_funcs[5]._itemName[0] = 0;   // separator
-    g_funcs[5]._pFunc = nullptr;
-    wcsncpy(g_funcs[MENU_OPTIONS]._itemName, L"Options...", menuItemSize - 1);
-    g_funcs[MENU_OPTIONS]._pFunc = cmdOptions;
-    *n = MENU_COUNT;
-    return g_funcs;
-}
-
-namespace kex { int menuCmdId(int i) { return (i >= 0 && i < MENU_COUNT) ? g_funcs[i]._cmdID : 0; } }
-
-extern "C" __declspec(dllexport) void beNotified(SCNotification* n)
-{
-    switch (n->nmhdr.code)
-    {
-    case NPPN_CMDLINEPLUGINMSG:
-    {
-        const wchar_t* s = reinterpret_cast<const wchar_t*>(n->nmhdr.idFrom);
-        if (s && wcsstr(s, L"KexSuite_selftest=1")) { selfTestMode = true; g_cmdlineArgs = s; }
-        return;
-    }
-    case NPPN_READY:
-        try { onReady(); } catch (...) { log(L"exception during startup"); }
-        return;
-    case NPPN_SHUTDOWN:
-        for (int i = 0; i < M_COUNT; ++i)
-            if (modules[i] && modules[i]->isEnabled()) { try { modules[i]->onNotify(n); } catch (...) {} }
-        onShutdown();
-        return;
-    }
+    catch (...) { log(L"exception in notification %u", n->nmhdr.code); return; }
     if (!g_ready || g_shutdown) return;
     for (int i = 0; i < M_COUNT; ++i)
     {
@@ -375,5 +329,4 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* n)
     if (selfTestMode) { try { selfTestOnNotify(n); } catch (...) {} }
 }
 
-extern "C" __declspec(dllexport) LRESULT messageProc(UINT, WPARAM, LPARAM) { return TRUE; }
-extern "C" __declspec(dllexport) BOOL isUnicode() { return TRUE; }
+} // namespace kexsuite

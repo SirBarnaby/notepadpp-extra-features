@@ -1,0 +1,69 @@
+// KexSuite.rc - the two KEX pages of Settings > Preferences (same size and style as Notepad++'s own pages)
+#include <windows.h>
+#include <commctrl.h>
+#include "KexSuiteHost.h"
+#include "KexSuiteRes.h"
+
+IDD_KEX_PREF_EDITING DIALOGEX 115, 10, 460, 205
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD
+FONT 8, "MS Shell Dlg", 0, 0, 0x1
+BEGIN
+    GROUPBOX        "Falling letters (CS2D style)", -1, 4, 2, 452, 66
+    AUTOCHECKBOX    "Deleted text falls off the screen", IDC_L_EN, 12, 15, 160, 10
+    LTEXT           "", IDC_L_STATUS, 180, 16, 268, 9
+    LTEXT           "Gravity (px/s²):", -1, 12, 33, 56, 8
+    EDITTEXT        IDC_L_GRAVITY, 70, 31, 34, 12, ES_NUMBER
+    LTEXT           "Max letters:", -1, 116, 33, 42, 8
+    EDITTEXT        IDC_L_MAX, 160, 31, 30, 12, ES_NUMBER
+    LTEXT           "Spin (°/s):", -1, 202, 33, 38, 8
+    EDITTEXT        IDC_L_SPIN, 242, 31, 30, 12, ES_NUMBER
+    LTEXT           "Drift (px/s):", -1, 284, 33, 44, 8
+    EDITTEXT        IDC_L_DRIFT, 330, 31, 30, 12, ES_NUMBER
+    AUTOCHECKBOX    "Not when Windows animation effects are off", IDC_L_RESPECT, 12, 50, 170, 10
+    AUTOCHECKBOX    "Also on undo and redo", IDC_L_UNDO, 190, 50, 100, 10
+
+    GROUPBOX        "Smooth caret", -1, 4, 74, 452, 50
+    AUTOCHECKBOX    "The caret glides to its new position", IDC_C_EN, 12, 87, 160, 10
+    LTEXT           "", IDC_C_STATUS, 180, 88, 268, 9
+    LTEXT           "Glide (ms):", -1, 12, 105, 40, 8
+    EDITTEXT        IDC_C_GLIDE, 54, 103, 30, 12, ES_NUMBER
+    LTEXT           "Jump instead after (lines):", -1, 96, 105, 100, 8
+    EDITTEXT        IDC_C_SNAP, 198, 103, 26, 12, ES_NUMBER
+    AUTOCHECKBOX    "Fade the blink", IDC_C_FADE, 240, 104, 70, 10
+    AUTOCHECKBOX    "Block caret in overtype", IDC_C_OVB, 316, 104, 110, 10
+
+    LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
+END
+
+IDD_KEX_PREF_WINDOWS DIALOGEX 115, 10, 460, 205
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD
+FONT 8, "MS Shell Dlg", 0, 0, 0x1
+BEGIN
+    GROUPBOX        "Quick note", -1, 4, 2, 452, 50
+    AUTOCHECKBOX    "A global hotkey fades a small note in over any program", IDC_H_EN, 12, 15, 204, 10
+    LTEXT           "", IDC_H_STATUS, 222, 16, 226, 9
+    LTEXT           "Hotkey:", -1, 12, 33, 28, 8
+    CONTROL         "", IDC_H_KEY, "msctls_hotkey32", WS_BORDER | WS_TABSTOP, 42, 31, 84, 12
+    AUTOCHECKBOX    "+ Win", IDC_H_WIN, 132, 32, 34, 10
+    LTEXT           "", IDC_H_KEYSTATUS, 170, 33, 112, 9
+    AUTOCHECKBOX    "Keep the text between uses", IDC_H_KEEP, 286, 32, 104, 10
+    AUTOCHECKBOX    "Fade in and out", IDC_H_FADE, 392, 32, 62, 10
+
+    GROUPBOX        "F12 hover tabs", -1, 4, 58, 452, 46
+    AUTOCHECKBOX    "In F12 mode, the top edge of a view shows its tabs", IDC_T_EN, 12, 71, 204, 10
+    LTEXT           "", IDC_T_STATUS, 222, 72, 226, 9
+    LTEXT           "Hot zone (px):", -1, 12, 89, 50, 8
+    EDITTEXT        IDC_T_ZONE, 64, 87, 26, 12, ES_NUMBER
+    LTEXT           "Hide after (ms):", -1, 102, 89, 56, 8
+    EDITTEXT        IDC_T_DELAY, 160, 87, 30, 12, ES_NUMBER
+
+    GROUPBOX        "Same Notepad++ on every desktop", -1, 4, 110, 452, 62
+    AUTOCHECKBOX    "The window follows you to every desktop you opened it on", IDC_D_EN, 12, 123, 214, 10
+    LTEXT           "", IDC_D_STATUS, 232, 124, 216, 9
+    LTEXT           "Check every (ms):", -1, 12, 141, 72, 8
+    EDITTEXT        IDC_D_POLL, 86, 139, 30, 12, ES_NUMBER
+    AUTOCHECKBOX    "The title-bar X closes it only on this desktop (when it is on 2 or more)", IDC_D_CLOSE, 128, 140, 270, 10
+    LTEXT           "", IDC_D_INFO, 12, 157, 436, 9
+
+    LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
+END

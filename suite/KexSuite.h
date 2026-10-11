@@ -1,5 +1,15 @@
-// KexSuite.h - shared declarations for the KEX Suite Notepad++ plugin.
+// KexSuite.h - shared declarations for the KEX suite, built into the KEX Notepad++ (KexSuiteHost.h).
+// It drives Notepad++ through the documented plugin messages, like a plugin that is always loaded.
 #pragma once
+// Notepad++ is compiled for Windows 7; the suite uses Windows 10 APIs (virtual desktops, DWM cloaking)
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0A00
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#undef NTDDI_VERSION
+#define NTDDI_VERSION 0x0A000000
+#undef WINVER
+#define WINVER 0x0A00
+#endif
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -12,6 +22,7 @@
 #include "PluginInterface.h"
 #include "menuCmdID.h"
 #include "KexApi.h"
+#include "KexSuiteHost.h"
 
 namespace kex {
 
@@ -20,7 +31,7 @@ extern HINSTANCE hInst;
 extern bool selfTestMode;      // set by -pluginMessage="KexSuite_selftest=1"
 extern bool underWine;         // ntdll exports wine_get_version
 
-// ---- logging (KexSuite.log in the plugin config dir; self-test writes its own log) -----------
+// ---- logging (kex.log in Notepad++'s settings folder; the self-test writes its own log) --------
 void log(const wchar_t* fmt, ...);
 
 // ---- small helpers ----------------------------------------------------------------------------
@@ -71,7 +82,7 @@ private:
 };
 extern Views views;
 
-// ---- settings (INI in NPPM_GETPLUGINSCONFIGDIR) ----------------------------------------------
+// ---- settings (kex.ini in Notepad++'s settings folder, NPPM_GETNPPSETTINGSDIRPATH) -------------
 class Settings {
 public:
     void init();
@@ -120,11 +131,11 @@ extern Module* modules[M_COUNT];
 
 // Core services used across modules.
 bool setModuleEnabled(int id, bool on, bool interactive);
-void refreshMenuChecks();
+void refreshPrefPages();           // after a feature was switched on/off or failed
 void showNote(const std::wstring& text, int ms);   // non-modal note in the corner of Notepad++
 bool isPostItMode();
-void openOptions();
-HWND optionsWindow();
+HWND prefPage(int i);              // the Preferences pages (0 "KEX Editing", 1 "KEX Windows"), once created
+void openPreferences();            // Settings > KEX Features...
 
 // Main-window subclass hooks (owned by the core, consulted by modules).
 struct MainHooks {
@@ -141,7 +152,6 @@ extern MainHooks mainHooks;
 void desktopSummonHere(const wchar_t* why);   // register current desktop + move window here
 bool desktopMoveHere();            // plain move of Notepad++ (+ KEX view hosts) to the current desktop
 void restoreNppWindow();           // Notepad++'s own restore (tray/minimized) without triggering our hooks
-int menuCmdId(int index);
 
 // Self-test entry points
 void selfTestStart(const std::wstring& args);

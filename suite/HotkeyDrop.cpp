@@ -1,7 +1,7 @@
 // HotkeyDrop.cpp - quick note: a global hotkey (RegisterHotKey, default Ctrl+Alt+M) fades a small
 // Notepad++-styled note window in at the centre of the screen, over whatever program is in front and
 // whether or not Notepad++ is minimised. Pressing it again fades the note out and gives the focus
-// back. The text is saved to KexQuickNote.txt in the plugin config folder as you type.
+// back. The text is saved to kex-quicknote.txt in Notepad++'s settings folder as you type.
 #include "KexSuite.h"
 #include <dwmapi.h>
 #include <cmath>
@@ -75,7 +75,7 @@ public:
         if (!createMsgWindow(L"KexHotkey")) return false;
         registerKey();
         if (!s_stats.registered && !selfTestMode)
-            showNote(L"KEX Suite: the hotkey " + s_stats.text + L" is already taken by another program. Pick another one in Plugins > KEX Suite > Options.", 8000);
+            showNote(L"KEX: the quick note hotkey " + s_stats.text + L" is already taken by another program. Pick another one in Settings > KEX Features.", 8000);
         return true;
     }
 
@@ -128,7 +128,7 @@ public:
 
     HWND noteWindow() const { return _closing ? nullptr : _note; }
     HWND editor() const { return _closing ? nullptr : _sci; }
-    std::wstring file() const { return settings.dir() + L"\\KexQuickNote.txt"; }
+    std::wstring file() const { return settings.dir() + L"\\kex-quicknote.txt"; }
 
 protected:
     LRESULT onMessage(UINT m, WPARAM w, LPARAM l) override

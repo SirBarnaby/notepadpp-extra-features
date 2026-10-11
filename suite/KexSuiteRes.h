@@ -1,8 +1,6 @@
-// resource.h - KEX Suite dialog ids
+// KexSuiteRes.h - control ids of the two KEX Preferences pages (page ids: KexSuiteHost.h)
 #pragma once
-#define IDD_OPTIONS        100
 #define IDC_SUMMARY        1001
-#define IDC_APPLY          1002
 #define IDC_L_EN           1100
 #define IDC_L_STATUS       1101
 #define IDC_L_GRAVITY      1102
@@ -22,8 +20,8 @@
 #define IDC_H_KEY          1302
 #define IDC_H_WIN          1303
 #define IDC_H_KEYSTATUS    1304
-#define IDC_H_POSTIT       1305
-#define IDC_H_SLIDE        1306
+#define IDC_H_KEEP         1305
+#define IDC_H_FADE         1306
 #define IDC_T_EN           1400
 #define IDC_T_STATUS       1401
 #define IDC_T_ZONE         1402

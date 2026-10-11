@@ -5,6 +5,8 @@
 // screenshot; the step machine waits for <testdir>\ackN before going on.
 // Optional argument: KexSuite_testdir=C:\path (default: <plugin config dir>\KexSuite-selftest).
 #include "KexSuite.h"
+#include "KexSuiteRes.h"
+#include "preference_rc.h"
 #include <functional>
 #include <cstdio>
 #include <cstdarg>
@@ -32,7 +34,6 @@ PROCESS_INFORMATION g_other{};    // Wine's notepad.exe, the "previously active 
 HWND g_otherWnd = nullptr;
 PROCESS_INFORMATION g_second{};   // second notepad++.exe
 const UINT WM_TEST_TRACKMENU = WM_APP + 501;
-HMENU g_kexMenu = nullptr;
 int g_origCaretWidth = 1;
 
 void tlog(const wchar_t* fmt, ...)
@@ -245,6 +246,35 @@ int pressHotkey()
     return 0;
 }
 
+// The on/off tick of a feature on its Preferences page, clicked the way the user does it.
+const int kEnableBox[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN };
+int pageOf(int module) { return (module == M_LETTERS || module == M_CARET) ? 0 : 1; }
+HWND enableBox(int module)
+{
+    if (!prefPage(pageOf(module))) { openPreferences(); pump(300); }
+    HWND p = prefPage(pageOf(module));
+    return p ? ::GetDlgItem(p, kEnableBox[module]) : nullptr;
+}
+void clickEnable(int module)
+{
+    HWND b = enableBox(module);
+    if (!b) return;
+    ::SendMessageW(b, BM_SETCHECK, ::SendMessageW(b, BM_GETCHECK, 0, 0) == BST_CHECKED ? BST_UNCHECKED : BST_CHECKED, 0);
+    ::SendMessageW(::GetParent(b), WM_COMMAND, MAKEWPARAM(kEnableBox[module], BN_CLICKED), reinterpret_cast<LPARAM>(b));
+}
+bool enableTicked(int module) { HWND b = enableBox(module); return b && ::SendMessageW(b, BM_GETCHECK, 0, 0) == BST_CHECKED; }
+HWND prefDialog() { HWND p = prefPage(0); return p ? ::GetParent(p) : nullptr; }
+void showPrefPage(const wchar_t* name)
+{
+    HWND d = prefDialog();
+    if (!d) return;
+    HWND list = ::GetDlgItem(d, IDC_LIST_DLGTITLE);
+    LRESULT i = ::SendMessageW(list, LB_FINDSTRINGEXACT, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(name));
+    ::SendMessageW(list, LB_SETCURSEL, static_cast<WPARAM>(i), 0);
+    ::SendMessageW(d, WM_COMMAND, MAKEWPARAM(IDC_LIST_DLGTITLE, LBN_SELCHANGE), reinterpret_cast<LPARAM>(list));
+}
+std::wstring itemText(HWND page, int id) { wchar_t t[256] = {}; if (page) ::GetDlgItemTextW(page, id, t, 255); return t; }
+
 void buildSteps()
 {
     auto add = [](std::function<int()> f) { g_steps.push_back(f); };
@@ -283,64 +313,48 @@ void buildSteps()
         return 600;
     });
 
-    // ---- menu --------------------------------------------------------------------------------
+    // ---- Settings > KEX Features... and the two Preferences pages ------------------------------
     add([] {
+        HMENU mm = reinterpret_cast<HMENU>(nppMsg(NPPM_GETMENUHANDLE, NPPMAINMENU, 0));
+        wchar_t t[64] = {};
+        ::GetMenuStringW(mm, IDM_SETTING_KEX, t, 63, MF_BYCOMMAND);
+        check(::GetMenuState(mm, IDM_SETTING_KEX, MF_BYCOMMAND) != static_cast<UINT>(-1), L"M1", L"Settings menu has \"%ls\"", t);
         HMENU pm = reinterpret_cast<HMENU>(nppMsg(NPPM_GETMENUHANDLE, NPPPLUGINMENU, 0));
-        int n = ::GetMenuItemCount(pm);
-        for (int i = 0; i < n; ++i)
+        bool inPlugins = false;
+        for (int i = 0, n = ::GetMenuItemCount(pm); i < n; ++i)
         {
-            wchar_t t[128] = {};
-            ::GetMenuStringW(pm, i, t, 127, MF_BYPOSITION);
-            if (wcsstr(t, L"KEX Suite")) g_kexMenu = ::GetSubMenu(pm, i);
+            wchar_t p[128] = {}; ::GetMenuStringW(pm, i, p, 127, MF_BYPOSITION);
+            if (wcsstr(p, L"KEX")) inPlugins = true;
         }
-        check(g_kexMenu != nullptr, L"M1", L"Plugins > KEX Suite submenu present");
-        if (g_kexMenu)
-        {
-            int cnt = ::GetMenuItemCount(g_kexMenu);
-            std::wstring items;
-            bool checksOk = true;
-            for (int i = 0; i < cnt; ++i)
-            {
-                wchar_t t[128] = {};
-                ::GetMenuStringW(g_kexMenu, i, t, 127, MF_BYPOSITION);
-                UINT st = ::GetMenuState(g_kexMenu, i, MF_BYPOSITION);
-                items += std::wstring(L"[") + ((st & MF_CHECKED) ? L"x] " : L" ] ") + (t[0] ? t : L"----") + L"  ";
-                if (i < M_COUNT && ((st & MF_CHECKED) != 0) != modules[i]->isEnabled()) checksOk = false;
-            }
-            tlog(L"INFO menu items: %ls", items.c_str());
-            check(checksOk, L"M2", L"menu check marks match the running features");
-        }
+        check(!inPlugins, L"M2", L"nothing KEX left in the Plugins menu (the suite is built in)");
         focusEditor();
-        ::PostMessageW(npp._nppHandle, WM_SYSCOMMAND, SC_KEYMENU, 'p');   // open Plugins from the menu bar
+        ::PostMessageW(npp._nppHandle, WM_SYSCOMMAND, SC_KEYMENU, 't');   // open Settings from the menu bar
         return 500;
     });
-    add([] { tap('K'); return 300; });          // "KEX Suite"
-    add([] { tap(VK_RIGHT); return 500; });     // open its submenu
-    add([] { return shot(L"menu-plugins-kexsuite"); });
-    add([] { ::EndMenu(); return 400; });
+    add([] { return shot(L"menu-settings-kex"); });
+    add([] { ::EndMenu(); return 300; });
     add([] {
-        RECT r; ::GetWindowRect(npp._nppHandle, &r);
-        ::PostMessageW(g_testWnd, WM_TEST_TRACKMENU, reinterpret_cast<WPARAM>(g_kexMenu), MAKELPARAM(r.left + 470, r.top + 60));
-        return 600;
+        openPreferences();
+        pump(300);
+        HWND p = prefPage(0), d = prefDialog();
+        bool ticks = true;
+        for (int i = 0; i < M_COUNT; ++i) if (enableTicked(i) != modules[i]->isEnabled()) ticks = false;
+        check(d && ::IsWindowVisible(d) && p && ::IsWindowVisible(p), L"P1", L"Settings > KEX Features opens Preferences on the \"KEX Editing\" page");
+        check(ticks, L"P2", L"the on/off ticks on both pages match the running features");
+        tlog(L"INFO page summary: \"%ls\"", itemText(p, IDC_SUMMARY).c_str());
+        return 300;
     });
-    add([] { return shot(L"menu-kexsuite-submenu"); });
-    add([] { ::EndMenu(); return 400; });
-
-    // ---- options dialog ------------------------------------------------------------------------
+    add([] { return shot(L"preferences-kex-editing"); });
     add([] {
-        openOptions();
-        HWND d = optionsWindow();
-        check(d && ::IsWindowVisible(d), L"O1", L"Options dialog opens (modeless)");
-        if (d)
-        {
-            wchar_t s[256] = {}; ::GetDlgItemTextW(d, 1001, s, 255);
-            tlog(L"INFO options summary line: \"%ls\"", s);
-            wchar_t k[256] = {}; ::GetDlgItemTextW(d, 1304, k, 255);
-            check(wcsstr(k, L"registered") != nullptr, L"O2", L"Options reports the hotkey state: \"%ls\"", k);
-        }
-        return 500;
+        showPrefPage(L"KEX Windows");
+        pump(200);
+        HWND p = prefPage(1);
+        std::wstring k = itemText(p, IDC_H_KEYSTATUS);
+        check(p && ::IsWindowVisible(p) && !::IsWindowVisible(prefPage(0)), L"P3", L"\"KEX Windows\" page shows when picked in the list");
+        check(k.find(L"works") != std::wstring::npos, L"P4", L"the page reports the quick note hotkey: \"%ls\"", k.c_str());
+        return 300;
     });
-    add([] { return shot(L"options-dialog"); });
+    add([] { return shot(L"preferences-kex-windows"); });
     add([] {
         // "another program" owns Ctrl+Alt+M: drop ours, take it with a foreign window, start ours again
         setModuleEnabled(M_HOTKEY, false, false);
@@ -348,23 +362,31 @@ void buildSteps()
         tlog(L"INFO helper window took Ctrl+Alt+M: %d", got);
         setModuleEnabled(M_HOTKEY, true, false);
         HotkeyStats hs = hotkeyStats();
-        check(!hs.registered && hs.lastError == ERROR_HOTKEY_ALREADY_REGISTERED, L"O3",
+        check(!hs.registered && hs.lastError == ERROR_HOTKEY_ALREADY_REGISTERED, L"P5",
             L"taken hotkey detected: registered=%d error=%lu", hs.registered ? 1 : 0, hs.lastError);
-        HWND d = optionsWindow();
-        if (d) { ::CheckDlgButton(d, 1300, BST_CHECKED); ::SendMessageW(d, WM_COMMAND, 1002, 0); }   // Apply
-        wchar_t k[256] = {}; if (d) ::GetDlgItemTextW(d, 1304, k, 255);
-        check(wcsstr(k, L"taken") != nullptr, L"O4", L"Options shows: \"%ls\"", k);
+        std::wstring k = itemText(prefPage(1), IDC_H_KEYSTATUS);
+        check(k.find(L"taken") != std::wstring::npos, L"P6", L"the page shows: \"%ls\"", k.c_str());
         return 400;
     });
-    add([] { return shot(L"options-hotkey-taken"); });
+    add([] { return shot(L"preferences-hotkey-taken"); });
     add([] {
         ::UnregisterHotKey(g_testWnd, 77);
-        HWND d = optionsWindow();
-        if (d) ::SendMessageW(d, WM_COMMAND, 1002, 0);
-        wchar_t k[256] = {}; if (d) ::GetDlgItemTextW(d, 1304, k, 255);
-        check(hotkeyStats().registered, L"O5", L"after the other program lets go, Apply registers it again: \"%ls\"", k);
-        if (d) ::SendMessageW(d, WM_COMMAND, IDCANCEL, 0);
-        check(optionsWindow() == nullptr, L"O6", L"Options dialog closes");
+        clickEnable(M_HOTKEY);   // off
+        clickEnable(M_HOTKEY);   // and on again
+        std::wstring k = itemText(prefPage(1), IDC_H_KEYSTATUS);
+        check(hotkeyStats().registered && k.find(L"works") != std::wstring::npos, L"P7",
+            L"after the other program lets go, switching the quick note off and on takes the key back: \"%ls\"", k.c_str());
+        HWND p1 = prefPage(1);
+        ::SetDlgItemInt(p1, IDC_T_DELAY, 420, FALSE);   // typed number: applied half a second later
+        pump(800);
+        check(settings.getInt(modules[M_TABS]->key(), L"HideDelayMs", 0) == 420 && modules[M_TABS]->isEnabled(), L"P8",
+            L"a number typed on the page is saved and the feature restarted with it");
+        ::SetDlgItemInt(p1, IDC_T_DELAY, 350, FALSE);
+        pump(800);
+        ::SendMessageW(prefDialog(), WM_COMMAND, IDCANCEL, 0);
+        pump(200);
+        check(!::IsWindowVisible(prefDialog()), L"P9", L"Preferences closes");
+        focusEditor();
         return 300;
     });
 
@@ -666,20 +688,20 @@ void buildSteps()
         sci(s, SCI_GOTOPOS, posOf(s, 3, 2));
         pump(150);
         int o0 = caretOriginalStyle(views.sci(0)), o1 = caretOriginalStyle(views.sci(1));
-        ::SendMessageW(npp._nppHandle, WM_COMMAND, menuCmdId(M_CARET), 0);   // the menu item
+        clickEnable(M_CARET);   // its tick on the KEX Editing page
         int r0 = static_cast<int>(sci(views.sci(0), SCI_GETCARETSTYLE)), r1 = static_cast<int>(sci(views.sci(1), SCI_GETCARETSTYLE));
         HWND ov = ::FindWindowW(L"KexSuiteOverlay", L"KEX caret");
         check(!modules[M_CARET]->isEnabled() && r0 == o0 && r1 == o1 && o0 == orig && !ov, L"C11",
-            L"caret off from the menu: style restored exactly (view1 0x%x, view2 0x%x), overlay destroyed", r0, r1);
+            L"caret off from Preferences: style restored exactly (view1 0x%x, view2 0x%x), overlay destroyed", r0, r1);
         return 300;
     });
     add([] { return shot(L"caret-disabled-scintilla-caret-back"); });
     add([] {
-        ::SendMessageW(npp._nppHandle, WM_COMMAND, menuCmdId(M_CARET), 0);
+        clickEnable(M_CARET);
         focusEditor();
         pump(100);
         check(modules[M_CARET]->isEnabled() && sci(views.sci(0), SCI_GETCARETSTYLE) == hiddenOf(caretOriginalStyle(views.sci(0))), L"C12",
-            L"caret back on from the menu");
+            L"caret back on from Preferences");
         caretTestFreeze(-1, false);
         return 100;
     });
@@ -914,16 +936,15 @@ void buildSteps()
         return 100;
     });
 
-    // ---- every feature off and on again from the menu ------------------------------------------
+    // ---- every feature off and on again from Preferences ----------------------------------------
     add([] {
-        HMENU pm = g_kexMenu;
         for (int i = 0; i < M_COUNT; ++i)
         {
             int origStyle0 = caretOriginalStyle(views.sci(0));
-            ::SendMessageW(npp._nppHandle, WM_COMMAND, menuCmdId(i), 0);   // same as clicking the menu item
+            clickEnable(i);
             pump(100);
             bool off = !modules[i]->isEnabled();
-            bool unchecked = pm && !(::GetMenuState(pm, menuCmdId(i), MF_BYCOMMAND) & MF_CHECKED);
+            bool unchecked = !enableTicked(i) && settings.getInt(modules[i]->key(), L"Enabled", 1) == 0;
             std::wstring extra;
             bool restored = true;
             switch (i)
@@ -946,16 +967,16 @@ void buildSteps()
             case M_TABS: restored = ::FindWindowW(L"KexSuiteTabStrip", nullptr) == nullptr; extra = L"strip window destroyed"; break;
             case M_DESKTOP: restored = mainHooks.onSysClose == nullptr && mainHooks.onSecondInstance == nullptr; extra = L"close/second-instance hooks removed"; break;
             }
-            check(off && unchecked && restored, L"E1", L"%ls off from the menu: unchecked, %ls", modules[i]->title(), extra.c_str());
-            ::SendMessageW(npp._nppHandle, WM_COMMAND, menuCmdId(i), 0);
+            check(off && unchecked && restored, L"E1", L"%ls off from Preferences: unticked and remembered, %ls", modules[i]->title(), extra.c_str());
+            clickEnable(i);
             pump(100);
-            bool on = modules[i]->isEnabled() && pm && (::GetMenuState(pm, menuCmdId(i), MF_BYCOMMAND) & MF_CHECKED);
-            check(on, L"E2", L"%ls back on from the menu", modules[i]->title());
+            bool on = modules[i]->isEnabled() && enableTicked(i) && settings.getInt(modules[i]->key(), L"Enabled", 0) == 1;
+            check(on, L"E2", L"%ls back on from Preferences", modules[i]->title());
         }
         DWORD_PTR r = 0;
         check(::SendMessageTimeoutW(npp._nppHandle, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 2000, &r) != 0, L"E3", L"Notepad++ still responsive");
         int ok = 0; for (int i = 0; i < M_COUNT; ++i) ok += modules[i]->_checkOk ? 1 : 0;
-        tlog(L"INFO final summary: KEX Suite: %d/%d features OK", ok, M_COUNT);
+        tlog(L"INFO final summary: KEX: %d/%d features OK", ok, M_COUNT);
         sci(views.sci(0), SCI_SETCARETWIDTH, g_origCaretWidth);
         sci(views.sci(1), SCI_SETCARETWIDTH, g_origCaretWidth);
         return 100;
