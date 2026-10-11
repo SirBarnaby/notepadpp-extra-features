@@ -1,0 +1,4037 @@
+From ab755a96e3b1de9a74ff3f9ae9feafabaa3d05a5 Mon Sep 17 00:00:00 2001
+From: KEX patch <noreply@anthropic.com>
+Date: Sun, 11 Oct 2026 15:07:35 +0000
+Subject: [PATCH] KEX: four views in a 2x2 grid, snap-out windows, plugin
+ gating
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
+---
+ PowerEditor/src/KexViews.cpp                  | 852 ++++++++++++++++++
+ PowerEditor/src/MISC/PluginsManager/KexApi.h  |  42 +
+ .../MISC/PluginsManager/PluginsManager.cpp    |  41 +-
+ .../src/MISC/PluginsManager/PluginsManager.h  |   4 +
+ PowerEditor/src/Notepad_plus.cpp              | 501 +++++-----
+ PowerEditor/src/Notepad_plus.h                |  59 +-
+ PowerEditor/src/NppBigSwitch.cpp              | 164 +++-
+ PowerEditor/src/NppCommands.cpp               | 113 ++-
+ PowerEditor/src/NppIO.cpp                     | 311 ++++---
+ PowerEditor/src/NppNotification.cpp           | 128 ++-
+ PowerEditor/src/Parameters.cpp                |  55 +-
+ PowerEditor/src/Parameters.h                  |  15 +
+ .../SplitterContainer/SplitterContainer.cpp   |   2 +
+ .../SplitterContainer/SplitterContainer.h     |  14 +
+ .../VerticalFileSwitcher.cpp                  |  15 +-
+ .../VerticalFileSwitcherListView.cpp          |  12 +-
+ PowerEditor/src/menuCmdID.h                   |  20 +
+ 17 files changed, 1859 insertions(+), 489 deletions(-)
+ create mode 100644 PowerEditor/src/KexViews.cpp
+ create mode 100644 PowerEditor/src/MISC/PluginsManager/KexApi.h
+
+diff --git a/PowerEditor/src/KexViews.cpp b/PowerEditor/src/KexViews.cpp
+new file mode 100644
+index 0000000..fce06f4
+--- /dev/null
++++ b/PowerEditor/src/KexViews.cpp
+@@ -0,0 +1,852 @@
++// This file is part of the KEX four-view patch for Notepad++.
++//
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// at your option any later version.
++//
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++// GNU General Public License for more details.
++//
++// You should have received a copy of the GNU General Public License
++// along with this program.  If not, see <https://www.gnu.org/licenses/>.
++
++// KEX: Notepad++ gets four editing views laid out as a 2x2 grid:
++//
++//     MAIN_VIEW | SUB_VIEW        _subSplitter splits the two columns,
++//     ----------+----------       _kexColumnSplitter[0] splits main/view 3,
++//     VIEW_3    | VIEW_4          _kexColumnSplitter[1] splits sub/view 4.
++//
++// Any view can also be snapped out into its own top-level window ("torn out") and back in.
++// The grid is rebuilt from the visibility bits in _mainWindowStatus by kexLayoutViews().
++
++#include <algorithm>
++#include <string>
++#include "Notepad_plus.h"
++#include "Notepad_plus_Window.h"
++#include "NppDarkMode.h"
++#include "KexApi.h"
++
++using namespace std;
++
++static constexpr int KEX_PATCH_VERSION = 1;
++static constexpr wchar_t KEX_VIEW_WINDOW_CLASS[] = L"KexNppViewWindow";
++static constexpr UINT_PTR KEX_TITLE_TIMER = 1;
++static constexpr int KEX_ROTATION_LEFT = 2000;  // SplitterContainer.cpp ROTATION_LEFT
++static constexpr int KEX_ROTATION_RIGHT = 2001; // SplitterContainer.cpp ROTATION_RIGHT
++
++static Notepad_plus* kexNpp = nullptr;
++static bool kexMovedSinceEnter[NB_VIEWS] = {};
++
++
++ScintillaEditView* Notepad_plus::kexEditView(int whichOne)
++{
++	switch (whichOne)
++	{
++		case MAIN_VIEW: return &_mainEditView;
++		case VIEW_3: return &_view3EditView;
++		case VIEW_4: return &_view4EditView;
++		default: return &_subEditView;
++	}
++}
++
++DocTabView* Notepad_plus::kexDocTab(int whichOne)
++{
++	switch (whichOne)
++	{
++		case MAIN_VIEW: return &_mainDocTab;
++		case VIEW_3: return &_view3DocTab;
++		case VIEW_4: return &_view4DocTab;
++		default: return &_subDocTab;
++	}
++}
++
++UCHAR Notepad_plus::kexViewBit(int whichOne)
++{
++	switch (whichOne)
++	{
++		case MAIN_VIEW: return WindowMainActive;
++		case VIEW_3: return WindowView3Active;
++		case VIEW_4: return WindowView4Active;
++		default: return WindowSubActive;
++	}
++}
++
++int Notepad_plus::kexViewOfControl(HWND hwnd)
++{
++	if (!hwnd)
++		return -1;
++	for (int v = 0; v < NB_VIEWS; ++v)
++	{
++		if (hwnd == kexEditView(v)->getHSelf() || hwnd == kexDocTab(v)->getHSelf())
++			return v;
++	}
++	return -1;
++}
++
++int Notepad_plus::kexViewFromHwnd(HWND hwnd)
++{
++	// walk up the parent chain: a child of a Scintilla (e.g. a call tip) or of a torn-out window counts too
++	for (int depth = 0; hwnd && depth < 8; ++depth)
++	{
++		int v = kexViewOfControl(hwnd);
++		if (v != -1)
++			return v;
++		for (int w = 0; w < NB_VIEWS; ++w)
++		{
++			if (_kexViewWindow[w] && hwnd == _kexViewWindow[w])
++				return w;
++		}
++		if (::GetWindowLongPtr(hwnd, GWL_STYLE) & WS_CHILD)
++			hwnd = ::GetParent(hwnd);
++		else
++			break;
++	}
++	return -1;
++}
++
++void Notepad_plus::kexSmartHighlight(ScintillaEditView* pView)
++{
++	// SmartHighlighter takes one "other" view; give it each visible view in turn
++	bool done = false;
++	for (int v = 0; v < NB_VIEWS; ++v)
++	{
++		ScintillaEditView* pOther = kexEditView(v);
++		if (pOther == pView || !viewVisible(v))
++			continue;
++		_smartHighlighter.highlightView(pView, pOther);
++		done = true;
++	}
++	if (!done)
++		_smartHighlighter.highlightView(pView, nullptr);
++}
++
++bool Notepad_plus::kexIsBufferInAnotherView(BufferID id, int exceptView)
++{
++	for (int v = 0; v < NB_VIEWS; ++v)
++	{
++		if (v != exceptView && kexDocTab(v)->getIndexByBuffer(id) != -1)
++			return true;
++	}
++	return false;
++}
++
++bool Notepad_plus::kexIsBufferInEarlierView(BufferID id, int view)
++{
++	for (int v = 0; v < view && v < NB_VIEWS; ++v)
++	{
++		if (viewVisible(v) && kexDocTab(v)->getIndexByBuffer(id) != -1)
++			return true;
++	}
++	return false;
++}
++
++BufferID Notepad_plus::kexFindBufferByNameInViews(const wchar_t* fullfilename)
++{
++	for (int v = 0; v < NB_VIEWS; ++v)
++	{
++		BufferID id = kexDocTab(v)->findBufferByName(fullfilename);
++		if (id != BUFFER_INVALID)
++			return id;
++	}
++	return BUFFER_INVALID;
++}
++
++int Notepad_plus::kexNextVisibleView(int fromView, bool forward)
++{
++	if (fromView < 0 || fromView >= NB_VIEWS)
++	{
++		for (int v = 0; v < NB_VIEWS; ++v)
++		{
++			if (viewVisible(v))
++				return v;
++		}
++		return MAIN_VIEW;
++	}
++
++	for (int i = 1; i <= NB_VIEWS; ++i)
++	{
++		int v = (fromView + (forward ? i : NB_VIEWS - i)) % NB_VIEWS;
++		if (viewVisible(v))
++			return v;
++	}
++	return fromView;
++}
++
++int Notepad_plus::kexNbVisibleViews() const
++{
++	int nb = 0;
++	for (int v = 0; v < NB_VIEWS; ++v)
++	{
++		if (_mainWindowStatus & kexViewBit(v))
++			++nb;
++	}
++	return nb;
++}
++
++AutoCompletion* Notepad_plus::kexAutoComplete(const ScintillaEditView* pView)
++{
++	if (pView == &_mainEditView)
++		return &_autoCompleteMain;
++	if (pView == &_view3EditView)
++		return &_autoCompleteView3;
++	if (pView == &_view4EditView)
++		return &_autoCompleteView4;
++	return &_autoCompleteSub;
++}
++
++int Notepad_plus::kexNbDockedViews()
++{
++	int nb = 0;
++	for (int v = 0; v < NB_VIEWS; ++v)
++	{
++		if (viewVisible(v) && !kexIsTornOut(v))
++			++nb;
++	}
++	return nb;
++}
++
++
++//
++// Grid layout
++//
++
++Window* Notepad_plus::kexEditorAreaWindow()
++{
++	bool docked[NB_VIEWS]{};
++	for (int v = 0; v < NB_VIEWS; ++v)
++		docked[v] = viewVisible(v) && !kexIsTornOut(v);
++
++	// each column is its top view, its bottom view, or both in a column splitter
++	Window* column[2] = {};
++	for (int col = 0; col < 2; ++col)
++	{
++		DocTabView* top = kexDocTab(col);              // main / sub
++		DocTabView* bottom = kexDocTab(col + VIEW_3);  // view 3 / view 4
++		if (docked[col] && docked[col + VIEW_3])
++		{
++			SplitterContainer& splitter = _kexColumnSplitter[col];
++			const bool swapped = (splitter.getWin0() == bottom); // the user rotated it
++			splitter.setWin0(swapped ? bottom : top);
++			splitter.setWin1(swapped ? top : bottom);
++			column[col] = &splitter;
++		}
++		else if (docked[col])
++			column[col] = top;
++		else if (docked[col + VIEW_3])
++			column[col] = bottom;
++	}
++
++	if (column[0] && column[1])
++	{
++		Window* first = _subSplitter.getWin0();
++		const bool swapped = (first == &_kexColumnSplitter[1] || first == &_subDocTab || first == &_view4DocTab);
++		_subSplitter.setWin0(swapped ? column[1] : column[0]);
++		_subSplitter.setWin1(swapped ? column[0] : column[1]);
++		return &_subSplitter;
++	}
++	if (column[0])
++		return column[0];
++	if (column[1])
++		return column[1];
++	return &_mainDocTab;
++}
++
++void Notepad_plus::kexLayoutViews()
++{
++	if (!_kexColumnSplitterCreated)
++		return;
++
++	// the main window always keeps at least one view
++	if (kexNbVisibleViews() == 0)
++		_mainWindowStatus |= WindowMainActive;
++	if (kexNbDockedViews() == 0)
++	{
++		for (int v = 0; v < NB_VIEWS; ++v)
++		{
++			if (viewVisible(v) && kexIsTornOut(v))
++			{
++				kexSnapBackView(v, false);
++				break;
++			}
++		}
++	}
++
++	Window* area = kexEditorAreaWindow();
++
++	bool columnUsed[2]{};
++	for (int col = 0; col < 2; ++col)
++	{
++		Window* pCol = &_kexColumnSplitter[col];
++		columnUsed[col] = (area == pCol) || (area == &_subSplitter && (_subSplitter.getWin0() == pCol || _subSplitter.getWin1() == pCol));
++	}
++	const bool rowUsed = (area == &_subSplitter);
++
++	// show the views that are visible (docked or torn out), hide the others
++	for (int v = 0; v < NB_VIEWS; ++v)
++	{
++		const bool show = viewVisible(v);
++		kexEditView(v)->display(show);
++		kexDocTab(v)->display(show);
++	}
++
++	// hide unused splitters with ShowWindow only: display(false) would also hide the views inside them
++	for (int col = 0; col < 2; ++col)
++	{
++		if (columnUsed[col])
++			_kexColumnSplitter[col].display(true);
++		else
++			::ShowWindow(_kexColumnSplitter[col].getHSelf(), SW_HIDE);
++	}
++	if (rowUsed)
++		_subSplitter.display(true);
++	else
++		::ShowWindow(_subSplitter.getHSelf(), SW_HIDE);
++
++	if ((_mainWindowStatus & WindowUserActive) && _pMainSplitter)
++	{
++		// the docked user-defined-language panel sits to the right of the grid
++		_pMainSplitter->setWin0(area);
++		if (!::IsWindowVisible(_pMainSplitter->getHSelf()))
++			_pMainSplitter->display(true);
++		else
++			area->display(true);
++		_pMainWindow = _pMainSplitter;
++	}
++	else
++	{
++		if (_pMainSplitter)
++			::ShowWindow(_pMainSplitter->getHSelf(), SW_HIDE);
++		area->display(true);
++		_pMainWindow = area;
++	}
++
++	// torn-out windows follow their view's visibility
++	for (int v = 0; v < NB_VIEWS; ++v)
++	{
++		HWND frame = _kexViewWindow[v];
++		if (!frame)
++			continue;
++		if (viewVisible(v))
++		{
++			if (!::IsWindowVisible(frame))
++				::ShowWindow(frame, SW_SHOWNOACTIVATE);
++			kexLayoutTornOutView(v);
++		}
++		else
++		{
++			::ShowWindow(frame, SW_HIDE);
++		}
++	}
++
++	::SendMessage(_pPublicInterface->getHSelf(), WM_SIZE, 0, 0);
++}
++
++void Notepad_plus::kexOnSplitterRotated(HWND hSplitter, int direction)
++{
++	if (hSplitter == _subSplitter.getHSelf())
++	{
++		// keep the grid a grid: the column splitters turn the same way, so the whole 2x2 grid rotates
++		const int cmd = (direction == static_cast<int>(DIRECTION::LEFT)) ? KEX_ROTATION_LEFT : KEX_ROTATION_RIGHT;
++		for (int col = 0; col < 2; ++col)
++			::SendMessage(_kexColumnSplitter[col].getHSelf(), WM_COMMAND, cmd, 0);
++	}
++	kexLayoutViews();
++}
++
++
++//
++// Torn-out views
++//
++
++void Notepad_plus::kexLayoutTornOutView(int whichOne)
++{
++	HWND frame = (whichOne >= 0 && whichOne < NB_VIEWS) ? _kexViewWindow[whichOne] : nullptr;
++	if (!frame || ::IsIconic(frame))
++		return;
++
++	RECT rc{};
++	::GetClientRect(frame, &rc); // {0, 0, width, height} is also the {x, y, w, h} that reSizeTo expects
++	if (rc.right <= 0 || rc.bottom <= 0)
++		return;
++	kexDocTab(whichOne)->reSizeTo(rc);
++}
++
++void Notepad_plus::kexUpdateTornOutTitle(int whichOne)
++{
++	HWND frame = _kexViewWindow[whichOne];
++	if (!frame)
++		return;
++
++	wstring title;
++	Buffer* buf = kexEditView(whichOne)->getCurrentBuffer();
++	if (buf)
++	{
++		if (buf->isDirty())
++			title += L"*";
++		title += buf->getFileName();
++		title += L" - ";
++	}
++	title += L"Notepad++";
++
++	wchar_t current[1024]{};
++	::GetWindowText(frame, current, _countof(current));
++	if (title != current)
++		::SetWindowText(frame, title.c_str());
++}
++
++bool Notepad_plus::kexIsOverDockedTabBar(POINT screenPoint)
++{
++	HWND hNpp = _pPublicInterface->getHSelf();
++	if (!::IsWindowVisible(hNpp) || ::IsIconic(hNpp))
++		return false;
++
++	for (int v = 0; v < NB_VIEWS; ++v)
++	{
++		if (!viewVisible(v) || kexIsTornOut(v))
++			continue;
++		RECT rcTab{}, rcEdit{};
++		::GetWindowRect(kexDocTab(v)->getHSelf(), &rcTab);
++		::GetWindowRect(kexEditView(v)->getHSelf(), &rcEdit);
++		// the tab control spans the whole pane, the edit view covers all of it but the tab strip
++		if (::PtInRect(&rcTab, screenPoint) && !::PtInRect(&rcEdit, screenPoint))
++			return true;
++	}
++	return false;
++}
++
++bool Notepad_plus::kexTearOutView(int whichOne, const POINT* where, const RECT* windowRect)
++{
++	if (whichOne < 0 || whichOne >= NB_VIEWS)
++		return false;
++
++	if (kexIsTornOut(whichOne))
++	{
++		if (::IsWindowVisible(_kexViewWindow[whichOne]))
++			::SetForegroundWindow(_kexViewWindow[whichOne]);
++		return true;
++	}
++
++	// the main window must keep at least one view
++	if (viewVisible(whichOne) && kexNbDockedViews() < 2)
++		return false;
++
++	HWND hNpp = _pPublicInterface->getHSelf();
++	HINSTANCE hInst = _pPublicInterface->getHinst();
++	kexNpp = this;
++
++	static bool isRegistered = false;
++	if (!isRegistered)
++	{
++		WNDCLASSEXW wc{};
++		wc.cbSize = sizeof(wc);
++		wc.style = CS_DBLCLKS;
++		wc.lpfnWndProc = kexViewWindowProc;
++		wc.hInstance = hInst;
++		wc.hCursor = ::LoadCursor(nullptr, IDC_ARROW);
++		wc.hIcon = reinterpret_cast<HICON>(::GetClassLongPtr(hNpp, GCLP_HICON));
++		wc.hIconSm = reinterpret_cast<HICON>(::GetClassLongPtr(hNpp, GCLP_HICONSM));
++		wc.lpszClassName = KEX_VIEW_WINDOW_CLASS;
++		isRegistered = (::RegisterClassExW(&wc) != 0) || (::GetLastError() == ERROR_CLASS_ALREADY_EXISTS);
++		if (!isRegistered)
++			return false;
++	}
++
++	// default size: the view's current size (or the current view's), at the cursor or offset from Notepad++
++	DocTabView* pSizeRef = viewVisible(whichOne) ? kexDocTab(whichOne) : _pDocTab;
++	RECT rcRef{};
++	::GetWindowRect(pSizeRef->getHSelf(), &rcRef);
++	RECT rcFrame{ 0, 0, std::max<LONG>(rcRef.right - rcRef.left, 480), std::max<LONG>(rcRef.bottom - rcRef.top, 320) };
++	::AdjustWindowRectEx(&rcFrame, WS_OVERLAPPEDWINDOW, FALSE, WS_EX_APPWINDOW);
++	const int width = rcFrame.right - rcFrame.left;
++	const int height = rcFrame.bottom - rcFrame.top;
++	POINT pos{ rcRef.left + 40, rcRef.top + 40 };
++	if (where)
++	{
++		pos.x = where->x - width / 2;
++		pos.y = where->y - ::GetSystemMetrics(SM_CYCAPTION) / 2;
++	}
++	MONITORINFO mi{};
++	mi.cbSize = sizeof(mi);
++	if (::GetMonitorInfo(::MonitorFromPoint(pos, MONITOR_DEFAULTTONEAREST), &mi))
++	{
++		pos.x = std::max(mi.rcWork.left, std::min(pos.x, mi.rcWork.right - width));
++		pos.y = std::max(mi.rcWork.top, std::min(pos.y, mi.rcWork.bottom - height));
++	}
++
++	HWND frame = ::CreateWindowExW(WS_EX_APPWINDOW | WS_EX_ACCEPTFILES, KEX_VIEW_WINDOW_CLASS, L"Notepad++",
++		WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, pos.x, pos.y, width, height, nullptr, nullptr, hInst, nullptr);
++	if (!frame)
++		return false;
++	::SetWindowLongPtr(frame, GWLP_USERDATA, static_cast<LONG_PTR>(whichOne));
++
++	if (windowRect && !::IsRectEmpty(windowRect))
++	{
++		// restored from the session: same coordinates GetWindowPlacement gave us; Windows keeps it on screen
++		WINDOWPLACEMENT wp{};
++		wp.length = sizeof(wp);
++		wp.showCmd = SW_HIDE;
++		wp.rcNormalPosition = *windowRect;
++		::SetWindowPlacement(frame, &wp);
++	}
++
++	NppDarkMode::setDarkTitleBar(frame);
++
++	_kexViewWindow[whichOne] = frame;
++	HWND hTab = kexDocTab(whichOne)->getHSelf();
++	HWND hEdit = kexEditView(whichOne)->getHSelf();
++	::SetParent(hTab, frame);
++	::SetParent(hEdit, frame);
++	::SetWindowPos(hEdit, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
++
++	kexUpdateTornOutTitle(whichOne);
++	::SetTimer(frame, KEX_TITLE_TIMER, 300, nullptr);
++
++	kexLayoutViews(); // takes the view out of the grid; shows the window if the view is visible
++
++	if (viewVisible(whichOne))
++	{
++		::SetForegroundWindow(frame);
++		switchEditViewTo(whichOne);
++	}
++	return true;
++}
++
++bool Notepad_plus::kexSnapBackView(int whichOne, bool relayout)
++{
++	if (whichOne < 0 || whichOne >= NB_VIEWS || !_kexViewWindow[whichOne])
++		return false;
++
++	HWND frame = _kexViewWindow[whichOne];
++	HWND hNpp = _pPublicInterface->getHSelf();
++	const bool wasActive = (::GetForegroundWindow() == frame);
++
++	_kexViewWindow[whichOne] = nullptr;
++	::KillTimer(frame, KEX_TITLE_TIMER);
++	::SetWindowLongPtr(frame, GWLP_USERDATA, -1);
++
++	HWND hTab = kexDocTab(whichOne)->getHSelf();
++	HWND hEdit = kexEditView(whichOne)->getHSelf();
++	::SetParent(hTab, hNpp);
++	::SetParent(hEdit, hNpp);
++	// back on top of the splitters, with the edit view above its tab control as Notepad++ creates them
++	::SetWindowPos(hEdit, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
++	::SetWindowPos(hTab, hEdit, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
++
++	if (wasActive)
++		::SetForegroundWindow(hNpp);
++	::DestroyWindow(frame);
++
++	if (relayout)
++	{
++		kexLayoutViews();
++		if (viewVisible(whichOne))
++			switchEditViewTo(whichOne);
++		else
++			_pEditView->grabFocus();
++	}
++	return true;
++}
++
++void Notepad_plus::kexDestroyTornOutWindows()
++{
++	// give the views back to the main window first, so destroying a frame doesn't destroy them
++	for (int v = 0; v < NB_VIEWS; ++v)
++		kexSnapBackView(v, false);
++}
++
++bool Notepad_plus::kexTearOutDoc(FileTransferMode mode, const POINT* where)
++{
++	const int fromView = currentView();
++
++	// the only document of a view: the whole view snaps out (unless it is the last view in the main window)
++	if (_pDocTab->nbItem() == 1 && mode == TransferMove)
++	{
++		if (kexIsTornOut(fromView))
++			return false;
++		return kexTearOutView(fromView, where);
++	}
++
++	// otherwise the document moves to a hidden view, which snaps out
++	static constexpr int order[NB_VIEWS] = { VIEW_4, VIEW_3, SUB_VIEW, MAIN_VIEW };
++	int target = -1;
++	for (int v : order)
++	{
++		if (!viewVisible(v) && !kexIsTornOut(v))
++		{
++			target = v;
++			break;
++		}
++	}
++	if (target == -1)
++		return false; // all four views are in use
++
++	if (!kexTearOutView(target, where))
++		return false;
++
++	docGotoAnotherEditView(mode, target);
++	checkSyncState();
++
++	if (!viewVisible(target))
++	{
++		// the transfer didn't happen: put the empty view back
++		kexSnapBackView(target);
++		return false;
++	}
++
++	::SetForegroundWindow(_kexViewWindow[target]);
++	switchEditViewTo(target);
++	return true;
++}
++
++LRESULT CALLBACK Notepad_plus::kexViewWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
++{
++	const int view = static_cast<int>(::GetWindowLongPtr(hwnd, GWLP_USERDATA));
++	Notepad_plus* self = kexNpp;
++	if (!self || view < 0 || view >= NB_VIEWS || self->_kexViewWindow[view] != hwnd)
++		return ::DefWindowProc(hwnd, message, wParam, lParam);
++
++	HWND hNpp = self->_pPublicInterface->getHSelf();
++
++	switch (message)
++	{
++		case WM_SIZE:
++		{
++			if (wParam != SIZE_MINIMIZED)
++				self->kexLayoutTornOutView(view);
++			return 0;
++		}
++
++		case WM_NOTIFY:
++		case WM_COMMAND:
++		case WM_DROPFILES:
++		{
++			// Scintilla and the tab bar notify their parent, which is now this window
++			return ::SendMessage(hNpp, message, wParam, lParam);
++		}
++
++		case WM_CONTEXTMENU:
++		{
++			if (reinterpret_cast<HWND>(wParam) == hwnd)
++				break; // title bar: the system menu
++			return ::SendMessage(hNpp, message, wParam, lParam);
++		}
++
++		case WM_ACTIVATE:
++		{
++			if (LOWORD(wParam) != WA_INACTIVE && !HIWORD(wParam) && self->viewVisible(view))
++			{
++				self->switchEditViewTo(view);
++				return 0;
++			}
++			break;
++		}
++
++		case WM_SETFOCUS:
++		{
++			self->kexEditView(view)->grabFocus();
++			return 0;
++		}
++
++		case WM_ENTERSIZEMOVE:
++		{
++			kexMovedSinceEnter[view] = false;
++			break;
++		}
++
++		case WM_MOVING:
++		{
++			kexMovedSinceEnter[view] = true;
++			break;
++		}
++
++		case WM_EXITSIZEMOVE:
++		{
++			// dropped onto a tab bar of the main window: snap back in
++			POINT p{};
++			::GetCursorPos(&p);
++			if (kexMovedSinceEnter[view] && self->kexIsOverDockedTabBar(p))
++				::PostMessage(hNpp, NPPM_KEX_TEAROUTVIEW, view, FALSE);
++			kexMovedSinceEnter[view] = false;
++			break;
++		}
++
++		case WM_CLOSE:
++		{
++			// closing the window brings the view home, it never closes documents
++			self->kexSnapBackView(view);
++			return 0;
++		}
++
++		case WM_TIMER:
++		{
++			if (wParam == KEX_TITLE_TIMER)
++			{
++				self->kexUpdateTornOutTitle(view);
++				return 0;
++			}
++			break;
++		}
++
++		case WM_ERASEBKGND:
++		{
++			RECT rc{};
++			::GetClientRect(hwnd, &rc);
++			HBRUSH hbr = NppDarkMode::isEnabled() ? NppDarkMode::getBackgroundBrush() : ::GetSysColorBrush(COLOR_BTNFACE);
++			::FillRect(reinterpret_cast<HDC>(wParam), &rc, hbr);
++			return TRUE;
++		}
++
++		case WM_GETMINMAXINFO:
++		{
++			auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
++			mmi->ptMinTrackSize.x = 200;
++			mmi->ptMinTrackSize.y = 120;
++			return 0;
++		}
++
++		case WM_DPICHANGED:
++		{
++			const RECT* rcNew = reinterpret_cast<const RECT*>(lParam);
++			::SetWindowPos(hwnd, nullptr, rcNew->left, rcNew->top, rcNew->right - rcNew->left, rcNew->bottom - rcNew->top, SWP_NOZORDER | SWP_NOACTIVATE);
++			return 0;
++		}
++
++		default:
++			break;
++	}
++	return ::DefWindowProc(hwnd, message, wParam, lParam);
++}
++
++
++//
++// Menus and messages
++//
++
++void Notepad_plus::kexInitMenu()
++{
++	// the new commands go at the end of View > Move/Clone Current Document, so no other submenu moves
++	// (translations address submenus by position)
++	HMENU hSub = nullptr;
++	const int nbTop = ::GetMenuItemCount(_mainMenuHandle);
++	for (int i = 0; i < nbTop && !hSub; ++i)
++	{
++		HMENU hTop = ::GetSubMenu(_mainMenuHandle, i);
++		const int nbItems = hTop ? ::GetMenuItemCount(hTop) : 0;
++		for (int j = 0; j < nbItems && !hSub; ++j)
++		{
++			HMENU hCandidate = ::GetSubMenu(hTop, j);
++			if (hCandidate && ::GetMenuState(hCandidate, IDM_VIEW_GOTO_ANOTHER_VIEW, MF_BYCOMMAND) != static_cast<UINT>(-1))
++				hSub = hCandidate;
++		}
++	}
++	if (!hSub)
++		return;
++
++	struct Item { UINT id; const wchar_t* text; };
++	static constexpr Item items[] = {
++		{ 0, nullptr },
++		{ IDM_KEX_DOC_TO_VIEW1, L"Move to View &1 (Top Left)" },
++		{ IDM_KEX_DOC_TO_VIEW2, L"Move to View &2 (Top Right)" },
++		{ IDM_KEX_DOC_TO_VIEW3, L"Move to View &3 (Bottom Left)" },
++		{ IDM_KEX_DOC_TO_VIEW4, L"Move to View &4 (Bottom Right)" },
++		{ IDM_KEX_DOC_CLONE_TO_VIEW1, L"Clone to View 1" },
++		{ IDM_KEX_DOC_CLONE_TO_VIEW2, L"Clone to View 2" },
++		{ IDM_KEX_DOC_CLONE_TO_VIEW3, L"Clone to View 3" },
++		{ IDM_KEX_DOC_CLONE_TO_VIEW4, L"Clone to View 4" },
++		{ 0, nullptr },
++		{ IDM_KEX_DOC_TEAROUT, L"Move to New &Window" },
++		{ IDM_KEX_VIEW_TEAROUT, L"&Snap This View Out" },
++		{ IDM_KEX_VIEW_SNAPBACK, L"Snap This View &Back In" },
++		{ IDM_KEX_SNAPBACK_ALL, L"Snap &All Views Back In" },
++		{ 0, nullptr },
++		{ IDM_KEX_FOCUS_VIEW1, L"Focus View 1" },
++		{ IDM_KEX_FOCUS_VIEW2, L"Focus View 2" },
++		{ IDM_KEX_FOCUS_VIEW3, L"Focus View 3" },
++		{ IDM_KEX_FOCUS_VIEW4, L"Focus View 4" },
++	};
++	for (const Item& item : items)
++	{
++		if (item.id == 0)
++			::AppendMenu(hSub, MF_SEPARATOR, 0, nullptr);
++		else
++			::AppendMenu(hSub, MF_STRING, item.id, item.text);
++	}
++}
++
++LRESULT Notepad_plus::kexProcessMessage(UINT message, WPARAM wParam, LPARAM lParam)
++{
++	const int view = static_cast<int>(wParam);
++	const bool isValidView = (wParam < NB_VIEWS);
++
++	switch (message)
++	{
++		case NPPM_KEX_GETINFO:
++			return MAKELONG(NB_VIEWS, KEX_PATCH_VERSION);
++
++		case NPPM_KEX_GETCURRENTVIEW:
++			return currentView();
++
++		case NPPM_KEX_GETVIEWSCINTILLA:
++			return isValidView ? reinterpret_cast<LRESULT>(kexEditView(view)->getHSelf()) : 0;
++
++		case NPPM_KEX_GETVIEWTABBAR:
++			return isValidView ? reinterpret_cast<LRESULT>(kexDocTab(view)->getHSelf()) : 0;
++
++		case NPPM_KEX_ISVIEWVISIBLE:
++			return isValidView && viewVisible(view);
++
++		case NPPM_KEX_GETNBVIEWFILES:
++			return isValidView ? static_cast<LRESULT>(kexDocTab(view)->nbItem()) : 0;
++
++		case NPPM_KEX_GETVIEWBUFFERID:
++		{
++			if (!isValidView || lParam < 0 || static_cast<size_t>(lParam) >= kexDocTab(view)->nbItem())
++				return 0;
++			return reinterpret_cast<LRESULT>(kexDocTab(view)->getBufferByIndex(static_cast<size_t>(lParam)));
++		}
++
++		case NPPM_KEX_GETVIEWCURRENTINDEX:
++		{
++			if (!isValidView || kexDocTab(view)->nbItem() == 0)
++				return -1;
++			return kexDocTab(view)->getCurrentTabIndex();
++		}
++
++		case NPPM_KEX_ACTIVATEDOC:
++		{
++			if (!isValidView || !viewVisible(view) || lParam < 0 || static_cast<size_t>(lParam) >= kexDocTab(view)->nbItem())
++				return FALSE;
++			if (kexIsTornOut(view))
++				::SetForegroundWindow(_kexViewWindow[view]);
++			switchEditViewTo(view);
++			activateDoc(static_cast<size_t>(lParam));
++			return TRUE;
++		}
++
++		case NPPM_KEX_TEAROUTVIEW:
++		{
++			if (!isValidView)
++				return FALSE;
++			return lParam ? kexTearOutView(view) : kexSnapBackView(view);
++		}
++
++		case NPPM_KEX_GETVIEWHOSTWINDOW:
++		{
++			if (!isValidView)
++				return 0;
++			return reinterpret_cast<LRESULT>(kexIsTornOut(view) ? _kexViewWindow[view] : _pPublicInterface->getHSelf());
++		}
++
++		case NPPM_INTERNAL_KEX_SPLITTERROTATED:
++		{
++			kexOnSplitterRotated(reinterpret_cast<HWND>(wParam), static_cast<int>(lParam));
++			return TRUE;
++		}
++
++		default:
++			return FALSE;
++	}
++}
+diff --git a/PowerEditor/src/MISC/PluginsManager/KexApi.h b/PowerEditor/src/MISC/PluginsManager/KexApi.h
+new file mode 100644
+index 0000000..a60b9c2
+--- /dev/null
++++ b/PowerEditor/src/MISC/PluginsManager/KexApi.h
+@@ -0,0 +1,42 @@
++// KexApi.h - messages added to Notepad++ by the KEX four-view patch.
++//
++// The patch gives Notepad++ four editing views (0 = main, 1 = second, 2 = third, 3 = fourth)
++// laid out as a 2x2 grid, and lets any view be torn out into its own top-level window.
++// On an unpatched Notepad++ every message below returns 0, so a plugin calls NPPM_KEX_GETINFO
++// first and falls back to the standard two-view API when it returns 0.
++//
++// Legacy plugin messages keep their two-view meaning (NPPM_GETCURRENTVIEW etc. only ever
++// report 0 or 1), so existing plugins never see an index they don't expect.
++//
++// A plugin whose commands should also run while view 3 or 4 has focus exports
++//     extern "C" __declspec(dllexport) BOOL kexAware() { return TRUE; }
++// Without that export the patched Notepad++ blocks its menu commands in views 3/4 (with a
++// message box) and sends it Scintilla notifications from views 0/1 only.
++#pragma once
++#include <windows.h>
++
++#define KEX_USER (WM_USER + 9000)   // Notepad++ uses WM_USER+0..7999 ranges; 9000+ is free
++
++// LRESULT: MAKELONG(viewCount, patchVersion). 0 = unpatched Notepad++.
++#define NPPM_KEX_GETINFO              (KEX_USER + 1)
++// LRESULT: index (0..3) of the view that has focus.
++#define NPPM_KEX_GETCURRENTVIEW       (KEX_USER + 2)
++// wParam: view. LRESULT: that view's Scintilla HWND (NULL if view >= count).
++#define NPPM_KEX_GETVIEWSCINTILLA     (KEX_USER + 3)
++// wParam: view. LRESULT: that view's tab bar HWND.
++#define NPPM_KEX_GETVIEWTABBAR        (KEX_USER + 4)
++// wParam: view. LRESULT: TRUE if the view is shown (it has at least one tab).
++#define NPPM_KEX_ISVIEWVISIBLE        (KEX_USER + 5)
++// wParam: view. LRESULT: number of tabs open in that view.
++#define NPPM_KEX_GETNBVIEWFILES       (KEX_USER + 6)
++// wParam: view, lParam: tab index. LRESULT: BufferID (0 if out of range).
++#define NPPM_KEX_GETVIEWBUFFERID      (KEX_USER + 7)
++// wParam: view. LRESULT: index of the active tab in that view, -1 if none.
++#define NPPM_KEX_GETVIEWCURRENTINDEX  (KEX_USER + 8)
++// wParam: view, lParam: tab index. Activates that tab in that view (and focuses the view).
++#define NPPM_KEX_ACTIVATEDOC          (KEX_USER + 9)
++// wParam: view, lParam: TRUE = tear the view out into its own window, FALSE = snap it back.
++#define NPPM_KEX_TEAROUTVIEW          (KEX_USER + 10)
++// wParam: view. LRESULT: top-level HWND currently hosting the view
++// (the Notepad++ main window, or the view's own window when torn out).
++#define NPPM_KEX_GETVIEWHOSTWINDOW    (KEX_USER + 11)
+diff --git a/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp b/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp
+index 0c57e5f..5828837 100644
+--- a/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp
++++ b/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp
+@@ -16,6 +16,7 @@
+ 
+ 
+ #include "PluginsManager.h"
++#include "KexApi.h"
+ 
+ #include <windows.h>
+ 
+@@ -160,6 +161,8 @@ int PluginsManager::loadPluginFromPath(const wchar_t *pluginFilePath)
+ 		if (!pi->_pMessageProc)
+ 			throw wstring(L"Missing \"messageProc\" function");
+ 
++		pi->_kexAware = ::GetProcAddress(pi->_hLib, "kexAware") != nullptr; // KEX
++
+ 		pi->_pFuncSetInfo(_nppData);
+ 
+ 		pi->_pFuncGetFuncsArray = reinterpret_cast<PFUNCGETFUNCSARRAY>(::GetProcAddress(pi->_hLib, "getFuncsArray"));
+@@ -588,6 +591,7 @@ void PluginsManager::addInMenuFromPMIndex(int i)
+ 		}
+ 
+         _pluginsCommands.push_back(PluginCommand(_pluginInfos[i]->_moduleName.c_str(), j, _pluginInfos[i]->_funcItems[j]._pFunc));
++        _pluginsCommands.back()._kexAware = _pluginInfos[i]->_kexAware;
+ 
+ 		const int cmdID = ID_PLUGINS_CMD + static_cast<int>(_pluginsCommands.size() - 1);
+ 		_pluginInfos[i]->_funcItems[j]._cmdID = cmdID;
+@@ -645,7 +649,7 @@ void PluginsManager::runPluginCommand(size_t i)
+ {
+ 	if (i < _pluginsCommands.size())
+ 	{
+-		if (_pluginsCommands[i]._pFunc != NULL)
++		if (_pluginsCommands[i]._pFunc != NULL && kexCanRunCommand(_pluginsCommands[i]._kexAware, _pluginsCommands[i]._pluginName))
+ 		{
+ 			try {
+ 				_pluginsCommands[i]._pFunc();
+@@ -672,7 +676,7 @@ void PluginsManager::runPluginCommand(const wchar_t *pluginName, int commandID)
+ 	{
+ 		if (!_wcsicmp(_pluginsCommands[i]._pluginName.c_str(), pluginName))
+ 		{
+-			if (_pluginsCommands[i]._funcID == commandID)
++			if (_pluginsCommands[i]._funcID == commandID && kexCanRunCommand(_pluginsCommands[i]._kexAware, _pluginsCommands[i]._pluginName))
+ 			{
+ 				try {
+ 					_pluginsCommands[i]._pFunc();
+@@ -736,6 +740,39 @@ void PluginsManager::notify(const SCNotification *notification)
+ }
+ 
+ 
++// KEX: notifications from views 3 and 4 only go to plugins that export kexAware(). Older plugins
++// only know the two Scintilla handles in NppData and would act on the wrong view.
++void PluginsManager::notifyKexAware(const SCNotification *notification)
++{
++	if (_noMoreNotification)
++		return;
++
++	for (size_t i = 0, len = _pluginInfos.size() ; i < len ; ++i)
++	{
++		if (_pluginInfos[i]->_kexAware)
++			notify(i, notification);
++	}
++}
++
++// KEX: an older plugin's command would edit view 1 or 2 while the user is looking at view 3 or 4,
++// so it only runs from views 1 and 2.
++bool PluginsManager::kexCanRunCommand(bool isKexAware, const std::wstring& pluginName) const
++{
++	if (isKexAware || !_nppData._nppHandle)
++		return true;
++
++	LRESULT view = ::SendMessage(_nppData._nppHandle, NPPM_KEX_GETCURRENTVIEW, 0, 0);
++	if (view < 2)
++		return true;
++
++	std::wstring msg = L"\"";
++	msg += pluginName;
++	msg += L"\" was made for two views, so it can only work in view 1 or view 2.\r\rClick into view 1 or view 2 and run it again.";
++	NppDarkMode::darkMessageBoxW(_nppData._nppHandle, msg.c_str(), L"Notepad++ KEX", MB_OK | MB_ICONINFORMATION);
++	return false;
++}
++
++
+ void PluginsManager::relayNppMessages(UINT Message, WPARAM wParam, LPARAM lParam)
+ {
+ 	for (size_t i = 0, len = _pluginInfos.size(); i < len ; ++i)
+diff --git a/PowerEditor/src/MISC/PluginsManager/PluginsManager.h b/PowerEditor/src/MISC/PluginsManager/PluginsManager.h
+index 5255325..746320b 100644
+--- a/PowerEditor/src/MISC/PluginsManager/PluginsManager.h
++++ b/PowerEditor/src/MISC/PluginsManager/PluginsManager.h
+@@ -42,6 +42,7 @@ struct PluginCommand
+ 	std::wstring _pluginName;
+ 	int _funcID = 0;
+ 	PFUNCPLUGINCMD _pFunc = nullptr;
++	bool _kexAware = false; // KEX: the plugin knows about views 3 and 4
+ 	PluginCommand(const wchar_t* pluginName, int funcID, PFUNCPLUGINCMD pFunc): _pluginName(pluginName), _funcID(funcID), _pFunc(pFunc) {}
+ };
+ 
+@@ -66,6 +67,7 @@ struct PluginInfo
+ 	PFUNCGETFUNCSARRAY _pFuncGetFuncsArray = nullptr;
+ 	PMESSAGEPROC _pMessageProc = nullptr;
+ 	PFUNCISUNICODE _pFuncIsUnicode = nullptr;
++	bool _kexAware = false; // KEX: exports kexAware(), so it can work in views 3 and 4
+ 
+ 	FuncItem *_funcItems = nullptr;
+ 	int _nbFuncItem = 0;
+@@ -110,6 +112,8 @@ public:
+ 
+ 	void notify(size_t indexPluginInfo, const SCNotification *notification); // to a plugin
+ 	void notify(const SCNotification *notification); // broadcast
++	void notifyKexAware(const SCNotification *notification); // KEX: broadcast to plugins that know views 3 and 4
++	bool kexCanRunCommand(bool isKexAware, const std::wstring& pluginName) const; // KEX
+ 	void relayNppMessages(UINT Message, WPARAM wParam, LPARAM lParam);
+ 	bool relayPluginMessages(UINT Message, WPARAM wParam, LPARAM lParam);
+ 
+diff --git a/PowerEditor/src/Notepad_plus.cpp b/PowerEditor/src/Notepad_plus.cpp
+index 4bf5a90..01a88ba 100644
+--- a/PowerEditor/src/Notepad_plus.cpp
++++ b/PowerEditor/src/Notepad_plus.cpp
+@@ -136,6 +136,8 @@ static constexpr ToolBarButtonUnit toolBarIcons[]{
+ Notepad_plus::Notepad_plus()
+ 	: _autoCompleteMain(&_mainEditView)
+ 	, _autoCompleteSub(&_subEditView)
++	, _autoCompleteView3(&_view3EditView)
++	, _autoCompleteView4(&_view4EditView)
+ 	, _smartHighlighter(&_findReplaceDlg)
+ {
+ 	ZeroMemory(&_prevSelectedRange, sizeof(_prevSelectedRange));
+@@ -385,6 +387,8 @@ LRESULT Notepad_plus::init(HWND hwnd)
+ 	_zoomOriginalValue = _pEditView->execute(SCI_GETZOOM);
+ 	_mainEditView.execute(SCI_SETZOOM, svp._zoom);
+ 	_subEditView.execute(SCI_SETZOOM, svp._zoomSync ? svp._zoom : svp._zoom2);
++	_view3EditView.execute(SCI_SETZOOM, svp._zoom);
++	_view4EditView.execute(SCI_SETZOOM, svp._zoomSync ? svp._zoom : svp._zoom2);
+ 
+ 	::SendMessage(hwnd, NPPM_INTERNAL_SETMULTISELECTION, 0, 0);
+ 
+@@ -490,6 +494,8 @@ LRESULT Notepad_plus::init(HWND hwnd)
+ 	// Autocomplete list and calltip
+ 	AutoCompletion::drawAutocomplete(_pEditView);
+ 	AutoCompletion::drawAutocomplete(_pNonEditView);
++	AutoCompletion::drawAutocomplete(&_view3EditView);
++	AutoCompletion::drawAutocomplete(&_view4EditView);
+ 
+ 	// Document Map
+ 	drawDocumentMapColoursFromStylerArray();
+@@ -498,6 +504,15 @@ LRESULT Notepad_plus::init(HWND hwnd)
+ 	bool isVertical = (nppGUI._splitterPos == POS_VERTICAL);
+ 
+ 	const int splitterSizeDyn = DPIManagerV2::scale(splitterSize, dpi);
++	// KEX: the column splitters must be created before _subSplitter: child windows are created at the
++	// bottom of the z-order, and the columns have to sit above the row splitter to get their mouse clicks.
++	for (int col = 0; col < 2; ++col)
++	{
++		_kexColumnSplitter[col].init(_pPublicInterface->getHinst(), hwnd);
++		// across the row splitter: when the two columns sit side by side, each column is split top/bottom
++		_kexColumnSplitter[col].create(col == 0 ? &_mainDocTab : &_subDocTab, col == 0 ? &_view3DocTab : &_view4DocTab, splitterSizeDyn, SplitterMode::DYNAMIC, 50, !isVertical);
++	}
++	_kexColumnSplitterCreated = true;
+ 	_subSplitter.init(_pPublicInterface->getHinst(), hwnd);
+ 	_subSplitter.create(&_mainDocTab, &_subDocTab, splitterSizeDyn, SplitterMode::DYNAMIC, 50, isVertical);
+ 
+@@ -702,6 +717,8 @@ LRESULT Notepad_plus::init(HWND hwnd)
+ 	::EnableMenuItem(_mainMenuHandle, IDM_SEARCH_FINDNEXT, MF_BYCOMMAND | MF_DISABLED | MF_GRAYED);
+ 	::EnableMenuItem(_mainMenuHandle, IDM_SEARCH_FINDPREV, MF_BYCOMMAND | MF_DISABLED | MF_GRAYED);
+ 
++	kexInitMenu(); // KEX: four-view commands in View > Move/Clone Current Document
++
+ 	//Main menu is loaded, now load editor context menu items
+ 	nppParam.getContextMenuFromXmlTree(_mainMenuHandle, _pluginsManager.getMenuHandle());
+ 
+@@ -945,8 +962,12 @@ LRESULT Notepad_plus::init(HWND hwnd)
+ 	//Load initial docs into doctab
+ 	loadBufferIntoView(_mainEditView.getCurrentBufferID(), MAIN_VIEW);
+ 	loadBufferIntoView(_subEditView.getCurrentBufferID(), SUB_VIEW);
++	loadBufferIntoView(_view3EditView.getCurrentBufferID(), VIEW_3);
++	loadBufferIntoView(_view4EditView.getCurrentBufferID(), VIEW_4);
+ 	activateBuffer(_mainEditView.getCurrentBufferID(), MAIN_VIEW);
+ 	activateBuffer(_subEditView.getCurrentBufferID(), SUB_VIEW);
++	activateBuffer(_view3EditView.getCurrentBufferID(), VIEW_3);
++	activateBuffer(_view4EditView.getCurrentBufferID(), VIEW_4);
+ 
+ 	_mainEditView.grabFocus();
+ 
+@@ -970,12 +991,18 @@ void Notepad_plus::killAllChildren()
+     _view3DocTab.destroy();
+     _view4DocTab.destroy();
+ 
++	kexDestroyTornOutWindows();
++
+ 	_mainEditView.destroy();
+     _subEditView.destroy();
++	_view3EditView.destroy();
++	_view4EditView.destroy();
+ 	_invisibleEditView.destroy();
+ 	_fileEditView.destroy();
+ 
+     _subSplitter.destroy();
++    _kexColumnSplitter[0].destroy();
++    _kexColumnSplitter[1].destroy();
+     _statusBar.destroy();
+ 
+ 	_scintillaCtrls4Plugins.destroy();
+@@ -1363,13 +1390,14 @@ bool Notepad_plus::replaceInOpenedFiles()
+ 		}
+ 	}
+ 
+-	if (!hasInvalidRegExpr && (_mainWindowStatus & WindowSubActive))
++	for (int kexView = SUB_VIEW; kexView < NB_VIEWS; ++kexView) // KEX: sub view, view 3 and view 4
++	if (!hasInvalidRegExpr && (_mainWindowStatus & kexViewBit(kexView)))
+ 	{
+-		for (size_t i = 0, len = _subDocTab.nbItem(); i < len; ++i)
++		for (size_t i = 0, len = kexDocTab(kexView)->nbItem(); i < len; ++i)
+ 		{
+-			BufferID bufId = _subDocTab.getBufferByIndex(i);
++			BufferID bufId = kexDocTab(kexView)->getBufferByIndex(i);
+ 
+-			if (_mainDocTab.getIndexByBuffer(bufId) != -1)
++			if (kexIsBufferInEarlierView(bufId, kexView))
+ 			{
+ 				// cloned doc, replacements already done in main doc
+ 				continue;
+@@ -2445,12 +2473,13 @@ bool Notepad_plus::findInOpenedFiles()
+ 
+ 	size_t nbUniqueBuffers = _mainDocTab.nbItem();
+ 
+-	if (!hasInvalidRegExpr && (_mainWindowStatus & WindowSubActive))
++	for (int kexView = SUB_VIEW; kexView < NB_VIEWS; ++kexView) // KEX: sub view, view 3 and view 4
++	if (!hasInvalidRegExpr && (_mainWindowStatus & kexViewBit(kexView)))
+ 	{
+-		for (size_t i = 0, len2 = _subDocTab.nbItem(); i < len2 ; ++i)
++		for (size_t i = 0, len2 = kexDocTab(kexView)->nbItem(); i < len2 ; ++i)
+ 		{
+-			pBuf = MainFileManager.getBufferByID(_subDocTab.getBufferByIndex(i));
+-			if (_mainDocTab.getIndexByBuffer(pBuf) != -1)
++			pBuf = MainFileManager.getBufferByID(kexDocTab(kexView)->getBufferByIndex(i));
++			if (kexIsBufferInEarlierView(pBuf, kexView))
+ 			{
+ 				continue;  // clone was already searched in main; skip re-searching in sub
+ 			}
+@@ -3662,7 +3691,7 @@ bool isUrl(wchar_t * text, int textLen, int start, int* segmentLen)
+ 
+ void Notepad_plus::removeAllHotSpot()
+ {
+-	DocTabView* twoDocView[] { &_mainDocTab, &_subDocTab };
++	DocTabView* twoDocView[] { &_mainDocTab, &_subDocTab, &_view3DocTab, &_view4DocTab };
+ 	for (DocTabView* pDocView : twoDocView)
+ 	{
+ 		for (size_t i = 0; i < pDocView->nbItem(); ++i)
+@@ -4108,29 +4137,39 @@ void Notepad_plus::setLanguage(LangType langType)
+ {
+ 	unsigned long MODEVENTMASK_ON = NppParameters::getInstance().getScintillaModEventMask();
+ 
+-	if (bothActive() && (_mainEditView.getCurrentBufferID() == _subEditView.getCurrentBufferID()))
++	// KEX: a document can be shared by up to four views. Release it from every visible view except
++	// the current one while the language changes, then attach it again (upstream did this for main + sub).
++	ScintillaEditView* sharingViews[NB_VIEWS] = {};
++	Document sharedPrev[NB_VIEWS] = {};
++	for (int v = 0; v < NB_VIEWS; ++v)
+ 	{
++		ScintillaEditView* pView = kexEditView(v);
++		if (pView == _pEditView || !viewVisible(v) || pView->getCurrentBufferID() != _pEditView->getCurrentBufferID())
++			continue;
++
+ 		// Add logic to prevent changing a language when a document is shared between two views
+ 		// If so, release one document
++		sharingViews[v] = pView;
++		pView->saveCurrentPos();
++		sharedPrev[v] = pView->execute(SCI_GETDOCPOINTER);
++		pView->execute(SCI_SETMODEVENTMASK, MODEVENTMASK_OFF);
++		pView->execute(SCI_SETDOCPOINTER, 0, 0);
++		pView->execute(SCI_SETMODEVENTMASK, MODEVENTMASK_ON);
++	}
+ 
+-		_subEditView.saveCurrentPos();
+-		Document subPrev = _subEditView.execute(SCI_GETDOCPOINTER);
+-		_subEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_OFF);
+-		_subEditView.execute(SCI_SETDOCPOINTER, 0, 0);
+-		_subEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_ON);
+-
+-		(_mainEditView.getCurrentBuffer())->setLangType(langType);
++	(_pEditView->getCurrentBuffer())->setLangType(langType);
+ 
+-		_subEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_OFF);
+-		_subEditView.execute(SCI_SETDOCPOINTER, 0, subPrev);
+-		_subEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_ON);
+-		_subEditView.maintainStateForNpc();
+-		_subEditView.setCRLF();
+-		_subEditView.restoreCurrentPosPreStep();
+-	}
+-	else
++	for (int v = 0; v < NB_VIEWS; ++v)
+ 	{
+-		(_pEditView->getCurrentBuffer())->setLangType(langType);
++		ScintillaEditView* pView = sharingViews[v];
++		if (!pView)
++			continue;
++		pView->execute(SCI_SETMODEVENTMASK, MODEVENTMASK_OFF);
++		pView->execute(SCI_SETDOCPOINTER, 0, sharedPrev[v]);
++		pView->execute(SCI_SETMODEVENTMASK, MODEVENTMASK_ON);
++		pView->maintainStateForNpc();
++		pView->setCRLF();
++		pView->restoreCurrentPosPreStep();
+ 	}
+ 
+ 
+@@ -4390,15 +4429,18 @@ void Notepad_plus::activateNextDoc(bool direction)
+ 
+ 	if (curIndex >= nbDoc)
+ 	{
+-		if (viewVisible(otherView()))
+-			switchEditViewTo(otherView());
++		// KEX: cycle through all visible views (view 1 -> 2 -> 3 -> 4)
++		int nextView = kexNextVisibleView(currentView(), true);
++		if (nextView != currentView())
++			switchEditViewTo(nextView);
+ 		curIndex = 0;
+ 	}
+ 	else if (curIndex < 0)
+ 	{
+-		if (viewVisible(otherView()))
++		int prevView = kexNextVisibleView(currentView(), false);
++		if (prevView != currentView())
+ 		{
+-			switchEditViewTo(otherView());
++			switchEditViewTo(prevView);
+ 			nbDoc = static_cast<int32_t>(_pDocTab->nbItem());
+ 		}
+ 		curIndex = nbDoc - 1;
+@@ -4693,13 +4735,15 @@ void Notepad_plus::dropFiles(HDROP hdrop)
+ 		// Determine in which view the file(s) is (are) dropped
+ 		POINT p{};
+ 		::DragQueryPoint(hdrop, &p);
++		// KEX: find the view under the cursor, which also works for torn-out view windows
++		POINT screenPt{};
++		::GetCursorPos(&screenPt);
++		int dropView = kexViewFromHwnd(::WindowFromPoint(screenPt));
+ 		HWND hWin = ::ChildWindowFromPointEx(_pPublicInterface->getHSelf(), p, CWP_SKIPINVISIBLE);
+-		if (!hWin) return;
++		if (!hWin && dropView == -1) return;
+ 
+-		if ((_mainEditView.getHSelf() == hWin) || (_mainDocTab.getHSelf() == hWin))
+-			switchEditViewTo(MAIN_VIEW);
+-		else if ((_subEditView.getHSelf() == hWin) || (_subDocTab.getHSelf() == hWin))
+-			switchEditViewTo(SUB_VIEW);
++		if (dropView != -1)
++			switchEditViewTo(dropView);
+ 		//else
+ 			// do not change the current Notepad++ edit-view
+ 
+@@ -4800,38 +4844,14 @@ void Notepad_plus::showView(int whichOne)
+ 	if (viewVisible(whichOne))	//no use making visible view visible
+ 		return;
+ 
+-	if (_mainWindowStatus & WindowUserActive)
+-	{
+-		 _pMainSplitter->setWin0(&_subSplitter);
+-		 _pMainWindow = _pMainSplitter;
+-	}
+-	else
+-	{
+-		_pMainWindow = &_subSplitter;
+-	}
+-
+-	if (whichOne == MAIN_VIEW)
+-	{
+-		_mainEditView.display(true);
+-		_mainDocTab.display(true);
+-	}
+-	else if (whichOne == SUB_VIEW)
+-	{
+-		_subEditView.display(true);
+-		_subDocTab.display(true);
+-	}
+-	_pMainWindow->display(true);
+-
+-	_mainWindowStatus |= static_cast<UCHAR>((whichOne==MAIN_VIEW)?WindowMainActive:WindowSubActive);
+-
+-	//Send sizing info to make windows fit
+-	::SendMessage(_pPublicInterface->getHSelf(), WM_SIZE, 0, 0);
++	// KEX: the 2x2 grid is rebuilt from the visibility bits by kexLayoutViews()
++	_mainWindowStatus |= kexViewBit(whichOne);
++	kexLayoutViews();
+ }
+ 
+ bool Notepad_plus::viewVisible(int whichOne)
+ {
+-	int viewToCheck = (whichOne == SUB_VIEW?WindowSubActive:WindowMainActive);
+-	return (_mainWindowStatus & viewToCheck) != 0;
++	return (_mainWindowStatus & kexViewBit(whichOne)) != 0;
+ }
+ 
+ void Notepad_plus::hideCurrentView()
+@@ -4841,39 +4861,44 @@ void Notepad_plus::hideCurrentView()
+ 
+ void Notepad_plus::hideView(int whichOne)
+ {
+-	if (!(bothActive()))	//cannot close if not both views visible
++	if (!viewVisible(whichOne) || kexNbVisibleViews() < 2)	//cannot close the only visible view
+ 		return;
+ 
+-	Window * windowToSet = (whichOne == MAIN_VIEW)?&_subDocTab:&_mainDocTab;
+-	if ((_mainWindowStatus & WindowUserActive) == WindowUserActive)
++	// KEX: a torn-out view closes its window; the last view docked in the main window brings a torn-out view home first
++	if (kexIsTornOut(whichOne))
+ 	{
+-		_pMainSplitter->setWin0(windowToSet);
++		kexSnapBackView(whichOne, false);
+ 	}
+ 	else
+ 	{
+-		// otherwise the main window is the spltter container that we just created
+-		_pMainWindow = windowToSet;
++		int nbDocked = 0;
++		for (int v = 0; v < NB_VIEWS; ++v)
++			nbDocked += (viewVisible(v) && !kexIsTornOut(v)) ? 1 : 0;
++		if (nbDocked == 1)
++		{
++			for (int v = 0; v < NB_VIEWS; ++v)
++			{
++				if (kexIsTornOut(v))
++				{
++					kexSnapBackView(v, false);
++					break;
++				}
++			}
++		}
+ 	}
+ 
+-	_subSplitter.display(false);	//hide splitter
+-	//hide scintilla and doctab
+-	if (whichOne == MAIN_VIEW)
++	_mainWindowStatus &= static_cast<UCHAR>(~kexViewBit(whichOne));
++	kexLayoutViews();
++
++	if (currentView() == whichOne)
+ 	{
+-		_mainEditView.display(false);
+-		_mainDocTab.display(false);
++		int nextView = viewVisible(otherFromView(whichOne)) ? otherFromView(whichOne) : kexNextVisibleView(whichOne);
++		switchEditViewTo(nextView);
+ 	}
+-	else if (whichOne == SUB_VIEW)
++	else
+ 	{
+-		_subEditView.display(false);
+-		_subDocTab.display(false);
++		_pEditView->grabFocus();
+ 	}
+-
+-	// resize the main window
+-	::SendMessage(_pPublicInterface->getHSelf(), WM_SIZE, 0, 0);
+-
+-	auto viewToDisable = static_cast<UCHAR>(whichOne == SUB_VIEW ? WindowSubActive : WindowMainActive);
+-	_mainWindowStatus &= static_cast<UCHAR>(~viewToDisable);
+-	switchEditViewTo(otherFromView(whichOne));
+ }
+ 
+ bool Notepad_plus::loadStyles()
+@@ -4886,9 +4911,9 @@ bool Notepad_plus::canHideView(int whichOne)
+ {
+ 	if (!viewVisible(whichOne))
+ 		return false;	//cannot hide hidden view
+-	if (!bothActive())
++	if (kexNbVisibleViews() < 2)
+ 		return false;	//cannot hide only window
+-	DocTabView * tabToCheck = (whichOne == MAIN_VIEW)?&_mainDocTab:&_subDocTab;
++	DocTabView * tabToCheck = kexDocTab(whichOne);
+ 	Buffer * buf = MainFileManager.getBufferByID(tabToCheck->getBufferByIndex(0));
+ 	bool canHide = ((tabToCheck->nbItem() == 1) && !buf->isDirty() && buf->isUntitled());
+ 	return canHide;
+@@ -4896,9 +4921,9 @@ bool Notepad_plus::canHideView(int whichOne)
+ 
+ bool Notepad_plus::isEmpty()
+ {
+-	if (bothActive()) return false;
++	if (kexNbVisibleViews() > 1) return false;
+ 
+-	DocTabView * tabToCheck = (_mainWindowStatus & WindowMainActive) ? &_mainDocTab : &_subDocTab;
++	DocTabView * tabToCheck = kexDocTab(kexNextVisibleView(-1));
+ 	
+ 	Buffer * buf = MainFileManager.getBufferByID(tabToCheck->getBufferByIndex(0));
+ 	bool isEmpty = ((tabToCheck->nbItem() == 1) && !buf->isDirty() && buf->isUntitled());
+@@ -4907,8 +4932,8 @@ bool Notepad_plus::isEmpty()
+ 
+ void Notepad_plus::loadBufferIntoView(BufferID id, int whichOne, bool dontClose)
+ {
+-	DocTabView * tabToOpen = (whichOne == MAIN_VIEW)?&_mainDocTab:&_subDocTab;
+-	ScintillaEditView * viewToOpen = (whichOne == MAIN_VIEW)?&_mainEditView:&_subEditView;
++	DocTabView * tabToOpen = kexDocTab(whichOne);
++	ScintillaEditView * viewToOpen = kexEditView(whichOne);
+ 
+ 	//check if buffer exists
+ 	int index = tabToOpen->getIndexByBuffer(id);
+@@ -4946,8 +4971,8 @@ void Notepad_plus::loadBufferIntoView(BufferID id, int whichOne, bool dontClose)
+ 
+ bool Notepad_plus::removeBufferFromView(BufferID id, int whichOne)
+ {
+-	DocTabView * tabToClose = (whichOne == MAIN_VIEW) ? &_mainDocTab : &_subDocTab;
+-	ScintillaEditView * viewToClose = (whichOne == MAIN_VIEW) ? &_mainEditView : &_subEditView;
++	DocTabView * tabToClose = kexDocTab(whichOne);
++	ScintillaEditView * viewToClose = kexEditView(whichOne);
+ 
+ 	//check if buffer exists
+ 	int index = tabToClose->getIndexByBuffer(id);
+@@ -5030,16 +5055,18 @@ int Notepad_plus::switchEditViewTo(int gid)
+ 		return gid;
+ 	}
+ 
+-	if (!viewVisible(gid))
++	if (gid < 0 || gid >= NB_VIEWS || !viewVisible(gid))
+ 		return currentView();	//cannot activate invisible view
+ 
+ 	int oldView = currentView();
+-	int newView = otherView();
++	int newView = gid; // KEX: any of the four views, not just the other one
+ 
+ 	_activeView = newView;
+ 	//Good old switcheroo
+-	std::swap(_pDocTab, _pNonDocTab);
+-	std::swap(_pEditView, _pNonEditView);
++	_pDocTab = kexDocTab(newView);
++	_pNonDocTab = kexDocTab(otherFromView(newView));
++	_pEditView = kexEditView(newView);
++	_pNonEditView = kexEditView(otherFromView(newView));
+ 
+ 	_pEditView->beSwitched();
+     _pEditView->grabFocus();	//set the focus
+@@ -5066,27 +5093,15 @@ void Notepad_plus::dockUserDlg()
+         _pMainSplitter = new SplitterContainer;
+ 		_pMainSplitter->init(_pPublicInterface->getHinst(), _pPublicInterface->getHSelf());
+ 
+-        Window *pWindow;
+-		if (_mainWindowStatus & (WindowMainActive | WindowSubActive))
+-            pWindow = &_subSplitter;
+-        else
+-            pWindow = _pDocTab;
++        Window *pWindow = kexEditorAreaWindow();
+ 
+ 		const int splitterSizeDyn = DPIManagerV2::scale(splitterSize, _pPublicInterface->getHSelf());
+         _pMainSplitter->create(pWindow, ScintillaEditView::getUserDefineDlg(), splitterSizeDyn, SplitterMode::RIGHT_FIX, 45);
+     }
+ 
+-    if (bothActive())
+-        _pMainSplitter->setWin0(&_subSplitter);
+-    else
+-        _pMainSplitter->setWin0(_pDocTab);
+-
+-    _pMainSplitter->display();
+-
++    // KEX: kexLayoutViews() puts the view grid into _pMainSplitter, shows it and resizes
+     _mainWindowStatus |= WindowUserActive;
+-    _pMainWindow = _pMainSplitter;
+-
+-	::SendMessage(_pPublicInterface->getHSelf(), WM_SIZE, 0, 0);
++    kexLayoutViews();
+ }
+ 
+ void Notepad_plus::undockUserDlg()
+@@ -5094,14 +5109,8 @@ void Notepad_plus::undockUserDlg()
+     // a cause de surchargement de "display"
+     ::ShowWindow(_pMainSplitter->getHSelf(), SW_HIDE);
+ 
+-    if (bothActive())
+-        _pMainWindow = &_subSplitter;
+-    else
+-        _pMainWindow = _pDocTab;
+-
+-    ::SendMessage(_pPublicInterface->getHSelf(), WM_SIZE, 0, 0);
+-
+     _mainWindowStatus &= static_cast<UCHAR>(~WindowUserActive);
++    kexLayoutViews(); // KEX
+     (ScintillaEditView::getUserDefineDlg())->display();
+ }
+ 
+@@ -5162,27 +5171,24 @@ void Notepad_plus::docOpenInNewInstance(FileTransferMode mode, int x, int y)
+ 	}
+ }
+ 
+-void Notepad_plus::docGotoAnotherEditView(FileTransferMode mode)
++void Notepad_plus::docGotoAnotherEditView(FileTransferMode mode, int kexViewToGo)
+ {
++	// KEX: the target can be any of the four views; -1 keeps the upstream meaning (the other view)
++	int viewToGo = (kexViewToGo >= 0 && kexViewToGo < NB_VIEWS) ? kexViewToGo : otherView();
++	if (viewToGo == currentView())
++		return;
++	ScintillaEditView* pViewToGo = kexEditView(viewToGo);
++
+ 	// Test if it's only doc to transfer on the hidden view
+ 	// If so then do nothing
+ 	if (mode == TransferMove)
+ 	{
+ 		if (_pDocTab->nbItem() == 1)
+ 		{
+-			ScintillaEditView *pOtherView = NULL;
+-			if (_pEditView == &_mainEditView)
+-			{
+-				pOtherView = &_subEditView;
+-			}
+-			else if (_pEditView == &_subEditView)
+-			{
+-				pOtherView = &_mainEditView;
+-			}
+-			else
++			if (kexViewFromHwnd(_pEditView->getHSelf()) == -1)
+ 				return;
+ 
+-			if (!pOtherView->isVisible())
++			if (!pViewToGo->isVisible())
+ 				return;
+ 		}
+ 	}
+@@ -5192,11 +5198,10 @@ void Notepad_plus::docGotoAnotherEditView(FileTransferMode mode)
+ 	BufferID current = _pEditView->getCurrentBufferID();
+ 	Buffer* buf = MainFileManager.getBufferByID(current);
+ 
+-	int viewToGo = otherView();
+-	int indexFound = _pNonDocTab->getIndexByBuffer(current);
++	int indexFound = kexDocTab(viewToGo)->getIndexByBuffer(current);
+ 	if (indexFound != -1)	//activate it
+ 	{
+-		activateBuffer(current, otherView());
++		activateBuffer(current, viewToGo);
+ 	}
+ 	else	//open the document, also copying the position
+ 	{
+@@ -5206,22 +5211,21 @@ void Notepad_plus::docGotoAnotherEditView(FileTransferMode mode)
+ 		//		non-edit view becomes edit view as document from edit view is sent to non edit view
+ 		//		restoreCurrentPos is called on non-edit view, which will restore the position of
+ 		//		active document/tab on non-edit view  (whatever position we set in below if condition)
+-		if (_pEditView->isVisible() && _pNonEditView->isVisible())
++		if (_pEditView->isVisible() && pViewToGo->isVisible())
+ 		{
+-			_pNonEditView->saveCurrentPos();
++			pViewToGo->saveCurrentPos();
+ 		}
+ 
+ 		loadBufferIntoView(current, viewToGo);
+ 		
+ 		_pEditView->saveCurrentPos();	//allow copying of position
+-		buf->setPosition(buf->getPosition(_pEditView), _pNonEditView);
+-		_pNonEditView->restoreCurrentPosPreStep();	//set position
++		buf->setPosition(buf->getPosition(_pEditView), pViewToGo);
++		pViewToGo->restoreCurrentPosPreStep();	//set position
+ 		activateBuffer(current, viewToGo);
+ 	}
+ 
+ 	//Open the view if it was hidden
+-	int viewToOpen = (viewToGo == SUB_VIEW?WindowSubActive:WindowMainActive);
+-	if (!(_mainWindowStatus & viewToOpen))
++	if (!viewVisible(viewToGo))
+ 	{
+ 		showView(viewToGo);
+ 	}
+@@ -5276,28 +5280,14 @@ bool Notepad_plus::activateBuffer(BufferID id, int whichOne, bool forceApplyHili
+ 		pBuf->setNeedReload(false);
+ 	}
+ 
+-	if (whichOne == MAIN_VIEW)
++	if (kexDocTab(whichOne)->activateBuffer(id))	//only activate if possible
+ 	{
+-		if (_mainDocTab.activateBuffer(id))	//only activate if possible
+-		{
+-			_isFolding = true;
+-			_mainEditView.activateBuffer(id, forceApplyHilite);
+-			_isFolding = false;
+-		}
+-		else
+-			return false;
++		_isFolding = true;
++		kexEditView(whichOne)->activateBuffer(id, forceApplyHilite);
++		_isFolding = false;
+ 	}
+ 	else
+-	{
+-		if (_subDocTab.activateBuffer(id))
+-		{
+-			_isFolding = true;
+-			_subEditView.activateBuffer(id, forceApplyHilite);
+-			_isFolding = false;
+-		}
+-		else
+-			return false;
+-	}
++		return false;
+ 
+ 	if (reload)
+ 	{
+@@ -5316,16 +5306,8 @@ void Notepad_plus::performPostReload(int whichOne)
+ 	bool toEnd = (nppGUI._fileAutoDetection & cdGo2end) ? true : false;
+ 	if (!toEnd)
+ 		return;
+-	if (whichOne == MAIN_VIEW)
+-	{
+-		_mainEditView.setPositionRestoreNeeded(false);
+-		_mainEditView.execute(SCI_DOCUMENTEND);
+-	}
+-	else
+-	{
+-		_subEditView.setPositionRestoreNeeded(false);
+-		_subEditView.execute(SCI_DOCUMENTEND);
+-	}
++	kexEditView(whichOne)->setPositionRestoreNeeded(false);
++	kexEditView(whichOne)->execute(SCI_DOCUMENTEND);
+ }
+ 
+ void Notepad_plus::bookmarkNext(bool forwardScan)
+@@ -5457,36 +5439,31 @@ void Notepad_plus::checkUnicodeMenuItems() const
+ 
+ void Notepad_plus::showAutoComp()
+ {
+-	bool isFromPrimary = _pEditView == &_mainEditView;
+-	AutoCompletion * autoC = isFromPrimary?&_autoCompleteMain:&_autoCompleteSub;
++	AutoCompletion* autoC = kexAutoComplete(_pEditView);
+ 	autoC->showApiComplete();
+ }
+ 
+ void Notepad_plus::showPathCompletion()
+ {
+-	bool isFromPrimary = _pEditView == &_mainEditView;
+-	AutoCompletion * autoC = isFromPrimary?&_autoCompleteMain:&_autoCompleteSub;
++	AutoCompletion* autoC = kexAutoComplete(_pEditView);
+ 	autoC->showPathCompletion();
+ }
+ 
+ void Notepad_plus::autoCompFromCurrentFile(bool autoInsert)
+ {
+-	bool isFromPrimary = _pEditView == &_mainEditView;
+-	AutoCompletion * autoC = isFromPrimary?&_autoCompleteMain:&_autoCompleteSub;
++	AutoCompletion* autoC = kexAutoComplete(_pEditView);
+ 	autoC->showWordComplete(autoInsert);
+ }
+ 
+ void Notepad_plus::showFunctionComp()
+ {
+-	bool isFromPrimary = _pEditView == &_mainEditView;
+-	AutoCompletion * autoC = isFromPrimary?&_autoCompleteMain:&_autoCompleteSub;
++	AutoCompletion* autoC = kexAutoComplete(_pEditView);
+ 	autoC->showFunctionComplete();
+ }
+ 
+ void Notepad_plus::showFunctionNextHint(bool isNext)
+ {
+-	bool isFromPrimary = _pEditView == &_mainEditView;
+-	AutoCompletion* autoC = isFromPrimary ? &_autoCompleteMain : &_autoCompleteSub;
++	AutoCompletion* autoC = kexAutoComplete(_pEditView);
+ 	if (isNext)
+ 		autoC->callTipClick(2);
+ 	else
+@@ -5939,12 +5916,16 @@ void Notepad_plus::syncZoom()
+ 	const NppParameters& nppParam = NppParameters::getInstance();
+ 	const ScintillaViewParams& svp = nppParam.getSVP();
+ 	if (!svp._zoomSync) return;
+-	if (!viewVisible(MAIN_VIEW) || !viewVisible(SUB_VIEW)) return;
++	if (kexNbVisibleViews() < 2) return;
+ 
+ 	_isSyncingZoom = true;
+ 	intptr_t zoom = _pEditView->execute(SCI_GETZOOM);
+-	ScintillaEditView* otherView = (_pEditView == &_mainEditView) ? &_subEditView : &_mainEditView;
+-	otherView->execute(SCI_SETZOOM, zoom);
++	for (int v = 0; v < NB_VIEWS; ++v) // KEX: keep all visible views at the same zoom
++	{
++		ScintillaEditView* otherView = kexEditView(v);
++		if (otherView != _pEditView && viewVisible(v))
++			otherView->execute(SCI_SETZOOM, zoom);
++	}
+ 	_isSyncingZoom = false;
+ }
+ 
+@@ -6000,9 +5981,14 @@ bool Notepad_plus::switchToFile(BufferID id)
+ 	{
+ 		iView = currentView();
+ 	}
+-	else if ((i = _pNonDocTab->getIndexByBuffer(id)) != -1)
++	else
+ 	{
+-		iView = otherView();
++		// KEX: look in the other three views
++		for (int v = 0; v < NB_VIEWS && i == -1; ++v)
++		{
++			if (v != currentView() && viewVisible(v) && (i = kexDocTab(v)->getIndexByBuffer(id)) != -1)
++				iView = v;
++		}
+ 	}
+ 
+ 	if (i != -1)
+@@ -6038,6 +6024,20 @@ void Notepad_plus::getTaskListInfo(TaskListInfo *tli)
+ 		int status = b->isMonitoringOn()?tb_monitored:(b->isReadOnly()?tb_ro:(b->isDirty()?tb_unsaved:tb_saved));
+ 		tli->_tlfsLst.push_back(TaskLstFnStatus(otherView(), i, b->getFullPathName(), status, (void *)bufID, b->getDocColorId()));
+ 	}
++	// KEX: then the remaining views of the 2x2 grid
++	for (int v = 0; v < NB_VIEWS; ++v)
++	{
++		if (v == currentView() || v == otherView() || !viewVisible(v))
++			continue;
++		DocTabView* pTab = kexDocTab(v);
++		for (int i = 0; i < static_cast<int>(pTab->nbItem()); ++i)
++		{
++			BufferID bufID = pTab->getBufferByIndex(i);
++			Buffer * b = MainFileManager.getBufferByID(bufID);
++			int status = b->isMonitoringOn()?tb_monitored:(b->isReadOnly()?tb_ro:(b->isDirty()?tb_unsaved:tb_saved));
++			tli->_tlfsLst.push_back(TaskLstFnStatus(v, i, b->getFullPathName(), status, (void *)bufID, b->getDocColorId()));
++		}
++	}
+ }
+ 
+ 
+@@ -6426,7 +6426,13 @@ void Notepad_plus::distractionFreeToggle()
+ 		// restore another view if 2 views mode was on
+ 		if (_beforeSpecialView._was2ViewModeOn)
+ 		{
+-			showView(otherView());
++			// KEX: bring back every view that distraction-free mode hid
++			for (int v = 0; v < NB_VIEWS; ++v)
++			{
++				if (_kexDistractionFreeHiddenViews & kexViewBit(v))
++					showView(v);
++			}
++			_kexDistractionFreeHiddenViews = 0;
+ 			_beforeSpecialView._was2ViewModeOn = false;
+ 		}
+ 
+@@ -6448,16 +6454,19 @@ void Notepad_plus::distractionFreeToggle()
+ 	else // enable it
+ 	{
+ 		// check if 2 views mode is on
+-		ScintillaEditView & nonFocusedView = (otherView() == MAIN_VIEW) ? _mainEditView : _subEditView;
+-		if (nonFocusedView.isVisible())
++		// KEX: hide every view except the current one
++		_kexDistractionFreeHiddenViews = 0;
++		for (int v = 0; v < NB_VIEWS; ++v)
+ 		{
+-			hideView(otherView());
+-			_beforeSpecialView._was2ViewModeOn = true;
++			if (v != currentView() && viewVisible(v))
++				_kexDistractionFreeHiddenViews |= kexViewBit(v);
+ 		}
+-		else
++		for (int v = 0; v < NB_VIEWS; ++v)
+ 		{
+-			_beforeSpecialView._was2ViewModeOn = false;
++			if (_kexDistractionFreeHiddenViews & kexViewBit(v))
++				hideView(v);
+ 		}
++		_beforeSpecialView._was2ViewModeOn = (_kexDistractionFreeHiddenViews != 0);
+ 
+ 		// check if any dockable panel is visible
+ 		const std::vector<DockingCont*>& container = _dockingManager.getContainerInfo();
+@@ -6588,24 +6597,42 @@ void Notepad_plus::getCurrentOpenedFiles(Session & session, bool includeUntitled
+ {
+ 	_mainEditView.saveCurrentPos();	//save position so itll be correct in the session
+ 	_subEditView.saveCurrentPos();	//both views
++	_view3EditView.saveCurrentPos();
++	_view4EditView.saveCurrentPos();
+ 	session._activeView = currentView();
+ 	session._activeMainIndex = _mainDocTab.getCurrentTabIndex();
+ 	session._activeSubIndex = _subDocTab.getCurrentTabIndex();
++	// KEX: views 3 and 4, and which views are torn out into their own windows
++	session._kexActiveView3Index = _view3DocTab.getCurrentTabIndex();
++	session._kexActiveView4Index = _view4DocTab.getCurrentTabIndex();
++	for (int v = 0; v < NB_VIEWS; ++v)
++	{
++		session._kexTornOut[v] = kexIsTornOut(v);
++		if (kexIsTornOut(v))
++		{
++			WINDOWPLACEMENT wp{};
++			wp.length = sizeof(wp);
++			::GetWindowPlacement(_kexViewWindow[v], &wp);
++			session._kexTornRect[v] = wp.rcNormalPosition;
++		}
++	}
+ 
+ 	//Use _invisibleEditView to temporarily open documents to retrieve markers
+ 	Document oldDoc = _invisibleEditView.execute(SCI_GETDOCPOINTER);
+-	const int nbElem = 2;
++	const int nbElem = NB_VIEWS;
+ 	DocTabView* docTab[nbElem]{};
+ 	docTab[0] = &_mainDocTab;
+ 	docTab[1] = &_subDocTab;
++	docTab[2] = &_view3DocTab;
++	docTab[3] = &_view4DocTab;
+ 	for (size_t k = 0; k < nbElem; ++k)
+ 	{
+ 		for (size_t i = 0, len = docTab[k]->nbItem(); i < len ; ++i)
+ 		{
+ 			BufferID bufID = docTab[k]->getBufferByIndex(i);
+-			ScintillaEditView *editView = k == 0 ? &_mainEditView : &_subEditView;
+-			size_t activeIndex = k == 0 ? session._activeMainIndex : session._activeSubIndex;
+-			vector<sessionFileInfo> *viewFiles = (vector<sessionFileInfo> *)(k == 0?&(session._mainViewFiles):&(session._subViewFiles));
++			ScintillaEditView *editView = kexEditView(static_cast<int>(k));
++			size_t activeIndex = session.kexActiveIndex(static_cast<int>(k));
++			vector<sessionFileInfo> *viewFiles = &session.kexViewFiles(static_cast<int>(k));
+ 
+ 			Buffer * buf = MainFileManager.getBufferByID(bufID);
+ 
+@@ -6793,7 +6820,17 @@ void Notepad_plus::prepareBufferChangedDialog(Buffer * buffer)
+ 	int index = _pDocTab->getIndexByBuffer(buffer->getID());
+ 	int iView = currentView();
+ 	if (index == -1)
++	{
+ 		iView = otherView();
++		for (int v = 0; v < NB_VIEWS; ++v) // KEX: the first view that has it
++		{
++			if (kexDocTab(v)->getIndexByBuffer(buffer->getID()) != -1)
++			{
++				iView = v;
++				break;
++			}
++		}
++	}
+ 	activateBuffer(buffer->getID(), iView);	//activate the buffer in the first view possible
+ 
+ 	// prevent flickering issue by "manually" clicking and activating the _pEditView
+@@ -6820,6 +6857,13 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
+ 
+ 	bool mainActive = (_mainEditView.getCurrentBuffer() == buffer);
+ 	bool subActive = (_subEditView.getCurrentBuffer() == buffer);
++	// KEX: views 3 and 4
++	int kexFirstActiveView = mainActive ? MAIN_VIEW : (subActive ? SUB_VIEW : -1);
++	for (int v = VIEW_3; v < NB_VIEWS && kexFirstActiveView == -1; ++v)
++	{
++		if (kexEditView(v)->getCurrentBuffer() == buffer)
++			kexFirstActiveView = v;
++	}
+ 
+ 	//Only event that applies to non-active Buffers
+ 	if (mask & BufferChangeStatus)
+@@ -6874,9 +6918,9 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
+ 				buffer->setUnsync(false);
+ 
+ 				doReload(buffer->getID(), false);
+-				if (mainActive || subActive)
++				if (kexFirstActiveView != -1)
+ 				{
+-					performPostReload(mainActive?MAIN_VIEW:SUB_VIEW);
++					performPostReload(kexFirstActiveView);
+ 				}
+ 
+ 				break;
+@@ -6902,6 +6946,15 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
+ 					_subEditView.setPositionRestoreNeeded(false);
+ 					_subEditView.execute(SCI_DOCUMENTEND);
+ 				}
++				// KEX: and views 3 and 4
++				for (int v = VIEW_3; v < NB_VIEWS; ++v)
++				{
++					if (buffer == kexEditView(v)->getCurrentBuffer())
++					{
++						kexEditView(v)->setPositionRestoreNeeded(false);
++						kexEditView(v)->execute(SCI_DOCUMENTEND);
++					}
++				}
+ 
+ 				break;
+ 			}
+@@ -6927,7 +6980,11 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
+ 					{
+ 						//close in both views, doing current view last since that has to remain opened
+ 						bool isSnapshotMode = nppGUI.isSnapshotMode();
+-						doClose(buffer->getID(), otherView(), isSnapshotMode);
++						for (int v = 0; v < NB_VIEWS; ++v) // KEX: all views
++						{
++							if (v != currentView())
++								doClose(buffer->getID(), v, isSnapshotMode);
++						}
+ 						doClose(buffer->getID(), currentView(), isSnapshotMode);
+ 						return;
+ 					}
+@@ -6965,17 +7022,12 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
+ 	if (_pDocumentListPanel)
+ 		_pDocumentListPanel->setItemIconStatus(buffer);
+ 
+-	if (!mainActive && !subActive)
++	// KEX: only the document shown in the current view (any of the four) updates the UI below
++	if (kexFirstActiveView == -1 || _pEditView->getCurrentBuffer() != buffer)
+ 	{
+ 		return;
+ 	}
+ 
+-	if ((currentView() == MAIN_VIEW) && !mainActive)
+-		return;
+-
+-	if ((currentView() == SUB_VIEW) && !subActive)
+-		return;
+-
+ 	if (mask & (BufferChangeDirty|BufferChangeFilename))
+ 	{
+ 		if (mask & BufferChangeFilename)
+@@ -6992,10 +7044,11 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
+ 	{
+ 		checkLangsMenu(-1);	//let Notepad++ do search for the item
+ 		setLangStatus(buffer->getLangType());
+-		if (mainActive)
+-			_autoCompleteMain.setLanguage(buffer->getLangType());
+-		else if (subActive)
+-			_autoCompleteSub.setLanguage(buffer->getLangType());
++		for (int v = 0; v < NB_VIEWS; ++v) // KEX: every view showing this document
++		{
++			if (kexEditView(v)->getCurrentBuffer() == buffer)
++				kexAutoComplete(kexEditView(v))->setLanguage(buffer->getLangType());
++		}
+ 
+ 		if (_pFuncList && (!_pFuncList->isClosed()) && _pFuncList->isVisible())
+ 			_pFuncList->reload(); // sync FL with the current buffer lang
+@@ -7030,15 +7083,10 @@ void Notepad_plus::notifyBufferActivated(BufferID bufid, int view)
+ 	Buffer * buf = MainFileManager.getBufferByID(bufid);
+ 	buf->increaseRecentTag();
+ 
+-	if (view == MAIN_VIEW)
++	if (view >= 0 && view < NB_VIEWS) // KEX: any of the four views
+ 	{
+-		_autoCompleteMain.setLanguage(buf->getLangType());
+-		_mainEditView.maintainStateForNpc();
+-	}
+-	else if (view == SUB_VIEW)
+-	{
+-		_autoCompleteSub.setLanguage(buf->getLangType());
+-		_subEditView.maintainStateForNpc();
++		kexAutoComplete(kexEditView(view))->setLanguage(buf->getLangType());
++		kexEditView(view)->maintainStateForNpc();
+ 	}
+ 
+ 	if (view != currentView())
+@@ -7417,7 +7465,7 @@ Style * Notepad_plus::getStyleFromName(const wchar_t *styleName)
+ 
+ bool Notepad_plus::noOpenedDoc() const
+ {
+-	if (_mainDocTab.isVisible() && _subDocTab.isVisible())
++	if (kexNbVisibleViews() > 1) // KEX: any two of the four views
+ 		return false;
+ 	if (_pDocTab->nbItem() == 1)
+ 	{
+@@ -8724,6 +8772,13 @@ void Notepad_plus::refreshDarkMode(bool resetStyle)
+ 
+ 		::SendMessage(_subEditView.getHSelf(), NPPM_INTERNAL_REFRESHDARKMODE, 0, 0);
+ 		::SendMessage(_mainEditView.getHSelf(), NPPM_INTERNAL_REFRESHDARKMODE, 0, 0);
++		::SendMessage(_view3EditView.getHSelf(), NPPM_INTERNAL_REFRESHDARKMODE, 0, 0);
++		::SendMessage(_view4EditView.getHSelf(), NPPM_INTERNAL_REFRESHDARKMODE, 0, 0);
++		for (int v = 0; v < NB_VIEWS; ++v)
++		{
++			if (_kexViewWindow[v])
++				NppDarkMode::setDarkTitleBar(_kexViewWindow[v]);
++		}
+ 
+ 		::SendMessage(_mainDocTab.getHSelf(), NPPM_INTERNAL_REFRESHDARKMODE, 0, 0);
+ 		::SendMessage(_subDocTab.getHSelf(), NPPM_INTERNAL_REFRESHDARKMODE, 0, 0);
+@@ -9371,6 +9426,11 @@ void Notepad_plus::clearChangesHistory(int iView)
+ 		pViewToChange = &_subEditView;
+ 		pAnotherView = &_mainEditView;
+ 	}
++	else if (iView == VIEW_3 || iView == VIEW_4) // KEX
++	{
++		pViewToChange = kexEditView(iView);
++		pAnotherView = kexEditView(otherFromView(iView));
++	}
+ 
+ 	Sci_Position pos = static_cast<Sci_Position>(::SendMessage(pViewToChange->getHSelf(), SCI_GETCURRENTPOS, 0, 0));
+ 	int chFlags = static_cast<int>(::SendMessage(pViewToChange->getHSelf(), SCI_GETCHANGEHISTORY, 0, 0));
+@@ -9382,6 +9442,11 @@ void Notepad_plus::clearChangesHistory(int iView)
+ 
+ 	checkUndoState();
+ 	pAnotherView->redraw(); // Prevent cloned document visual glitch on another view
++	for (int v = 0; v < NB_VIEWS; ++v) // KEX: the clone can be in any view
++	{
++		if (kexEditView(v) != pViewToChange && kexEditView(v) != pAnotherView && viewVisible(v))
++			kexEditView(v)->redraw();
++	}
+ }
+ 
+ // Based on https://github.com/notepad-plus-plus/notepad-plus-plus/issues/12248#issuecomment-1258561261.
+@@ -9570,7 +9635,7 @@ void Notepad_plus::changeReadOnlyUserModeForAllOpenedTabs(const bool ro)
+ 		return; // safety for FullReadOnlySavingForbidden mode, refuse to cease the R/O state
+ 
+ 	// make R/O changes in both views
+-	std::vector<DocTabView*> tabViews = { &_mainDocTab, &_subDocTab };
++	std::vector<DocTabView*> tabViews = { &_mainDocTab, &_subDocTab, &_view3DocTab, &_view4DocTab };
+ 	for (auto& pTabView : tabViews)
+ 	{
+ 		for (size_t i = 0; i < pTabView->nbItem(); ++i)
+diff --git a/PowerEditor/src/Notepad_plus.h b/PowerEditor/src/Notepad_plus.h
+index fefc2bd..9aeb5b9 100644
+--- a/PowerEditor/src/Notepad_plus.h
++++ b/PowerEditor/src/Notepad_plus.h
+@@ -44,6 +44,7 @@
+ #include "documentSnapshot.h"
+ #include "md5Dlgs.h"
+ #include "menuCmdID.h"
++#include "KexApi.h"
+ #include <vector>
+ #include <iso646.h>
+ #include <chrono>
+@@ -60,6 +61,12 @@ extern std::atomic<bool> g_bNppExitFlag;
+ 
+ #define MAIN_EDIT_ZONE true
+ 
++// KEX: views 3 and 4 join MAIN_VIEW and SUB_VIEW in a 2x2 grid (left column: main over view 3,
++// right column: sub over view 4). Any view can also be torn out into its own window.
++#define VIEW_3 2
++#define VIEW_4 3
++#define NB_VIEWS 4
++
+ enum FileTransferMode {
+ 	TransferClone		= 0x01,
+ 	TransferMove		= 0x02
+@@ -70,6 +77,8 @@ enum WindowStatus {	//bitwise mask
+ 	WindowSubActive		= 0x02,
+ 	WindowBothActive	= 0x03,	//little helper shortcut
+ 	WindowUserActive	= 0x04,
++	WindowView3Active	= 0x08,
++	WindowView4Active	= 0x10,
+ 	WindowMask			= 0x07
+ };
+ 
+@@ -294,16 +303,22 @@ private:
+ 
+ 	AutoCompletion _autoCompleteMain;
+ 	AutoCompletion _autoCompleteSub; // each Scintilla has its own autoComplete
++	AutoCompletion _autoCompleteView3;
++	AutoCompletion _autoCompleteView4;
+ 
+ 	SmartHighlighter _smartHighlighter;
+     NativeLangSpeaker _nativeLangSpeaker;
+     DocTabView _mainDocTab;
+     DocTabView _subDocTab;
++    DocTabView _view3DocTab;
++    DocTabView _view4DocTab;
+     DocTabView* _pDocTab = nullptr;
+ 	DocTabView* _pNonDocTab = nullptr;
+ 
+     ScintillaEditView _subEditView = ScintillaEditView(MAIN_EDIT_ZONE);  // only _mainEditView and _subEditView are MAIN_EDIT_ZONE comparing with other Scintilla controls
+     ScintillaEditView _mainEditView = ScintillaEditView(MAIN_EDIT_ZONE); // only _mainEditView and _subEditView are MAIN_EDIT_ZONE comparing with other Scintilla controls
++    ScintillaEditView _view3EditView = ScintillaEditView(MAIN_EDIT_ZONE); // KEX: views 3 and 4 are edit zones too
++    ScintillaEditView _view4EditView = ScintillaEditView(MAIN_EDIT_ZONE);
+ 	ScintillaEditView _invisibleEditView; // for searches
+ 	ScintillaEditView _fileEditView;      // for FileManager
+     ScintillaEditView* _pEditView = nullptr;
+@@ -311,6 +326,8 @@ private:
+ 
+     SplitterContainer* _pMainSplitter = nullptr;
+     SplitterContainer _subSplitter;
++    SplitterContainer _kexColumnSplitter[2]; // KEX: left column (main/view 3), right column (sub/view 4)
++    bool _kexColumnSplitterCreated = false;
+ 
+     ContextMenu _tabPopupMenu;
+ 	ContextMenu _tabPopupDropMenu;
+@@ -457,21 +474,57 @@ private:
+ 		return _activeView;
+ 	}
+ 
++	// KEX: the "other" view is the neighbour in the same row: main <-> sub, view 3 <-> view 4
+ 	int otherView() {
+-		return (_activeView == MAIN_VIEW?SUB_VIEW:MAIN_VIEW);
++		return _activeView ^ 1;
+ 	}
+ 
+ 	int otherFromView(int whichOne) {
+-		return (whichOne == MAIN_VIEW?SUB_VIEW:MAIN_VIEW);
++		return whichOne ^ 1;
+ 	}
+ 
++	// KEX four-view helpers (KexViews.cpp)
++	ScintillaEditView* kexEditView(int whichOne);
++	DocTabView* kexDocTab(int whichOne);
++	static UCHAR kexViewBit(int whichOne);
++	int kexViewFromHwnd(HWND hwnd);    // edit view, tab bar, or torn-out window (or a child of one)
++	int kexViewOfControl(HWND hwnd);   // edit view or tab bar only
++	void kexSmartHighlight(ScintillaEditView* pView);
++	bool kexIsBufferInAnotherView(BufferID id, int exceptView);
++	bool kexIsBufferInEarlierView(BufferID id, int view);
++	BufferID kexFindBufferByNameInViews(const wchar_t* fullfilename);
++	int kexNextVisibleView(int fromView, bool forward = true);
++	int kexNbVisibleViews() const;
++	int kexNbDockedViews();
++	void kexLayoutViews();
++	void kexOnSplitterRotated(HWND hSplitter, int direction);
++	void kexInitMenu();
++	Window* kexEditorAreaWindow();
++	AutoCompletion* kexAutoComplete(const ScintillaEditView* pView);
++	bool kexIsLegacyView(int whichOne) const { return whichOne == MAIN_VIEW || whichOne == SUB_VIEW; }
++	int kexLegacyViewOf(int whichOne) const { return whichOne == VIEW_3 ? MAIN_VIEW : (whichOne == VIEW_4 ? SUB_VIEW : whichOne); }
++	LRESULT kexProcessMessage(UINT message, WPARAM wParam, LPARAM lParam);
++	// tear-out
++	HWND _kexViewWindow[NB_VIEWS] = {};
++	UCHAR _kexDistractionFreeHiddenViews = 0;
++	bool kexIsTornOut(int whichOne) const { return _kexViewWindow[whichOne] != nullptr; }
++	bool kexTearOutView(int whichOne, const POINT* where = nullptr, const RECT* windowRect = nullptr);
++	bool kexSnapBackView(int whichOne, bool relayout = true);
++	void kexLayoutTornOutView(int whichOne);
++	void kexUpdateTornOutTitle(int whichOne);
++	bool kexIsOverDockedTabBar(POINT screenPoint);
++	bool kexTearOutDoc(FileTransferMode mode, const POINT* where);
++	void kexDestroyTornOutWindows();
++	int _kexLastDockedView = MAIN_VIEW;
++	static LRESULT CALLBACK kexViewWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
++
+ 	bool canHideView(int whichOne);	//true if view can safely be hidden (no open docs etc)
+ 
+ 	bool isEmpty(); // true if we have 1 view with 1 clean, untitled doc
+ 
+ 	int switchEditViewTo(int gid);	//activate other view (set focus etc)
+ 
+-	void docGotoAnotherEditView(FileTransferMode mode);	//TransferMode
++	void docGotoAnotherEditView(FileTransferMode mode, int kexViewToGo = -1);	//TransferMode; KEX: optional target view
+ 	void docOpenInNewInstance(FileTransferMode mode, int x = 0, int y = 0);
+ 
+ 	void loadBufferIntoView(BufferID id, int whichOne, bool dontClose = false);		//Doesn't _activate_ the buffer
+diff --git a/PowerEditor/src/NppBigSwitch.cpp b/PowerEditor/src/NppBigSwitch.cpp
+index 3a8dad0..889c1f8 100644
+--- a/PowerEditor/src/NppBigSwitch.cpp
++++ b/PowerEditor/src/NppBigSwitch.cpp
+@@ -46,12 +46,14 @@ const UINT WM_TASKBARCREATED = ::RegisterWindowMessage(L"TaskbarCreated");
+ 
+ struct SortTaskListPred final
+ {
+-	DocTabView *_views[2];
++	DocTabView *_views[NB_VIEWS];
+ 
+-	SortTaskListPred(DocTabView &p, DocTabView &s)
++	SortTaskListPred(DocTabView &p, DocTabView &s, DocTabView &v3, DocTabView &v4)
+ 	{
+ 		_views[MAIN_VIEW] = &p;
+ 		_views[SUB_VIEW] = &s;
++		_views[VIEW_3] = &v3; // KEX
++		_views[VIEW_4] = &v4;
+ 	}
+ 
+ 	bool operator()(const TaskLstFnStatus &l, const TaskLstFnStatus &r) const {
+@@ -273,6 +275,9 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 	LRESULT result = FALSE;
+ 	NppParameters& nppParam = NppParameters::getInstance();
+ 
++	if (message > KEX_USER && message <= KEX_USER + 100) // KEX: four-view messages (KexApi.h)
++		return kexProcessMessage(message, wParam, lParam);
++
+ 	switch (message)
+ 	{
+ 		case WM_NCACTIVATE:
+@@ -637,10 +642,8 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 		case NPPM_GETBUFFERIDFROMPOS:
+ 		{
+ 			DocTabView* pView = nullptr;
+-			if (lParam == MAIN_VIEW)
+-				pView = &_mainDocTab;
+-			else if (lParam == SUB_VIEW)
+-				pView = &_subDocTab;
++			if (lParam >= MAIN_VIEW && lParam < NB_VIEWS) // KEX: views 3 and 4 too
++				pView = kexDocTab(static_cast<int>(lParam));
+ 			else
+ 				return reinterpret_cast<LRESULT>(BUFFER_INVALID);
+ 
+@@ -786,6 +789,9 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 			getMainClientRect(rc);
+ 			_dockingManager.reSizeTo(rc);
+ 
++			for (int kexView = MAIN_VIEW; kexView < NB_VIEWS; ++kexView) // KEX: torn-out views follow tab bar changes too
++				kexLayoutTornOutView(kexView);
++
+ 			if (_pDocMap)
+ 			{
+ 				_pDocMap->doMove();
+@@ -879,12 +885,10 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 		{
+ 			if (HIWORD(wParam) == SCEN_SETFOCUS)
+ 			{
+-				HWND hMain = _mainEditView.getHSelf(), hSec = _subEditView.getHSelf();
+ 				HWND hFocus = reinterpret_cast<HWND>(lParam);
+-				if (hMain == hFocus)
+-					switchEditViewTo(MAIN_VIEW);
+-				else if (hSec == hFocus)
+-					switchEditViewTo(SUB_VIEW);
++				int focusView = kexViewFromHwnd(hFocus); // KEX: any of the four views
++				if (focusView != -1 && hFocus == kexEditView(focusView)->getHSelf())
++					switchEditViewTo(focusView);
+ 				else
+ 				{
+ 					//Other Scintilla, ignore
+@@ -1158,12 +1162,8 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 			if (!id)
+ 				return FALSE;
+ 
+-			if (_pEditView == &_mainEditView)
+-				*id = MAIN_VIEW;
+-			else if (_pEditView == &_subEditView)
+-				*id = SUB_VIEW;
+-			else
+-				*id = -1; // cannot happen
++			// KEX: older plugins only know two views; view 3 reports as 0 and view 4 as 1 (see NPPM_KEX_GETCURRENTVIEW)
++			*id = kexLegacyViewOf(currentView());
+ 			return TRUE;
+ 		}
+ 
+@@ -1187,7 +1187,7 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 			size_t nbDocPrimary = _mainDocTab.nbItem();
+ 			size_t nbDocSecond = _subDocTab.nbItem();
+ 			if (lParam == ALL_OPEN_FILES)
+-				return nbDocPrimary + nbDocSecond;
++				return nbDocPrimary + nbDocSecond + _view3DocTab.nbItem() + _view4DocTab.nbItem(); // KEX
+ 			else if (lParam == PRIMARY_VIEW)
+ 				return nbDocPrimary;
+ 			else if (lParam == SECOND_VIEW)
+@@ -1226,6 +1226,18 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 					lstrcpy(fileNames[j++], buf->getFullPathName());
+ 				}
+ 			}
++
++			if (message == NPPM_GETOPENFILENAMES_DEPRECATED) // KEX: all files includes views 3 and 4
++			{
++				for (int kexView = VIEW_3; kexView < NB_VIEWS; ++kexView)
++				{
++					for (size_t i = 0; i < kexDocTab(kexView)->nbItem() && j < nbFileNames; ++i)
++					{
++						Buffer * buf = MainFileManager.getBufferByID(kexDocTab(kexView)->getBufferByIndex(i));
++						lstrcpy(fileNames[j++], buf->getFullPathName());
++					}
++				}
++			}
+ 			return j;
+ 		}
+ 
+@@ -1254,7 +1266,7 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 			if (nppParam.getNppGUI()._styleMRU)
+ 			{
+ 				tli->_currentIndex = 0;
+-				std::sort(tli->_tlfsLst.begin(),tli->_tlfsLst.end(),SortTaskListPred(_mainDocTab,_subDocTab));
++				std::sort(tli->_tlfsLst.begin(),tli->_tlfsLst.end(),SortTaskListPred(_mainDocTab,_subDocTab,_view3DocTab,_view4DocTab));
+ 			}
+ 			else
+ 			{
+@@ -1291,8 +1303,9 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 				case APPCOMMAND_BROWSER_BACKWARD:
+ 				case APPCOMMAND_BROWSER_FORWARD:
+ 				{
+-					size_t nbDoc = viewVisible(MAIN_VIEW) ? _mainDocTab.nbItem() : 0;
+-					nbDoc += viewVisible(SUB_VIEW)?_subDocTab.nbItem():0;
++					size_t nbDoc = 0;
++					for (int kexView = 0; kexView < NB_VIEWS; ++kexView) // KEX
++						nbDoc += viewVisible(kexView) ? kexDocTab(kexView)->nbItem() : 0;
+ 					if (nbDoc > 1)
+ 						activateNextDoc((GET_APPCOMMAND_LPARAM(lParam) == APPCOMMAND_BROWSER_FORWARD)?dirDown:dirUp);
+ 					_linkTriggered = true;
+@@ -1354,10 +1367,8 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 		{
+ 			// convert to ASCII
+ 			ScintillaEditView *pSci = nullptr;
+-			if (wParam == MAIN_VIEW)
+-				pSci = &_mainEditView;
+-			else if (wParam == SUB_VIEW)
+-				pSci = &_subEditView;
++			if (wParam < NB_VIEWS) // KEX: views 3 and 4 for plugins that know them
++				pSci = kexEditView(static_cast<int>(wParam));
+ 			else
+ 				return -1;
+ 
+@@ -1392,10 +1403,8 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 		{
+ 			// convert
+ 			ScintillaEditView *pSci = nullptr;
+-			if (wParam == MAIN_VIEW)
+-				pSci = &_mainEditView;
+-			else if (wParam == SUB_VIEW)
+-				pSci = &_subEditView;
++			if (wParam < NB_VIEWS) // KEX: views 3 and 4 for plugins that know them
++				pSci = kexEditView(static_cast<int>(wParam));
+ 			else
+ 				return -1;
+ 
+@@ -1430,7 +1439,7 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 		case NPPM_TRIGGERTABBARCONTEXTMENU:
+ 		{
+ 			// similar to NPPM_ACTIVEDOC
+-			int whichView = ((wParam != MAIN_VIEW) && (wParam != SUB_VIEW)) ? currentView() : static_cast<int32_t>(wParam);
++			int whichView = (wParam >= NB_VIEWS) ? currentView() : static_cast<int32_t>(wParam); // KEX: 0..3
+ 			int index = static_cast<int32_t>(lParam);
+ 
+ 			switchEditViewTo(whichView);
+@@ -1442,7 +1451,7 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 				NMHDR	nmhdr{};
+ 				nmhdr.code = NM_RCLICK;
+ 
+-				nmhdr.hwndFrom = (whichView == MAIN_VIEW)?_mainDocTab.getHSelf():_subDocTab.getHSelf();
++				nmhdr.hwndFrom = kexDocTab(whichView)->getHSelf();
+ 
+ 				nmhdr.idFrom = ::GetDlgCtrlID(nmhdr.hwndFrom);
+ 				::SendMessage(hwnd, WM_NOTIFY, nmhdr.idFrom, reinterpret_cast<LPARAM>(&nmhdr));
+@@ -1453,7 +1462,7 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 		case NPPM_INTERNAL_CLOSEDOC:
+ 		{
+ 			// Close a document without switching to it
+-			int whichView = ((wParam != MAIN_VIEW) && (wParam != SUB_VIEW)) ? currentView() : static_cast<int32_t>(wParam);
++			int whichView = (wParam >= NB_VIEWS) ? currentView() : static_cast<int32_t>(wParam); // KEX: 0..3
+ 			int index = static_cast<int32_t>(lParam);
+ 			
+ 			// Gotta switch to correct view to get the correct buffer ID
+@@ -1771,6 +1780,12 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 
+ 		case NPPM_GETCURRENTDOCINDEX:
+ 		{
++			if (lParam == VIEW_3 || lParam == VIEW_4) // KEX
++			{
++				if (!viewVisible(static_cast<int>(lParam)))
++					return -1;
++				return kexDocTab(static_cast<int>(lParam))->getCurrentTabIndex();
++			}
+ 			if (lParam == SUB_VIEW)
+ 			{
+ 				if (!viewVisible(SUB_VIEW))
+@@ -2143,12 +2158,10 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 			{
+ 				HWND activeViewHwnd = reinterpret_cast<HWND>(wParam);
+ 
+-				if ((activeViewHwnd == _mainEditView.getHSelf()) || (activeViewHwnd == _subEditView.getHSelf()))
++				int ctxView = kexViewFromHwnd(activeViewHwnd); // KEX: any of the four views
++				if (ctxView != -1 && activeViewHwnd == kexEditView(ctxView)->getHSelf())
+ 				{
+-					if (activeViewHwnd == _mainEditView.getHSelf())
+-						switchEditViewTo(MAIN_VIEW);
+-					else
+-						switchEditViewTo(SUB_VIEW);
++					switchEditViewTo(ctxView);
+ 
+ 					ContextMenu scintillaContextmenu;
+ 					
+@@ -2438,7 +2451,10 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 			if (wParam == LINKTRIGGERED)
+ 				notification->wParam = LINKTRIGGERED;
+ 
+-			_pluginsManager.notify(notification);
++			if (kexViewFromHwnd(static_cast<HWND>(notification->nmhdr.hwndFrom)) >= VIEW_3)
++				_pluginsManager.notifyKexAware(notification); // KEX: older plugins only know views 1 and 2
++			else
++				_pluginsManager.notify(notification);
+ 
+ 			return notify(notification);
+ 		}
+@@ -2482,6 +2498,19 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 		{
+ 			int i;
+ 
++			// KEX: views 3 and 4 are only searched when asked for (older plugins never see them).
++			// The view is in bits 30-31, so read the result as unsigned.
++			if (lParam == VIEW_3 || lParam == VIEW_4)
++			{
++				const int searchOrder[NB_VIEWS] = { static_cast<int>(lParam), otherFromView(static_cast<int>(lParam)), MAIN_VIEW, SUB_VIEW };
++				for (int kexView : searchOrder)
++				{
++					if ((i = kexDocTab(kexView)->getIndexByBuffer((BufferID)wParam)) != -1)
++						return static_cast<LRESULT>((static_cast<UINT>(kexView) << 30) | static_cast<UINT>(i));
++				}
++				return -1;
++			}
++
+ 			if (lParam == SUB_VIEW) // priorityView is sub view, so we search in sub view firstly
+ 			{
+ 				if ((i = _subDocTab.getIndexByBuffer((BufferID)wParam)) != -1)
+@@ -2528,6 +2557,24 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 
+ 		case WM_ACTIVATE:
+ 		{
++			// KEX: when the main window is activated, focus must stay in it: leave a torn-out view for the last docked one
++			if (LOWORD(wParam) == WA_INACTIVE)
++			{
++				if (!kexIsTornOut(currentView()))
++					_kexLastDockedView = currentView();
++			}
++			else if (kexIsTornOut(currentView()))
++			{
++				int kexDocked = (viewVisible(_kexLastDockedView) && !kexIsTornOut(_kexLastDockedView)) ? _kexLastDockedView : -1;
++				for (int kexView = MAIN_VIEW; kexView < NB_VIEWS && kexDocked == -1; ++kexView)
++				{
++					if (viewVisible(kexView) && !kexIsTornOut(kexView))
++						kexDocked = kexView;
++				}
++				if (kexDocked != -1)
++					switchEditViewTo(kexDocked);
++			}
++
+ 			if (wParam != WA_INACTIVE && _pEditView && _pNonEditView)
+ 			{
+ 				_pEditView->grabFocus();
+@@ -2603,6 +2650,11 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 
+ 			AutoCompletion::drawAutocomplete(_pEditView);
+ 			AutoCompletion::drawAutocomplete(_pNonEditView);
++			for (int kexView = 0; kexView < NB_VIEWS; ++kexView) // KEX: the views that are neither current nor its neighbour
++			{
++				if (kexEditView(kexView) != _pEditView && kexEditView(kexView) != _pNonEditView)
++					AutoCompletion::drawAutocomplete(kexEditView(kexView));
++			}
+ 
+ 			if (doChangePanel) // Theme change
+ 			{
+@@ -3109,7 +3161,7 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 
+ 		case WM_LBUTTONDBLCLK:
+ 		{
+-			DocTabView* curTabView = (currentView() == MAIN_VIEW) ? &_mainDocTab : &_subDocTab;
++			DocTabView* curTabView = kexDocTab(currentView()); // KEX
+ 			::SendMessage(curTabView->getHSelf(), WM_LBUTTONDBLCLK, wParam, lParam);
+ 
+ 			return TRUE;
+@@ -3393,6 +3445,10 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 			{
+ 				pDt = &_subDocTab;
+ 			}
++			else if (view == VIEW_3 || view == VIEW_4) // KEX
++			{
++				pDt = kexDocTab(view);
++			}
+ 
+ 			if (tabIndex == -1)
+ 			{
+@@ -3502,12 +3558,12 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 
+ 		case NPPM_GETCURRENTVIEW:
+ 		{
+-			return _activeView;
++			return kexLegacyViewOf(_activeView); // KEX: 0 or 1 only, see NPPM_KEX_GETCURRENTVIEW
+ 		}
+ 
+ 		case NPPM_INTERNAL_ISFOCUSEDTAB:
+ 		{
+-			HWND hTabToTest = (currentView() == MAIN_VIEW)?_mainDocTab.getHSelf():_subDocTab.getHSelf();
++			HWND hTabToTest = kexDocTab(currentView())->getHSelf(); // KEX
+ 			return reinterpret_cast<HWND>(lParam) == hTabToTest;
+ 		}
+ 
+@@ -3538,13 +3594,16 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 		case NPPM_INTERNAL_SWITCHVIEWFROMHWND:
+ 		{
+ 			HWND handle = reinterpret_cast<HWND>(lParam);
+-			if (_mainEditView.getHSelf() == handle || _mainDocTab.getHSelf() == handle)
++			int kexView = kexViewFromHwnd(handle); // KEX: any of the four views
++			for (int col = 0; col < 2 && kexView == -1; ++col)
+ 			{
+-				switchEditViewTo(MAIN_VIEW);
++				// a column splitter (main over view 3, sub over view 4): use its top view
++				if (_kexColumnSplitter[col].getHSelf() == handle)
++					kexView = viewVisible(col) ? col : col + VIEW_3;
+ 			}
+-			else if (_subEditView.getHSelf() == handle || _subDocTab.getHSelf() == handle)
++			if (kexView != -1)
+ 			{
+-				switchEditViewTo(SUB_VIEW);
++				switchEditViewTo(kexView);
+ 			}
+ 			return TRUE;
+ 		}
+@@ -3941,7 +4000,7 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 		case NPPM_INTERNAL_SETTING_TABCOMPACTLABELLEN:
+ 		{
+ 			// reflect current tab-label length setting change in both views
+-			const std::vector<DocTabView*> tabViews = { &_mainDocTab, &_subDocTab };
++			const std::vector<DocTabView*> tabViews = { &_mainDocTab, &_subDocTab, &_view3DocTab, &_view4DocTab };
+ 			for (auto& pTabView : tabViews)
+ 			{
+ 				for (size_t i = 0; i < pTabView->nbItem(); ++i)
+@@ -4040,6 +4099,13 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 
+ 					if (_pNonEditView->getCurrentBuffer()->allowClickableLink())
+ 						addHotSpot(_pNonEditView);
++
++					for (int kexView = 0; kexView < NB_VIEWS; ++kexView) // KEX: the other two views
++					{
++						ScintillaEditView* pKexView = kexEditView(kexView);
++						if (pKexView != _pEditView && pKexView != _pNonEditView && viewVisible(kexView) && pKexView->getCurrentBuffer()->allowClickableLink())
++							addHotSpot(pKexView);
++					}
+ 				}
+ 				else
+ 				{
+@@ -4526,11 +4592,11 @@ LRESULT Notepad_plus::process(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
+ 			Document oldDoc = _invisibleEditView.execute(SCI_GETDOCPOINTER);
+ 			Buffer* oldBuf = _invisibleEditView.getCurrentBuffer();
+ 
+-			DocTabView* pTab[2] = { &_mainDocTab, &_subDocTab };
+-			ScintillaEditView* pView[2] = { &_mainEditView, &_subEditView };
++			DocTabView* pTab[NB_VIEWS] = { &_mainDocTab, &_subDocTab, &_view3DocTab, &_view4DocTab };
++			ScintillaEditView* pView[NB_VIEWS] = { &_mainEditView, &_subEditView, &_view3EditView, &_view4EditView };
+ 
+ 			Buffer* pBuf = NULL;
+-			for (size_t v = 0; v < 2; ++v)
++			for (size_t v = 0; v < NB_VIEWS; ++v)
+ 			{
+ 				for (size_t i = 0, len = pTab[v]->nbItem(); i < len; ++i)
+ 				{
+diff --git a/PowerEditor/src/NppCommands.cpp b/PowerEditor/src/NppCommands.cpp
+index a1a5912..0dc15a2 100644
+--- a/PowerEditor/src/NppCommands.cpp
++++ b/PowerEditor/src/NppCommands.cpp
+@@ -1538,10 +1538,11 @@ void Notepad_plus::command(int id)
+ 		case IDM_EDIT_COPY_ALL_PATHS:
+ 			{
+ 				std::vector<DocTabView*> docTabs;
+-				if (viewVisible(MAIN_VIEW))
+-					docTabs.push_back(&_mainDocTab);
+-				if (viewVisible(SUB_VIEW))
+-					docTabs.push_back(&_subDocTab);
++				for (int kexView = MAIN_VIEW; kexView < NB_VIEWS; ++kexView) // KEX: all four views
++				{
++					if (viewVisible(kexView))
++						docTabs.push_back(kexDocTab(kexView));
++				}
+ 				std::vector<Buffer*> buffers;
+ 				for (auto&& docTab : docTabs)
+ 				{
+@@ -2015,19 +2016,14 @@ void Notepad_plus::command(int id)
+ 				{
+ 					::ShowWindow(_pMainSplitter->getHSelf(), SW_HIDE);
+ 
+-					if (bothActive())
+-						_pMainWindow = &_subSplitter;
+-					else
+-						_pMainWindow = _pDocTab;
+-
+-					::SendMessage(_pPublicInterface->getHSelf(), WM_SIZE, 0, 0);
++					_mainWindowStatus &= static_cast<UCHAR>(~WindowUserActive);
++					kexLayoutViews(); // KEX: puts the view grid back in place of the user-defined-language panel
+ 
+ 					udd->display(false);
+-					_mainWindowStatus &= static_cast<UCHAR>(~WindowUserActive);
+ 				}
+ 				else if ((isUDDlgDocked)&&(!isUDDlgVisible))
+ 				{
+-					auto* pWindow = bothActive() ? &_subSplitter : dynamic_cast<Window*>(_pDocTab);
++					auto* pWindow = kexEditorAreaWindow(); // KEX
+ 
+ 					if (!_pMainSplitter)
+ 					{
+@@ -2038,14 +2034,10 @@ void Notepad_plus::command(int id)
+ 						_pMainSplitter->create(pWindow, ScintillaEditView::getUserDefineDlg(), splitterSizeDyn, SplitterMode::RIGHT_FIX, 45);
+ 					}
+ 
+-					_pMainWindow = _pMainSplitter;
+-
+-					_pMainSplitter->setWin0(pWindow);
+-
+-					::SendMessage(_pPublicInterface->getHSelf(), WM_SIZE, 0, 0);
+-					_pMainWindow->display();
+-
++					// KEX: kexLayoutViews() puts the view grid into _pMainSplitter, shows it and resizes
+ 					_mainWindowStatus |= WindowUserActive;
++					kexLayoutViews();
++					udd->display();
+ 				}
+ 				else if ((!isUDDlgDocked)&&(isUDDlgVisible))
+ 				{
+@@ -2656,7 +2648,7 @@ void Notepad_plus::command(int id)
+ 			_toolBar.setCheck(IDM_VIEW_ALL_CHARACTERS, allChecked);
+ 
+ 			// inform the relevant lexers about the update
+-			std::vector<ScintillaEditView*> pViews{ &_mainEditView, &_subEditView };
++			std::vector<ScintillaEditView*> pViews{ &_mainEditView, &_subEditView, &_view3EditView, &_view4EditView };
+ 			for (auto pView : pViews)
+ 			{
+ 				Buffer* pBuf = pView->getCurrentBuffer();
+@@ -2701,7 +2693,7 @@ void Notepad_plus::command(int id)
+ 			_findReplaceDlg.updateFinderScintillaForNpc();
+ 
+ 			// inform the relevant lexers about the update
+-			std::vector<ScintillaEditView*> pViews{ &_mainEditView, &_subEditView };
++			std::vector<ScintillaEditView*> pViews{ &_mainEditView, &_subEditView, &_view3EditView, &_view4EditView };
+ 			for (auto pView : pViews)
+ 			{
+ 				Buffer* pBuf = pView->getCurrentBuffer();
+@@ -3591,8 +3583,7 @@ void Notepad_plus::command(int id)
+ 			HWND wnd = GetFocus();
+ 			if (_pEditView->getHSelf() == wnd)
+ 			{
+-				view_to_focus = otherView();
+-				if (!viewVisible(view_to_focus)) view_to_focus = _activeView;
++				view_to_focus = kexNextVisibleView(_activeView); // KEX: cycle through all visible views
+ 			}
+ 			else
+ 			{
+@@ -3602,6 +3593,65 @@ void Notepad_plus::command(int id)
+ 			break;
+ 		}
+ 
++		// KEX: four views and snap-out windows
++		case IDM_KEX_DOC_TO_VIEW1:
++		case IDM_KEX_DOC_TO_VIEW2:
++		case IDM_KEX_DOC_TO_VIEW3:
++		case IDM_KEX_DOC_TO_VIEW4:
++		case IDM_KEX_DOC_CLONE_TO_VIEW1:
++		case IDM_KEX_DOC_CLONE_TO_VIEW2:
++		case IDM_KEX_DOC_CLONE_TO_VIEW3:
++		case IDM_KEX_DOC_CLONE_TO_VIEW4:
++		{
++			const bool isClone = (id >= IDM_KEX_DOC_CLONE_TO_VIEW1);
++			const int viewToGo = id - (isClone ? IDM_KEX_DOC_CLONE_TO_VIEW1 : IDM_KEX_DOC_TO_VIEW1);
++			if (viewToGo != currentView())
++			{
++				docGotoAnotherEditView(isClone ? TransferClone : TransferMove, viewToGo);
++				checkSyncState();
++				::SendMessage(_pPublicInterface->getHSelf(), WM_SIZE, 0, 0);
++			}
++			break;
++		}
++
++		case IDM_KEX_DOC_TEAROUT:
++			kexTearOutDoc(TransferMove, nullptr);
++			break;
++
++		case IDM_KEX_VIEW_TEAROUT:
++			kexTearOutView(currentView());
++			break;
++
++		case IDM_KEX_VIEW_SNAPBACK:
++			kexSnapBackView(currentView());
++			break;
++
++		case IDM_KEX_SNAPBACK_ALL:
++		{
++			for (int kexView = MAIN_VIEW; kexView < NB_VIEWS; ++kexView)
++			{
++				if (kexIsTornOut(kexView))
++					kexSnapBackView(kexView, false);
++			}
++			kexLayoutViews();
++			break;
++		}
++
++		case IDM_KEX_FOCUS_VIEW1:
++		case IDM_KEX_FOCUS_VIEW2:
++		case IDM_KEX_FOCUS_VIEW3:
++		case IDM_KEX_FOCUS_VIEW4:
++		{
++			const int viewToFocus = id - IDM_KEX_FOCUS_VIEW1;
++			if (viewVisible(viewToFocus))
++			{
++				if (kexIsTornOut(viewToFocus))
++					::SetForegroundWindow(_kexViewWindow[viewToFocus]);
++				switchEditViewTo(viewToFocus);
++			}
++			break;
++		}
++
+ 		case IDM_TOOL_MD5_GENERATE:
+ 		{
+ 			bool isFirstTime = !_md5FromTextDlg.isCreated();
+@@ -4062,8 +4112,9 @@ void Notepad_plus::command(int id)
+         case IDC_PREV_DOC :
+         case IDC_NEXT_DOC :
+         {
+-			size_t nbDoc = viewVisible(MAIN_VIEW) ? _mainDocTab.nbItem() : 0;
+-			nbDoc += viewVisible(SUB_VIEW)?_subDocTab.nbItem():0;
++			size_t nbDoc = 0;
++			for (int kexView = MAIN_VIEW; kexView < NB_VIEWS; ++kexView) // KEX: all four views
++				nbDoc += viewVisible(kexView) ? kexDocTab(kexView)->nbItem() : 0;
+ 
+ 			bool doTaskList = ((NppParameters::getInstance()).getNppGUI())._doTaskList;
+ 			_isFolding = true;
+@@ -4547,6 +4598,18 @@ void Notepad_plus::command(int id)
+ 			case IDM_VIEW_GOTO_END:
+ 			case IDM_VIEW_GOTO_ANOTHER_VIEW:
+ 			case IDM_VIEW_CLONE_TO_ANOTHER_VIEW:
++			case IDM_KEX_DOC_TO_VIEW1:
++			case IDM_KEX_DOC_TO_VIEW2:
++			case IDM_KEX_DOC_TO_VIEW3:
++			case IDM_KEX_DOC_TO_VIEW4:
++			case IDM_KEX_DOC_CLONE_TO_VIEW1:
++			case IDM_KEX_DOC_CLONE_TO_VIEW2:
++			case IDM_KEX_DOC_CLONE_TO_VIEW3:
++			case IDM_KEX_DOC_CLONE_TO_VIEW4:
++			case IDM_KEX_FOCUS_VIEW1:
++			case IDM_KEX_FOCUS_VIEW2:
++			case IDM_KEX_FOCUS_VIEW3:
++			case IDM_KEX_FOCUS_VIEW4:
+ 			case IDM_VIEW_GOTO_NEW_INSTANCE:
+ 			case IDM_VIEW_LOAD_IN_NEW_INSTANCE:
+ 			case IDM_VIEW_SYNSCROLLV:
+diff --git a/PowerEditor/src/NppIO.cpp b/PowerEditor/src/NppIO.cpp
+index 71fb3b3..2a0cc6c 100644
+--- a/PowerEditor/src/NppIO.cpp
++++ b/PowerEditor/src/NppIO.cpp
+@@ -600,53 +600,46 @@ bool Notepad_plus::doReload(BufferID id, bool alert)
+ 
+ 	//In order to prevent Scintilla from restyling the entire document,
+ 	//an empty Document is inserted during reload if needed.
+-	bool mainVisible = (_mainEditView.getCurrentBufferID() == id);
+-	bool subVisible = (_subEditView.getCurrentBufferID() == id);
++	// KEX: the document can be the current one in any of the four views
++	bool visibleIn[NB_VIEWS] = {};
++	bool anyVisible = false;
+ 	unsigned long MODEVENTMASK_ON = NppParameters::getInstance().getScintillaModEventMask();
+-	if (mainVisible)
++	for (int v = 0; v < NB_VIEWS; ++v)
+ 	{
+-		_mainEditView.saveCurrentPos();
+-		_mainEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_OFF);
+-		_mainEditView.execute(SCI_SETDOCPOINTER, 0, 0);
+-		_mainEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_ON);
+-	}
+-
+-	if (subVisible)
+-	{
+-		_subEditView.saveCurrentPos();
+-		_subEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_OFF);
+-		_subEditView.execute(SCI_SETDOCPOINTER, 0, 0);
+-		_subEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_ON);
++		ScintillaEditView* pView = kexEditView(v);
++		visibleIn[v] = (pView->getCurrentBufferID() == id);
++		if (!visibleIn[v])
++			continue;
++		anyVisible = true;
++		pView->saveCurrentPos();
++		pView->execute(SCI_SETMODEVENTMASK, MODEVENTMASK_OFF);
++		pView->execute(SCI_SETDOCPOINTER, 0, 0);
++		pView->execute(SCI_SETMODEVENTMASK, MODEVENTMASK_ON);
+ 	}
+ 
+-	if (!mainVisible && !subVisible)
++	if (!anyVisible)
+ 	{
+ 		return MainFileManager.reloadBufferDeferred(id);
+ 	}
+ 
+ 	bool res = MainFileManager.reloadBuffer(id);
+ 	Buffer * pBuf = MainFileManager.getBufferByID(id);
+-	if (mainVisible)
+-	{
+-		_mainEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_OFF);
+-		_mainEditView.execute(SCI_SETDOCPOINTER, 0, pBuf->getDocument());
+-		_mainEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_ON);
+-		_mainEditView.restoreCurrentPosPreStep();
+-	}
+-
+-	if (subVisible)
++	for (int v = 0; v < NB_VIEWS; ++v)
+ 	{
+-		_subEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_OFF);
+-		_subEditView.execute(SCI_SETDOCPOINTER, 0, pBuf->getDocument());
+-		_subEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_ON);
+-		_subEditView.restoreCurrentPosPreStep();
++		if (!visibleIn[v])
++			continue;
++		ScintillaEditView* pView = kexEditView(v);
++		pView->execute(SCI_SETMODEVENTMASK, MODEVENTMASK_OFF);
++		pView->execute(SCI_SETDOCPOINTER, 0, pBuf->getDocument());
++		pView->execute(SCI_SETMODEVENTMASK, MODEVENTMASK_ON);
++		pView->restoreCurrentPosPreStep();
+ 	}
+ 
+ 	const auto& svp = NppParameters::getInstance().getSVP();
+ 
+ 	// Once reload is complete, activate buffer which will take care of
+ 	// many settings such as update status bar, clickable link etc.
+-	if ( ((currentView() == MAIN_VIEW) && mainVisible) || ((currentView() == SUB_VIEW) && subVisible))
++	if (visibleIn[currentView()])
+ 	{
+ 		activateBuffer(id, currentView(), true);
+ 
+@@ -658,21 +651,16 @@ bool Notepad_plus::doReload(BufferID id, bool alert)
+ 		// handle also the less usual case when the reloaded buffer is not in the current active view
+ 
+ 		int originalActiveView = currentView();
+-		BufferID originalActiveBufferID = nullptr;
+-		if (mainVisible)
+-		{
+-			originalActiveBufferID = _subEditView.getCurrentBufferID();
+-			activateBuffer(id, MAIN_VIEW, true);
+-		}
+-		else
++		BufferID originalActiveBufferID = _pEditView->getCurrentBufferID();
++		for (int v = 0; v < NB_VIEWS; ++v)
+ 		{
+-			originalActiveBufferID = _mainEditView.getCurrentBufferID();
+-			activateBuffer(id, SUB_VIEW, true);
++			if (!visibleIn[v])
++				continue;
++			activateBuffer(id, v, true);
++			if (svp._isChangeHistoryMarginEnabled || svp._isChangeHistoryIndicatorEnabled)
++				clearChangesHistory(v);
+ 		}
+ 		activateBuffer(originalActiveBufferID, originalActiveView, true); // set back the original
+-
+-		if (svp._isChangeHistoryMarginEnabled || svp._isChangeHistoryIndicatorEnabled)
+-			clearChangesHistory(otherView());
+ 	}
+ 
+ 	return res;
+@@ -851,14 +839,14 @@ bool Notepad_plus::doSave(BufferID id, const wchar_t * filename, bool isCopy)
+ 
+ void Notepad_plus::doClose(BufferID id, int whichOne, bool doDeleteBackup)
+ {
+-	DocTabView *tabToClose = (whichOne == MAIN_VIEW)?&_mainDocTab:&_subDocTab;
++	DocTabView *tabToClose = kexDocTab(whichOne);
+ 	int i = tabToClose->getIndexByBuffer(id);
+ 	if (i == -1)
+ 		return;
+ 
+-	size_t numInitialOpenBuffers =
+-		((_mainWindowStatus & WindowMainActive) == WindowMainActive ? _mainDocTab.nbItem() : 0) +
+-		((_mainWindowStatus & WindowSubActive) == WindowSubActive ? _subDocTab.nbItem() : 0);
++	size_t numInitialOpenBuffers = 0;
++	for (int v = 0; v < NB_VIEWS; ++v) // KEX: all visible views
++		numInitialOpenBuffers += viewVisible(v) ? kexDocTab(v)->nbItem() : 0;
+ 
+ 	if (doDeleteBackup)
+ 		MainFileManager.deleteBufferBackup(id);
+@@ -907,7 +895,7 @@ void Notepad_plus::doClose(BufferID id, int whichOne, bool doDeleteBackup)
+ #endif
+ 	}
+ 
+-	size_t nbDocs = whichOne==MAIN_VIEW?(_mainDocTab.nbItem()):(_subDocTab.nbItem());
++	size_t nbDocs = kexDocTab(whichOne)->nbItem();
+ 
+ 	if (buf->isMonitoringOn())
+ 	{
+@@ -1148,8 +1136,7 @@ bool Notepad_plus::fileClose(BufferID id, int curView)
+ 		viewToClose = curView;
+ 
+ 	// Determine if it's a cloned buffer
+-	DocTabView* nonCurrentTab = (viewToClose == MAIN_VIEW) ? &_subDocTab : &_mainDocTab;
+-	bool isCloned = nonCurrentTab->getIndexByBuffer(bufferID) != -1;
++	bool isCloned = kexIsBufferInAnotherView(bufferID, viewToClose); // KEX: a clone can be in any of the other three views
+ 
+ 	if ((buf->isUntitled() && buf->docLength() == 0) || isCloned)
+ 	{
+@@ -1193,9 +1180,10 @@ void Notepad_plus::unPinnedForAllBuffers()
+ 		buf->setPinned(false);
+ 	}
+ 
+-	for (size_t i = 0; i < _subDocTab.nbItem(); ++i)
++	for (int kexView = SUB_VIEW; kexView < NB_VIEWS; ++kexView) // KEX: sub view, view 3 and view 4
++	for (size_t i = 0; i < kexDocTab(kexView)->nbItem(); ++i)
+ 	{
+-		BufferID id = _subDocTab.getBufferByIndex(i);
++		BufferID id = kexDocTab(kexView)->getBufferByIndex(i);
+ 		Buffer* buf = MainFileManager.getBufferByID(id);
+ 		buf->setPinned(false);
+ 	}
+@@ -1296,14 +1284,16 @@ bool Notepad_plus::fileCloseAll(bool doDeleteBackup, bool isSnapshotMode)
+ 		}
+ 	}
+ 
+-	for (size_t i = 0; i < _subDocTab.nbItem() && !noSaveToAll; ++i)
++	for (int kexView = SUB_VIEW; kexView < NB_VIEWS; ++kexView) // KEX: sub view, view 3 and view 4
++	for (size_t i = 0; i < kexDocTab(kexView)->nbItem() && !noSaveToAll; ++i)
+ 	{
+-		BufferID id = _subDocTab.getBufferByIndex(i);
++		BufferID id = kexDocTab(kexView)->getBufferByIndex(i);
+ 		Buffer * buf = MainFileManager.getBufferByID(id);
+ 
+ 		// Is this buffer already included?
+ 		if (uniqueBuffers.find(id) != uniqueBuffers.end())
+ 			continue;
++		uniqueBuffers.insert(id); // KEX: so views 3 and 4 skip it too
+ 
+ 		if (buf->isUntitled() && buf->docLength() == 0)
+ 		{
+@@ -1316,8 +1306,8 @@ bool Notepad_plus::fileCloseAll(bool doDeleteBackup, bool isSnapshotMode)
+ 				if (buf->getBackupFileName() == L"" || !doesFileExist(buf->getBackupFileName().c_str())) //backup file has been deleted from outside
+ 				{
+ 					// warning user and save it if user want it.
+-					activateBuffer(id, SUB_VIEW);
+-					switchEditViewTo(SUB_VIEW);
++					activateBuffer(id, kexView);
++					switchEditViewTo(kexView);
+ 
+ 					int res = _nativeLangSpeaker.messageBox("NoBackupDoSaveFile",
+ 						_pPublicInterface->getHSelf(),
+@@ -1340,8 +1330,8 @@ bool Notepad_plus::fileCloseAll(bool doDeleteBackup, bool isSnapshotMode)
+ 			}
+ 			else
+ 			{
+-				activateBuffer(id, SUB_VIEW);
+-				switchEditViewTo(SUB_VIEW);
++				activateBuffer(id, kexView);
++				switchEditViewTo(kexView);
+ 
+ 				int res = -1;
+ 				if (saveToAll)
+@@ -1380,14 +1370,16 @@ bool Notepad_plus::fileCloseAll(bool doDeleteBackup, bool isSnapshotMode)
+ 	}
+ 
+ 	//Then start closing, inactive view first so the active is left open
+-    if (bothActive())
++	for (int kexView = 0; kexView < NB_VIEWS; ++kexView) // KEX: every visible view except the current one
++    if (kexView != currentView() && viewVisible(kexView))
+     {
++		DocTabView* pNonDocTab = kexDocTab(kexView);
+ 		//first close all docs in non-current view, which gets closed automatically
+ 		//Set active tab to the last one closed.
+-		activateBuffer(_pNonDocTab->getBufferByIndex(0), otherView());
+-		for (auto i = static_cast<int>(_pNonDocTab->nbItem()) - 1; i >= 0; --i) //close all from right to left
++		activateBuffer(pNonDocTab->getBufferByIndex(0), kexView);
++		for (auto i = static_cast<int>(pNonDocTab->nbItem()) - 1; i >= 0; --i) //close all from right to left
+ 		{
+-			doClose(_pNonDocTab->getBufferByIndex(i), otherView(), doDeleteBackup);
++			doClose(pNonDocTab->getBufferByIndex(i), kexView, doDeleteBackup);
+ 		}
+     }
+ 
+@@ -1436,8 +1428,9 @@ bool Notepad_plus::fileCloseAllGiven(const std::vector<BufferViewInfo>& fileInfo
+ 			}
+ 			else
+ 			{
+-				activateBuffer(i._bufID, SUB_VIEW);
+-				switchEditViewTo(SUB_VIEW);
++				int kexView = (_activeView == SUB_VIEW) ? SUB_VIEW : i._iView; // KEX: views 3 and 4
++				activateBuffer(i._bufID, kexView);
++				switchEditViewTo(kexView);
+ 			}
+ 
+ 			/* Do you want to save
+@@ -1528,17 +1521,21 @@ void Notepad_plus::fileCloseAllButPinned()
+ 	}
+ 
+ 
++	for (int kexView = SUB_VIEW; kexView < NB_VIEWS; ++kexView) // KEX: sub view, view 3 and view 4
++	{
++	DocTabView* pSubDocTab = kexDocTab(kexView);
+ 	iPinned = -1;
+-	for (int j = 0; j < int(_subDocTab.nbItem()); ++j)
++	for (int j = 0; j < int(pSubDocTab->nbItem()); ++j)
+ 	{
+-		if (_subDocTab.getBufferByIndex(j)->isPinned())
++		if (pSubDocTab->getBufferByIndex(j)->isPinned())
+ 			iPinned++;
+ 		else
+ 			break;
+ 	}
+-	for (int i = int(_subDocTab.nbItem()) - 1; i > iPinned; i--)
++	for (int i = int(pSubDocTab->nbItem()) - 1; i > iPinned; i--)
+ 	{
+-		bufsToClose.push_back(BufferViewInfo(_subDocTab.getBufferByIndex(i), SUB_VIEW));
++		bufsToClose.push_back(BufferViewInfo(pSubDocTab->getBufferByIndex(i), kexView));
++	}
+ 	}
+ 	
+ 	fileCloseAllGiven(bufsToClose);
+@@ -1570,7 +1567,7 @@ bool Notepad_plus::fileCloseAllButCurrent()
+ 	int active = _pDocTab->getCurrentTabIndex();
+ 	bool noSaveToAll = false;
+ 	bool saveToAll = false;
+-	std::vector<unsigned int> mainSaveOpIndex, subSaveOpIndex;
++	std::vector<unsigned int> mainSaveOpIndex;
+ 
+ 	bool isSnapshotMode = NppParameters::getInstance().getNppGUI().isSnapshotMode();
+ 
+@@ -1648,9 +1645,11 @@ bool Notepad_plus::fileCloseAllButCurrent()
+ 		}
+ 	}
+ 
+-	for (size_t i = 0; i < _subDocTab.nbItem() && !noSaveToAll; ++i)
++	std::vector<unsigned int> kexSaveOpIndex[NB_VIEWS]; // KEX: per view (subSaveOpIndex upstream)
++	for (int kexView = SUB_VIEW; kexView < NB_VIEWS; ++kexView) // KEX: sub view, view 3 and view 4
++	for (size_t i = 0; i < kexDocTab(kexView)->nbItem() && !noSaveToAll; ++i)
+ 	{
+-		BufferID id = _subDocTab.getBufferByIndex(i);
++		BufferID id = kexDocTab(kexView)->getBufferByIndex(i);
+ 		Buffer * buf = MainFileManager.getBufferByID(id);
+ 		if (id == current)
+ 			continue;
+@@ -1661,8 +1660,8 @@ bool Notepad_plus::fileCloseAllButCurrent()
+ 		}
+ 		else if (buf->isDirty())
+ 		{
+-			activateBuffer(id, SUB_VIEW);
+-			switchEditViewTo(SUB_VIEW);
++			activateBuffer(id, kexView);
++			switchEditViewTo(kexView);
+ 
+ 			int res = -1;
+ 			if (saveToAll)
+@@ -1685,13 +1684,13 @@ bool Notepad_plus::fileCloseAllButCurrent()
+ 			{
+ 				bool isSaved = fileSave(id);
+ 				if (isSaved)
+-					subSaveOpIndex.push_back((unsigned int)i);
++					kexSaveOpIndex[kexView].push_back((unsigned int)i);
+ 				else
+ 					res = IDCANCEL;	//about to abort entire procedure
+ 			}
+ 			else if (res == IDNO)
+ 			{
+-				subSaveOpIndex.push_back((unsigned int)i);
++				kexSaveOpIndex[kexView].push_back((unsigned int)i);
+ 			}
+ 			else if (res == IDIGNORE)
+ 			{
+@@ -1713,9 +1712,10 @@ bool Notepad_plus::fileCloseAllButCurrent()
+ 					doClose(_mainDocTab.getBufferByIndex(mainSaveOpIndex[j]), MAIN_VIEW, isSnapshotMode);
+ 				}
+ 
+-				for (auto j = static_cast<int>(subSaveOpIndex.size()) - 1; j >= 0; --j) //close all from right to left
++				for (int kexClosingView = SUB_VIEW; kexClosingView <= kexView; ++kexClosingView)
++				for (auto j = static_cast<int>(kexSaveOpIndex[kexClosingView].size()) - 1; j >= 0; --j) //close all from right to left
+ 				{
+-					doClose(_subDocTab.getBufferByIndex(subSaveOpIndex[j]), SUB_VIEW, isSnapshotMode);
++					doClose(kexDocTab(kexClosingView)->getBufferByIndex(kexSaveOpIndex[kexClosingView][j]), kexClosingView, isSnapshotMode);
+ 				}
+ 				return false;
+ 			}
+@@ -1727,16 +1727,18 @@ bool Notepad_plus::fileCloseAllButCurrent()
+ 	switchEditViewTo(activeViewID);
+ 
+ 	//Then start closing, inactive view first so the active is left open
+-    if (bothActive())
++	for (int kexView = 0; kexView < NB_VIEWS; ++kexView) // KEX: every visible view except the current one
++    if (kexView != currentView() && viewVisible(kexView))
+     {
++		DocTabView* pNonDocTab = kexDocTab(kexView);
+ 		//first close all docs in non-current view, which gets closed automatically
+ 		//Set active tab to the last one closed.
+-		const int viewNo = otherView();
+-		activateBuffer(_pNonDocTab->getBufferByIndex(0), viewNo);
++		const int viewNo = kexView;
++		activateBuffer(pNonDocTab->getBufferByIndex(0), viewNo);
+ 
+-		for (auto i = static_cast<int>(_pNonDocTab->nbItem()) - 1; i >= 0; --i) //close all from right to left
++		for (auto i = static_cast<int>(pNonDocTab->nbItem()) - 1; i >= 0; --i) //close all from right to left
+ 		{
+-			doClose(_pNonDocTab->getBufferByIndex(i), viewNo, isSnapshotMode);
++			doClose(pNonDocTab->getBufferByIndex(i), viewNo, isSnapshotMode);
+ 		}
+     }
+ 
+@@ -1888,7 +1890,7 @@ bool Notepad_plus::fileSaveSpecific(const wstring& fileNameToSave)
+ 	BufferID idToSave = _mainDocTab.findBufferByName(fileNameToSave.c_str());
+ 	if (idToSave == BUFFER_INVALID)
+ 	{
+-		idToSave = _subDocTab.findBufferByName(fileNameToSave.c_str());
++		idToSave = kexFindBufferByNameInViews(fileNameToSave.c_str()); // KEX: sub view, view 3 and view 4
+ 	}
+     //do not use else syntax, id might be taken from sub doc tab, 
+     //in which case fileSave needs to be executed also
+@@ -1935,11 +1937,9 @@ bool Notepad_plus::fileSaveAllConfirm()
+ 
+ size_t Notepad_plus::getNbDirtyBuffer(int view)
+ {
+-	if (view != MAIN_VIEW && view != SUB_VIEW)
++	if (view < 0 || view >= NB_VIEWS) // KEX: four views
+ 		return 0;
+-	DocTabView* pDocTabView = &_mainDocTab;
+-	if (view == SUB_VIEW)
+-		pDocTabView = &_subDocTab;
++	DocTabView* pDocTabView = kexDocTab(view);
+ 
+ 	size_t count = 0;
+ 	for (size_t i = 0; i < pDocTabView->nbItem(); ++i)
+@@ -1957,7 +1957,7 @@ size_t Notepad_plus::getNbDirtyBuffer(int view)
+ 
+ bool Notepad_plus::fileSaveAll()
+ {
+-	size_t nbDirty = getNbDirtyBuffer(MAIN_VIEW) + getNbDirtyBuffer(SUB_VIEW);
++	size_t nbDirty = getNbDirtyBuffer(MAIN_VIEW) + getNbDirtyBuffer(SUB_VIEW) + getNbDirtyBuffer(VIEW_3) + getNbDirtyBuffer(VIEW_4);
+ 
+ 	if (!nbDirty)
+ 		return false;
+@@ -1978,11 +1978,12 @@ bool Notepad_plus::fileSaveAll()
+ 			}
+ 		}
+ 
+-		if (viewVisible(SUB_VIEW))
++		for (int kexView = SUB_VIEW; kexView < NB_VIEWS; ++kexView) // KEX: sub view, view 3 and view 4
++		if (viewVisible(kexView))
+ 		{
+-			for (size_t i = 0; i < _subDocTab.nbItem(); ++i)
++			for (size_t i = 0; i < kexDocTab(kexView)->nbItem(); ++i)
+ 			{
+-				BufferID idToSave = _subDocTab.getBufferByIndex(i);
++				BufferID idToSave = kexDocTab(kexView)->getBufferByIndex(i);
+ 				fileSave(idToSave);
+ 			}
+ 		}
+@@ -2047,7 +2048,7 @@ bool Notepad_plus::fileSaveAs(BufferID bufferID, bool isSaveCopy)
+ 	{
+ 		BufferID other = _pDocTab->findBufferByName(fn.c_str());
+ 		if (other == BUFFER_INVALID)
+-			other = _pNonDocTab->findBufferByName(fn.c_str());
++			other = kexFindBufferByNameInViews(fn.c_str());
+ 
+ 		if (other == BUFFER_INVALID // both (current and other) views don't contain the same file (path), "Save As" action is allowed.
+ 			|| other->getID() == bufferID->getID()) // or if user saves the file by using "Save As" instead of "Save" (ie. in "Save As" dialog to chooses the same file), then it's still legit.
+@@ -2154,7 +2155,7 @@ bool Notepad_plus::fileRename(BufferID bufferID)
+ 			BufferID sameNamedBufferId = _pDocTab->findBufferByName(tabNewNameStr.c_str());
+ 			if (sameNamedBufferId == BUFFER_INVALID)
+ 			{
+-				sameNamedBufferId = _pNonDocTab->findBufferByName(tabNewNameStr.c_str());
++				sameNamedBufferId = kexFindBufferByNameInViews(tabNewNameStr.c_str());
+ 			}
+ 			
+ 			if (sameNamedBufferId != BUFFER_INVALID)
+@@ -2224,7 +2225,7 @@ bool Notepad_plus::useFirstLineAsTabName(BufferID bufferID)
+ 	// check whether there is any buffer with the same name
+ 	BufferID sameNamedBufferId = _pDocTab->findBufferByName(content1stLineTabName.c_str());
+ 	if (sameNamedBufferId == BUFFER_INVALID)
+-		sameNamedBufferId = _pNonDocTab->findBufferByName(content1stLineTabName.c_str());
++		sameNamedBufferId = kexFindBufferByNameInViews(content1stLineTabName.c_str());
+ 
+ 	if (content1stLineTabName != buffer->getFileName() && sameNamedBufferId == BUFFER_INVALID)
+ 	{
+@@ -2300,7 +2301,7 @@ bool Notepad_plus::fileRenameUntitledPluginAPI(BufferID id, const wchar_t* tabNe
+ 	BufferID sameNamedBufferId = _pDocTab->findBufferByName(tabNewNameStr.c_str());
+ 	if (sameNamedBufferId == BUFFER_INVALID)
+ 	{
+-		sameNamedBufferId = _pNonDocTab->findBufferByName(tabNewNameStr.c_str());
++		sameNamedBufferId = kexFindBufferByNameInViews(tabNewNameStr.c_str());
+ 	}
+ 
+ 	if (sameNamedBufferId != BUFFER_INVALID) return false;
+@@ -2378,6 +2379,8 @@ bool Notepad_plus::fileDelete(BufferID id)
+ 		bool isSnapshotMode = NppParameters::getInstance().getNppGUI().isSnapshotMode();
+ 		doClose(bufferID, MAIN_VIEW, isSnapshotMode);
+ 		doClose(bufferID, SUB_VIEW, isSnapshotMode);
++		doClose(bufferID, VIEW_3, isSnapshotMode); // KEX
++		doClose(bufferID, VIEW_4, isSnapshotMode);
+ 
+ 		scnN.nmhdr.code = NPPN_FILEDELETED;
+ 		_pluginsManager.notify(&scnN);
+@@ -2507,7 +2510,7 @@ bool Notepad_plus::loadSession(Session & session, bool isSnapshotMode, const wch
+ 	int mainIndex2Update = -1;
+ 
+ 	// no session
+-	if (!session.nbMainFiles() && !session.nbSubFiles())
++	if (!session.kexNbFiles()) // KEX: all four views
+ 	{
+ 		Buffer* buf = getCurrentBuffer();
+ 		if (nppParam.getNativeLangSpeaker()->isRTL() && nppParam.getNativeLangSpeaker()->isEditZoneRTL())
+@@ -2654,20 +2657,24 @@ bool Notepad_plus::loadSession(Session & session, bool isSnapshotMode, const wch
+ 	}
+ 
+ 
+-	showView(SUB_VIEW);
+-	switchEditViewTo(SUB_VIEW);	//open files in sub
++	for (int kexView = SUB_VIEW; kexView < NB_VIEWS; ++kexView) // KEX: sub view, view 3 and view 4
++	{
++	if (kexView >= VIEW_3 && session.kexViewFiles(kexView).empty())
++		continue; // KEX: views 3 and 4 stay hidden unless the session has files for them
++	ScintillaEditView& kexSubEditView = *kexEditView(kexView);
++	showView(kexView);
++	switchEditViewTo(kexView);	//open files in sub
+ 	int subIndex2Update = -1;
+ 
+-	bool shouldQueryMainViewForClones = (session.nbMainFiles() > 0); // only if it has real docs/tabs (a view has also its implicit doc/tab otherwise)
+ 
+-	for (size_t k = 0 ; k < session.nbSubFiles() ; )
++	for (size_t k = 0 ; k < session.kexViewFiles(kexView).size() ; )
+ 	{
+-		const wchar_t *pFn = session._subViewFiles[k]._fileName.c_str();
++		const wchar_t *pFn = session.kexViewFiles(kexView)[k]._fileName.c_str();
+ 
+ 		if (isFileSession(pFn) || isFileWorkspace(pFn))
+ 		{
+-			vector<sessionFileInfo>::iterator posIt = session._subViewFiles.begin() + k;
+-			session._subViewFiles.erase(posIt);
++			vector<sessionFileInfo>::iterator posIt = session.kexViewFiles(kexView).begin() + k;
++			session.kexViewFiles(kexView).erase(posIt);
+ 			continue;	//skip session files, not supporting recursive sessions or embedded workspace files
+ 		}
+ #ifndef	_WIN64
+@@ -2678,31 +2685,34 @@ bool Notepad_plus::loadSession(Session & session, bool isSnapshotMode, const wch
+ 			isWow64Off = true;
+ 		}
+ #endif
+-		if (doesFileExist(pFn) || (isSnapshotMode && doesFileExist(session._subViewFiles[k]._backupFilePath.c_str())))
++		if (doesFileExist(pFn) || (isSnapshotMode && doesFileExist(session.kexViewFiles(kexView)[k]._backupFilePath.c_str())))
+ 		{
+ 			//check if already open in main. If so, clone
+ 			BufferID clonedBuf = BUFFER_INVALID;
+-			if (shouldQueryMainViewForClones)
+-				clonedBuf = _mainDocTab.findBufferByName(pFn);
++			for (int kexEarlierView = MAIN_VIEW; kexEarlierView < kexView && clonedBuf == BUFFER_INVALID; ++kexEarlierView) // KEX: any earlier view
++			{
++				if (session.kexViewFiles(kexEarlierView).size() > 0) // only if it has real docs/tabs (a view has also its implicit doc/tab otherwise)
++					clonedBuf = kexDocTab(kexEarlierView)->findBufferByName(pFn);
++			}
+ 
+ 			if (clonedBuf != BUFFER_INVALID)
+ 			{
+-				loadBufferIntoView(clonedBuf, SUB_VIEW);
++				loadBufferIntoView(clonedBuf, kexView);
+ 				lastOpened = clonedBuf;
+ 			}
+ 			else
+ 			{
+-				if (isSnapshotMode && !session._subViewFiles[k]._backupFilePath.empty())
+-					lastOpened = doOpen(pFn, false, false, session._subViewFiles[k]._encoding, session._subViewFiles[k]._backupFilePath.c_str(), session._subViewFiles[k]._originalFileLastModifTimestamp);
++				if (isSnapshotMode && !session.kexViewFiles(kexView)[k]._backupFilePath.empty())
++					lastOpened = doOpen(pFn, false, false, session.kexViewFiles(kexView)[k]._encoding, session.kexViewFiles(kexView)[k]._backupFilePath.c_str(), session.kexViewFiles(kexView)[k]._originalFileLastModifTimestamp);
+ 				else
+-					lastOpened = doOpen(pFn, false, false, session._subViewFiles[k]._encoding);
++					lastOpened = doOpen(pFn, false, false, session.kexViewFiles(kexView)[k]._encoding);
+ 			}
+ 		}
+ 		else
+ 		{
+ 			BufferID foundBufID = MainFileManager.getBufferFromName(pFn);
+ 			if (foundBufID == BUFFER_INVALID)
+-				lastOpened = nppGUI._keepSessionAbsentFileEntries ? MainFileManager.newPlaceholderDocument(pFn, SUB_VIEW, userCreatedSessionName) : BUFFER_INVALID;
++				lastOpened = nppGUI._keepSessionAbsentFileEntries ? MainFileManager.newPlaceholderDocument(pFn, kexView, userCreatedSessionName) : BUFFER_INVALID;
+ 		}
+ #ifndef	_WIN64
+ 		if (isWow64Off)
+@@ -2714,10 +2724,10 @@ bool Notepad_plus::loadSession(Session & session, bool isSnapshotMode, const wch
+ 
+ 		if (lastOpened != BUFFER_INVALID)
+ 		{
+-			showView(SUB_VIEW);
++			showView(kexView);
+ 			if (canHideView(MAIN_VIEW))
+ 				hideView(MAIN_VIEW);
+-			const wchar_t *pLn = session._subViewFiles[k]._langName.c_str();
++			const wchar_t *pLn = session.kexViewFiles(kexView)[k]._langName.c_str();
+ 			int id = getLangFromMenuName(pLn);
+ 			LangType typeToSet = L_TEXT;
+ 
+@@ -2729,18 +2739,18 @@ bool Notepad_plus::loadSession(Session & session, bool isSnapshotMode, const wch
+ 			Buffer * buf = MainFileManager.getBufferByID(lastOpened);
+ 
+ 			// Set fold states
+-			if (session._subViewFiles[k]._foldStates.size() > 0)
++			if (session.kexViewFiles(kexView)[k]._foldStates.size() > 0)
+ 			{
+-				if (buf == _subEditView.getCurrentBuffer()) // current document
++				if (buf == kexSubEditView.getCurrentBuffer()) // current document
+ 					// Set folding state in the current document
+ 					subIndex2Update = static_cast<int>(k);
+ 				else
+ 					// Set fold states in the buffer
+-					buf->setHeaderLineState(session._subViewFiles[k]._foldStates, &_subEditView);
++					buf->setHeaderLineState(session.kexViewFiles(kexView)[k]._foldStates, &kexSubEditView);
+ 			}
+ 
+-			buf->setPosition(session._subViewFiles[k], &_subEditView);
+-			buf->setMapPosition(session._subViewFiles[k]._mapPos);
++			buf->setPosition(session.kexViewFiles(kexView)[k], &kexSubEditView);
++			buf->setMapPosition(session.kexViewFiles(kexView)[k]._mapPos);
+ 			if (typeToSet == L_USER)
+ 			{
+ 				if (!lstrcmp(pLn, L"User Defined"))
+@@ -2749,49 +2759,50 @@ bool Notepad_plus::loadSession(Session & session, bool isSnapshotMode, const wch
+ 				}
+ 			}
+ 			buf->setLangType(typeToSet, pLn);
+-			buf->setEncoding(session._subViewFiles[k]._encoding);
+-			buf->setUserReadOnly(session._subViewFiles[k]._isUserReadOnly || nppGUI._isFullReadOnly || nppGUI._isFullReadOnlySavingForbidden);
+-			buf->setPinned(session._subViewFiles[k]._isPinned);
++			buf->setEncoding(session.kexViewFiles(kexView)[k]._encoding);
++			buf->setUserReadOnly(session.kexViewFiles(kexView)[k]._isUserReadOnly || nppGUI._isFullReadOnly || nppGUI._isFullReadOnlySavingForbidden);
++			buf->setPinned(session.kexViewFiles(kexView)[k]._isPinned);
+ 
+-			buf->setUntitledTabRenamedStatus(session._subViewFiles[k]._isUntitledTabRenamed);
++			buf->setUntitledTabRenamedStatus(session.kexViewFiles(kexView)[k]._isUntitledTabRenamed);
+ 
+-			if (isSnapshotMode && !session._subViewFiles[k]._backupFilePath.empty() && doesFileExist(session._subViewFiles[k]._backupFilePath.c_str()))
++			if (isSnapshotMode && !session.kexViewFiles(kexView)[k]._backupFilePath.empty() && doesFileExist(session.kexViewFiles(kexView)[k]._backupFilePath.c_str()))
+ 				buf->setDirty(true);
+ 
+-			buf->setRTL(session._subViewFiles[k]._isRTL);
++			buf->setRTL(session.kexViewFiles(kexView)[k]._isRTL);
+ 
+-			_subDocTab.setIndividualTabColour(lastOpened, session._subViewFiles[k]._individualTabColour);
++			kexDocTab(kexView)->setIndividualTabColour(lastOpened, session.kexViewFiles(kexView)[k]._individualTabColour);
+ 
+ 			//Force in the document so we can add the markers
+ 			//Don't use default methods because of performance
+-			Document prevDoc = _subEditView.execute(SCI_GETDOCPOINTER);
++			Document prevDoc = kexSubEditView.execute(SCI_GETDOCPOINTER);
+ 			unsigned long MODEVENTMASK_ON = nppParam.getScintillaModEventMask();
+-			_subEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_OFF);
+-			_subEditView.execute(SCI_SETDOCPOINTER, 0, buf->getDocument());
+-			_subEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_ON);
+-			for (size_t j = 0, len = session._subViewFiles[k]._marks.size(); j < len ; ++j)
++			kexSubEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_OFF);
++			kexSubEditView.execute(SCI_SETDOCPOINTER, 0, buf->getDocument());
++			kexSubEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_ON);
++			for (size_t j = 0, len = session.kexViewFiles(kexView)[k]._marks.size(); j < len ; ++j)
+ 			{
+-				_subEditView.execute(SCI_MARKERADD, session._subViewFiles[k]._marks[j], MARK_BOOKMARK);
++				kexSubEditView.execute(SCI_MARKERADD, session.kexViewFiles(kexView)[k]._marks[j], MARK_BOOKMARK);
+ 			}
+-			_subEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_OFF);
+-			_subEditView.execute(SCI_SETDOCPOINTER, 0, prevDoc);
+-			_subEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_ON);
++			kexSubEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_OFF);
++			kexSubEditView.execute(SCI_SETDOCPOINTER, 0, prevDoc);
++			kexSubEditView.execute(SCI_SETMODEVENTMASK, MODEVENTMASK_ON);
+ 
+ 			++k;
+ 		}
+ 		else
+ 		{
+-			vector<sessionFileInfo>::iterator posIt = session._subViewFiles.begin() + k;
+-			session._subViewFiles.erase(posIt);
++			vector<sessionFileInfo>::iterator posIt = session.kexViewFiles(kexView).begin() + k;
++			session.kexViewFiles(kexView).erase(posIt);
+ 			allSessionFilesLoaded = false;
+ 		}
+ 	}
+ 	if (subIndex2Update != -1)
+ 	{
+ 		_isFolding = true;
+-		_subEditView.syncFoldStateWith(session._subViewFiles[subIndex2Update]._foldStates);
++		kexSubEditView.syncFoldStateWith(session.kexViewFiles(kexView)[subIndex2Update]._foldStates);
+ 		_isFolding = false;
+ 	}
++	}
+ 
+ 	_mainEditView.restoreCurrentPosPreStep();
+ 	_subEditView.restoreCurrentPosPreStep();
+@@ -2806,15 +2817,16 @@ bool Notepad_plus::loadSession(Session & session, bool isSnapshotMode, const wch
+ 			activateBuffer(buf, MAIN_VIEW);
+ 	}
+ 
+-	if (session._activeSubIndex < session._subViewFiles.size())
++	for (int kexView = SUB_VIEW; kexView < NB_VIEWS; ++kexView) // KEX: sub view, view 3 and view 4
++	if (session.kexActiveIndex(kexView) < session.kexViewFiles(kexView).size())
+ 	{
+-		const wchar_t* fileName = session._subViewFiles[session._activeSubIndex]._fileName.c_str();
+-		BufferID buf = _subDocTab.findBufferByName(fileName);
++		const wchar_t* fileName = session.kexViewFiles(kexView)[session.kexActiveIndex(kexView)]._fileName.c_str();
++		BufferID buf = kexDocTab(kexView)->findBufferByName(fileName);
+ 		if (buf != BUFFER_INVALID)
+-			activateBuffer(buf, SUB_VIEW);
++			activateBuffer(buf, kexView);
+ 	}
+ 
+-	if ((session.nbSubFiles() > 0) && (session._activeView == MAIN_VIEW || session._activeView == SUB_VIEW))
++	if ((session.kexNbFiles() > session.nbMainFiles()) && (session._activeView < NB_VIEWS) && viewVisible(static_cast<int>(session._activeView)))
+ 		switchEditViewTo(static_cast<int>(session._activeView));
+ 	else
+ 		switchEditViewTo(MAIN_VIEW);
+@@ -2823,6 +2835,18 @@ bool Notepad_plus::loadSession(Session & session, bool isSnapshotMode, const wch
+ 		hideView(otherView());
+ 	else if (canHideView(currentView()))
+ 		hideView(currentView());
++	for (int kexView = NB_VIEWS - 1; kexView >= 0; --kexView) // KEX: hide every view left with only its implicit empty doc
++	{
++		if (canHideView(kexView))
++			hideView(kexView);
++	}
++
++	// KEX: views that were torn out into their own windows go back out
++	for (int kexView = 0; kexView < NB_VIEWS; ++kexView)
++	{
++		if (session._kexTornOut[kexView] && viewVisible(kexView) && !kexIsTornOut(kexView))
++			kexTearOutView(kexView, nullptr, &session._kexTornRect[kexView]);
++	}
+ 
+ 	checkSyncState();
+ 
+@@ -2889,6 +2913,11 @@ bool Notepad_plus::fileLoadSession(const wchar_t *fn)
+ 			Buffer * buf1 = MainFileManager.getBufferByID(_mainDocTab.getBufferByIndex(0));
+ 			Buffer * buf2 = MainFileManager.getBufferByID(_subDocTab.getBufferByIndex(0));
+ 			isEmptyNpp = (!buf1->isDirty() && buf1->isUntitled() && !buf2->isDirty() && buf2->isUntitled());
++			for (int kexView = VIEW_3; kexView < NB_VIEWS && isEmptyNpp; ++kexView) // KEX: views 3 and 4 too
++			{
++				Buffer * bufK = MainFileManager.getBufferByID(kexDocTab(kexView)->getBufferByIndex(0));
++				isEmptyNpp = kexDocTab(kexView)->nbItem() == 1 && !bufK->isDirty() && bufK->isUntitled();
++			}
+ 		}
+ 		if (!isEmptyNpp && (nppGUI._multiInstSetting == multiInstOnSession || nppGUI._multiInstSetting == multiInst))
+ 		{
+diff --git a/PowerEditor/src/NppNotification.cpp b/PowerEditor/src/NppNotification.cpp
+index 8b85774..9ca5813 100644
+--- a/PowerEditor/src/NppNotification.cpp
++++ b/PowerEditor/src/NppNotification.cpp
+@@ -34,14 +34,19 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 	//Important, keep track of which element generated the message
+ 	bool isFromPrimary = (_mainEditView.getHSelf() == notification->nmhdr.hwndFrom || _mainDocTab.getHSelf() == notification->nmhdr.hwndFrom);
+ 	bool isFromSecondary = !isFromPrimary && (_subEditView.getHSelf() == notification->nmhdr.hwndFrom || _subDocTab.getHSelf() == notification->nmhdr.hwndFrom);
++	// KEX: views 3 and 4. kexNotifyView is the view (0..3) the notification comes from, -1 for anything else
++	const int kexNotifyView = kexViewOfControl(static_cast<HWND>(notification->nmhdr.hwndFrom));
++	const bool isFromKexView = (kexNotifyView == VIEW_3 || kexNotifyView == VIEW_4);
+ 	
+ 	ScintillaEditView * notifyView = nullptr;
+ 	if (isFromPrimary)
+ 		notifyView = &_mainEditView;
+ 	else if (isFromSecondary)
+ 		notifyView = &_subEditView;
++	else if (isFromKexView)
++		notifyView = kexEditView(kexNotifyView);
+ 
+-	DocTabView *notifyDocTab = isFromPrimary?&_mainDocTab:&_subDocTab;
++	DocTabView *notifyDocTab = isFromPrimary?&_mainDocTab:(isFromKexView ? kexDocTab(kexNotifyView) : &_subDocTab);
+ 	TBHDR * tabNotification = (TBHDR*) notification;
+ 	switch (notification->nmhdr.code)
+ 	{
+@@ -99,6 +104,10 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 			{
+ 				buf = _subEditView.getCurrentBuffer();
+ 			}
++			else if (isFromKexView)
++			{
++				buf = notifyView->getCurrentBuffer(); // KEX
++			}
+ 			else
+ 			{
+ 				//Done by invisibleEditView?
+@@ -145,10 +154,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 		{
+ 			if (!notifyView) return FALSE;
+ 
+-			if (notification->nmhdr.hwndFrom == _mainEditView.getHSelf())
+-				switchEditViewTo(MAIN_VIEW);
+-			else if (notification->nmhdr.hwndFrom == _subEditView.getHSelf())
+-				switchEditViewTo(SUB_VIEW);
++			switchEditViewTo(kexNotifyView); // KEX: any of the four views
+ 
+ 			intptr_t lineClick = _pEditView->execute(SCI_LINEFROMPOSITION, notification->position);
+ 
+@@ -158,9 +164,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 				if (_pDocMap)
+ 					_pDocMap->fold(lineClick, _pEditView->isFolded(lineClick));
+ 
+-				ScintillaEditView* unfocusView = isFromPrimary ? &_subEditView : &_mainEditView;
+-
+-				_smartHighlighter.highlightView(_pEditView, unfocusView);
++				kexSmartHighlight(_pEditView); // KEX: highlight in every visible view
+ 			}
+ 			else if ((notification->margin == ScintillaEditView::_SC_MARGE_SYMBOL) && !notification->modifiers)
+ 			{
+@@ -174,10 +178,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 		{
+ 			if (!notifyView) return FALSE;
+ 
+-			if (notification->nmhdr.hwndFrom == _mainEditView.getHSelf())
+-				switchEditViewTo(MAIN_VIEW);
+-			else if (notification->nmhdr.hwndFrom == _subEditView.getHSelf())
+-				switchEditViewTo(SUB_VIEW);
++			switchEditViewTo(kexNotifyView); // KEX: any of the four views
+ 
+ 			if ((notification->margin == ScintillaEditView::_SC_MARGE_SYMBOL) && !notification->modifiers)
+ 			{
+@@ -210,7 +211,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 				Buffer* currentBuf = _pEditView->getCurrentBuffer();
+ 				if (currentBuf->allowAutoCompletion())
+ 				{
+-					AutoCompletion* autoC = isFromPrimary ? &_autoCompleteMain : &_autoCompleteSub;
++					AutoCompletion* autoC = kexAutoComplete(notifyView); // KEX
+ 					bool isColumnMode = _pEditView->execute(SCI_GETSELECTIONS) > 1; // Multi-Selection || Column mode)
+ 					if (nppGui._matchedPairConf.hasAnyPairsPair() && !isColumnMode)
+ 						autoC->insertMatchedChars(notification->ch, nppGui._matchedPairConf);
+@@ -478,8 +479,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 					nppGui._disableSmartHiliteTmp = false;
+ 				else
+ 				{
+-					ScintillaEditView* anotherView = isFromPrimary ? &_subEditView : &_mainEditView;
+-					_smartHighlighter.highlightView(notifyView, anotherView);
++					kexSmartHighlight(notifyView); // KEX: highlight in every visible view
+ 				}
+ 			}
+ 
+@@ -493,7 +493,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 
+ 			if (_pFuncList && (!_pFuncList->isClosed()) && _pFuncList->isVisible())
+ 				_pFuncList->markEntry();
+-			AutoCompletion* autoC = isFromPrimary ? &_autoCompleteMain : &_autoCompleteSub;
++			AutoCompletion* autoC = kexAutoComplete(notifyView); // KEX
+ 			autoC->update(0);
+ 
+ 			break;
+@@ -503,17 +503,20 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 		{
+ 			if (!notifyView) return FALSE;
+ 
+-			ScintillaEditView* unfocusView = isFromPrimary ? &_subEditView : &_mainEditView;
+-			_smartHighlighter.highlightView(notifyView, unfocusView);
++			kexSmartHighlight(notifyView); // KEX
+ 
+ 			if (!_isSyncingZoom)
+ 			{
+ 				_isSyncingZoom = true;
+ 				const ScintillaViewParams& svp = NppParameters::getInstance().getSVP();
+-				if (svp._zoomSync && viewVisible(MAIN_VIEW) && viewVisible(SUB_VIEW))
++				if (svp._zoomSync && kexNbVisibleViews() > 1)
+ 				{
+ 					intptr_t zoom = notifyView->execute(SCI_GETZOOM);
+-					unfocusView->execute(SCI_SETZOOM, zoom);
++					for (int v = 0; v < NB_VIEWS; ++v) // KEX: all visible views
++					{
++						if (kexEditView(v) != notifyView && viewVisible(v))
++							kexEditView(v)->execute(SCI_SETZOOM, zoom);
++					}
+ 				}
+ 				_isSyncingZoom = false;
+ 			}
+@@ -584,6 +587,15 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 				_subEditView.setWrapRestoreNeeded(false);
+ 			}
+ 
++			for (int kexView = VIEW_3; kexView < NB_VIEWS; ++kexView) // KEX
++			{
++				if (kexEditView(kexView)->isWrapRestoreNeeded())
++				{
++					kexEditView(kexView)->restoreCurrentPosPreStep();
++					kexEditView(kexView)->setWrapRestoreNeeded(false);
++				}
++			}
++
+ 			notifyView->updateLineNumberWidth();
+ 
+ 			if (_syncInfo.doSync())
+@@ -615,7 +627,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 		{
+ 			if (!notifyView) return FALSE;
+ 
+-			AutoCompletion* autoC = isFromPrimary ? &_autoCompleteMain : &_autoCompleteSub;
++			AutoCompletion* autoC = kexAutoComplete(notifyView); // KEX
+ 			autoC->callTipClick(notification->position);
+ 			break;
+ 		}
+@@ -652,7 +664,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 
+ 		case SCN_FOLDINGSTATECHANGED: // Notification not part of Scintilla, but Notepad++ added
+ 		{
+-			if ((notification->nmhdr.hwndFrom == _mainEditView.getHSelf()) || (notification->nmhdr.hwndFrom == _subEditView.getHSelf()))
++			if (notifyView) // KEX: any of the four views
+ 			{
+ 				size_t lineClicked = notification->line;
+ 
+@@ -685,7 +697,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 			if (doPeekOnTab)
+ 			{
+ 				TBHDR *tbHdr = reinterpret_cast<TBHDR *>(notification);
+-				DocTabView *pTabDocView = isFromPrimary ? &_mainDocTab : (isFromSecondary ? &_subDocTab : nullptr);
++				DocTabView *pTabDocView = isFromPrimary ? &_mainDocTab : (isFromSecondary ? &_subDocTab : (isFromKexView ? kexDocTab(kexNotifyView) : nullptr)); // KEX
+ 
+ 				if (pTabDocView)
+ 				{
+@@ -702,7 +714,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 					p.y = rect.bottom;
+ 					::ClientToScreen(pTabDocView->getHSelf(), &p);
+ 
+-					if (pBuf != currentBufMain && pBuf != currentBufSub) // if hover on other tab
++					if (pBuf != currentBufMain && pBuf != currentBufSub && pBuf != _view3EditView.getCurrentBuffer() && pBuf != _view4EditView.getCurrentBuffer()) // if hover on other tab (KEX: of any view)
+ 					{
+ 						_documentPeeker.doDialog(p, pBuf, *(const_cast<ScintillaEditView*>(pTabDocView->getScintillaEditView())));
+ 					}
+@@ -716,7 +728,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 			if (doPeekOnMap && _pDocMap && (!_pDocMap->isClosed()) && _pDocMap->isVisible())
+ 			{
+ 				TBHDR *tbHdr = reinterpret_cast<TBHDR *>(notification);
+-				DocTabView *pTabDocView = isFromPrimary ? &_mainDocTab : (isFromSecondary ? &_subDocTab : nullptr);
++				DocTabView *pTabDocView = isFromPrimary ? &_mainDocTab : (isFromSecondary ? &_subDocTab : (isFromKexView ? kexDocTab(kexNotifyView) : nullptr)); // KEX
+ 				if (pTabDocView)
+ 				{
+ 					BufferID id = pTabDocView->getBufferByIndex(tbHdr->_tabOrigin);
+@@ -725,7 +737,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 					const Buffer* currentBufMain = _mainEditView.getCurrentBuffer();
+ 					const Buffer* currentBufSub = _subEditView.getCurrentBuffer();
+ 
+-					if (pBuf != currentBufMain && pBuf != currentBufSub) // if hover on other tab
++					if (pBuf != currentBufMain && pBuf != currentBufSub && pBuf != _view3EditView.getCurrentBuffer() && pBuf != _view4EditView.getCurrentBuffer()) // if hover on other tab (KEX: of any view)
+ 					{
+ 						_pDocMap->showInMapTemporarily(pBuf, notifyView);
+ 						_pDocMap->setSyntaxHiliting();
+@@ -775,6 +787,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 				//It's the coordinate of screen, so we can call
+ 				//"WindowFromPoint" function without converting the point
+ 				HWND hWin = ::WindowFromPoint(p);
++				int kexDropView = kexViewFromHwnd(hWin); // KEX: any view, docked or torn out
+ 				if (hWin == _pEditView->getHSelf()) // In the same view group
+ 				{
+ 					if (!_tabPopupDropMenu.isCreated())
+@@ -784,26 +797,39 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 						vector<MenuItemUnit> itemUnitArray;
+ 						itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_GOTO_ANOTHER_VIEW, goToView));
+ 						itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_CLONE_TO_ANOTHER_VIEW, cloneToView));
++						itemUnitArray.push_back(MenuItemUnit(IDM_KEX_DOC_TEAROUT, L"Move to New Window"));
+ 						_tabPopupDropMenu.create(_pPublicInterface->getHSelf(), itemUnitArray, _mainMenuHandle);
+ 						_nativeLangSpeaker.changeLangTabDropContextMenu(_tabPopupDropMenu.getMenuHandle());
+ 					}
+ 					_tabPopupDropMenu.display(p);
+ 				}
+-				else if ((hWin == _pNonDocTab->getHSelf()) ||
+-						 (hWin == _pNonEditView->getHSelf())) // In the another view group
++				else if (kexDropView != -1 && kexDropView != currentView()) // In the another view group
+ 				{
+-					docGotoAnotherEditView(isInCtrlStat?TransferClone:TransferMove);
++					docGotoAnotherEditView(isInCtrlStat?TransferClone:TransferMove, kexDropView);
+ 				}
+ 				else // Drop outside of current Notepad++
+ 				{
+ 					RECT nppZone{};
+ 					::GetWindowRect(_pPublicInterface->getHSelf(), &nppZone);
+ 					bool isInNppZone = (((p.x >= nppZone.left) && (p.x <= nppZone.right)) && (p.y >= nppZone.top) && (p.y <= nppZone.bottom));
+-					if (isInNppZone)
++					if (isInNppZone || kexDropView != -1)
+ 					{
+ 						// Do nothing
+ 						return TRUE;
+ 					}
++
++					// KEX: a tab dropped outside Notepad++ snaps out into its own window,
++					// unless it was dropped on another Notepad++ instance (handled below as upstream does)
++					wchar_t kexClassName[MAX_PATH]{};
++					HWND kexWinParent = hWin ? ::GetParent(hWin) : nullptr;
++					if (kexWinParent)
++						::GetClassName(kexWinParent, kexClassName, MAX_PATH);
++					const bool kexOverOtherNpp = (lstrcmp(kexClassName, _pPublicInterface->getClassName()) == 0) && (kexWinParent != _pPublicInterface->getHSelf());
++					if (!kexOverOtherNpp && kexTearOutDoc(isInCtrlStat ? TransferClone : TransferMove, &p))
++					{
++						sender->resetDraggingPoint();
++						return TRUE;
++					}
+ 					wstring quotFileName = L"\"";
+ 					quotFileName += _pEditView->getCurrentBuffer()->getFullPathName();
+ 					quotFileName += L"\"";
+@@ -821,7 +847,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 						int index = _pDocTab->getCurrentTabIndex();
+ 						BufferID bufferToClose = notifyDocTab->getBufferByIndex(index);
+ 						Buffer * buf = MainFileManager.getBufferByID(bufferToClose);
+-						int iView = isFromPrimary?MAIN_VIEW:SUB_VIEW;
++						int iView = isFromKexView ? kexNotifyView : (isFromPrimary?MAIN_VIEW:SUB_VIEW); // KEX
+ 						if (buf->isDirty())
+ 						{
+ 							_nativeLangSpeaker.messageBox("CannotMoveDoc",
+@@ -858,7 +884,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 			int index = tabNotification->_tabOrigin;
+ 			BufferID bufferToClose = notifyDocTab->getBufferByIndex(index);
+ 			Buffer * buf = MainFileManager.getBufferByID(bufferToClose);
+-			int iView = isFromPrimary ? MAIN_VIEW : SUB_VIEW;
++			int iView = isFromKexView ? kexNotifyView : (isFromPrimary ? MAIN_VIEW : SUB_VIEW); // KEX
+ 			if (buf->isDirty())
+ 			{
+ 				activateBuffer(bufferToClose, iView);
+@@ -896,6 +922,13 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 				else
+ 					_subDocTab.tabToEnd(index);
+ 			}
++			else if (isFromKexView) // KEX
++			{
++				if (!isPinned)
++					notifyDocTab->tabToStart(index);
++				else
++					notifyDocTab->tabToEnd(index);
++			}
+ 			else
+ 				return FALSE;
+ 
+@@ -915,6 +948,10 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 			{
+ 				iView = SUB_VIEW;
+ 			}
++			else if (isFromKexView) // KEX
++			{
++				iView = kexNotifyView;
++			}
+ 			else
+ 				break;
+ 
+@@ -973,6 +1010,15 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 				// Switch off
+ 				switchEditViewTo(SUB_VIEW);
+ 			}
++			else if (isFromKexView && notification->nmhdr.hwndFrom == notifyDocTab->getHSelf()) // KEX
++			{
++				if (_activeView != kexNotifyView && NppParameters::getInstance().getNppGUI().isSnapshotMode())
++				{
++					// Before switching off, synchronize backup file
++					MainFileManager.backupCurrentBuffer();
++				}
++				switchEditViewTo(kexNotifyView);
++			}
+ 
+ 			break;
+ 		}
+@@ -1034,6 +1080,10 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 			{
+ 				switchEditViewTo(SUB_VIEW);
+ 			}
++			else if (isFromKexView && notification->nmhdr.hwndFrom == notifyDocTab->getHSelf()) // KEX
++			{
++				switchEditViewTo(kexNotifyView);
++			}
+ 			else if (notification->nmhdr.hwndFrom == _statusBar.getHSelf())  // From Status Bar
+ 			{
+ 				LPNMMOUSE lpnm = (LPNMMOUSE)notification;
+@@ -1140,6 +1190,15 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 					itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_CLONE_TO_ANOTHER_VIEW, L"Clone to Other View", L"Move Document"));
+ 					itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_GOTO_NEW_INSTANCE, L"Move to New Instance", L"Move Document"));
+ 					itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_LOAD_IN_NEW_INSTANCE, L"Open in New Instance", L"Move Document"));
++					// KEX: four views and torn-out windows (inside the submenu, so tabCmSubMenuEntryPos is unchanged)
++					itemUnitArray.push_back(MenuItemUnit(0, NULL, L"Move Document"));
++					itemUnitArray.push_back(MenuItemUnit(IDM_KEX_DOC_TO_VIEW1, L"Move to View 1 (top left)", L"Move Document"));
++					itemUnitArray.push_back(MenuItemUnit(IDM_KEX_DOC_TO_VIEW2, L"Move to View 2 (top right)", L"Move Document"));
++					itemUnitArray.push_back(MenuItemUnit(IDM_KEX_DOC_TO_VIEW3, L"Move to View 3 (bottom left)", L"Move Document"));
++					itemUnitArray.push_back(MenuItemUnit(IDM_KEX_DOC_TO_VIEW4, L"Move to View 4 (bottom right)", L"Move Document"));
++					itemUnitArray.push_back(MenuItemUnit(IDM_KEX_DOC_TEAROUT, L"Move to New Window", L"Move Document"));
++					itemUnitArray.push_back(MenuItemUnit(IDM_KEX_VIEW_TEAROUT, L"Snap This View Out", L"Move Document"));
++					itemUnitArray.push_back(MenuItemUnit(IDM_KEX_VIEW_SNAPBACK, L"Snap This View Back In", L"Move Document"));
+ 					itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_TAB_COLOUR_1, L"Apply Color 1", L"Apply Color to Tab"));
+ 					itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_TAB_COLOUR_2, L"Apply Color 2", L"Apply Color to Tab"));
+ 					itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_TAB_COLOUR_3, L"Apply Color 3", L"Apply Color to Tab"));
+@@ -1276,10 +1335,15 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 				else
+ 				{
+ 					BufferID idd = BUFFER_INVALID;
++					POINT kexScreenPt{};
++					::GetCursorPos(&kexScreenPt);
++					int kexTipView = kexViewOfControl(::WindowFromPoint(kexScreenPt)); // KEX: views 3 and 4, also torn out
+ 					if (hWin == _mainDocTab.getHSelf())
+ 						idd = _mainDocTab.getBufferByIndex(id);
+ 					else if (hWin == _subDocTab.getHSelf())
+ 						idd = _subDocTab.getBufferByIndex(id);
++					else if (kexTipView != -1 && kexDocTab(kexTipView)->getHSelf() == ::WindowFromPoint(kexScreenPt))
++						idd = kexDocTab(kexTipView)->getBufferByIndex(id);
+ 					else
+ 						return FALSE;
+ 
+diff --git a/PowerEditor/src/Parameters.cpp b/PowerEditor/src/Parameters.cpp
+index c6b1600..cdd9ffe 100644
+--- a/PowerEditor/src/Parameters.cpp
++++ b/PowerEditor/src/Parameters.cpp
+@@ -337,6 +337,22 @@ static constexpr WinMenuKeyDefinition winKeyDefs[]
+ 	{ VK_NULL,    IDM_VIEW_CLONE_TO_ANOTHER_VIEW,               false, false, false, nullptr },
+ 	{ VK_NULL,    IDM_VIEW_GOTO_NEW_INSTANCE,                   false, false, false, nullptr },
+ 	{ VK_NULL,    IDM_VIEW_LOAD_IN_NEW_INSTANCE,                false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_DOC_TO_VIEW1,                         false, false, false, nullptr }, // KEX
++	{ VK_NULL,    IDM_KEX_DOC_TO_VIEW2,                         false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_DOC_TO_VIEW3,                         false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_DOC_TO_VIEW4,                         false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_DOC_CLONE_TO_VIEW1,                   false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_DOC_CLONE_TO_VIEW2,                   false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_DOC_CLONE_TO_VIEW3,                   false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_DOC_CLONE_TO_VIEW4,                   false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_DOC_TEAROUT,                          false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_VIEW_TEAROUT,                         false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_VIEW_SNAPBACK,                        false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_SNAPBACK_ALL,                         false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_FOCUS_VIEW1,                          false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_FOCUS_VIEW2,                          false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_FOCUS_VIEW3,                          false, false, false, nullptr },
++	{ VK_NULL,    IDM_KEX_FOCUS_VIEW4,                          false, false, false, nullptr },
+ 
+ 	{ VK_NUMPAD1, IDM_VIEW_TAB1,                                true,  false, false, nullptr },
+ 	{ VK_NUMPAD2, IDM_VIEW_TAB2,                                true,  false, false, nullptr },
+@@ -3428,10 +3444,12 @@ bool NppParameters::getSessionFromXmlTree(const NppXml::Document& pSessionDoc, S
+ 
+ 	WcharMbcsConvertor& wmc = WcharMbcsConvertor::getInstance();
+ 
+-	static constexpr size_t nbView = 2;
++	static constexpr size_t nbView = 4; // KEX: main, sub, view 3, view 4
+ 	NppXml::Element viewRoots[nbView] {
+ 		NppXml::firstChildElement(sessionRoot, "mainView"),
+-		NppXml::firstChildElement(sessionRoot, "subView")
++		NppXml::firstChildElement(sessionRoot, "subView"),
++		NppXml::firstChildElement(sessionRoot, "kexView3"),
++		NppXml::firstChildElement(sessionRoot, "kexView4")
+ 	};
+ 
+ 	HINSTANCE hInst = ::GetModuleHandle(nullptr);
+@@ -3448,10 +3466,16 @@ bool NppParameters::getSessionFromXmlTree(const NppXml::Document& pSessionDoc, S
+ 			const int index2 = NppXml::intAttribute(viewRoots[k], "activeIndex", -1);
+ 			if (index2 >= 0)
+ 			{
+-				if (k == 0)
+-					session._activeMainIndex = index2;
+-				else // k == 1
+-					session._activeSubIndex = index2;
++				session.kexActiveIndex(static_cast<int>(k)) = index2;
++			}
++
++			if (NppXml::intAttribute(viewRoots[k], "kexTornOut", 0) == 1)
++			{
++				session._kexTornOut[k] = true;
++				session._kexTornRect[k].left = NppXml::intAttribute(viewRoots[k], "kexLeft", 100);
++				session._kexTornRect[k].top = NppXml::intAttribute(viewRoots[k], "kexTop", 100);
++				session._kexTornRect[k].right = NppXml::intAttribute(viewRoots[k], "kexRight", 900);
++				session._kexTornRect[k].bottom = NppXml::intAttribute(viewRoots[k], "kexBottom", 700);
+ 			}
+ 
+ 			for (NppXml::Element childNode = NppXml::firstChildElement(viewRoots[k], "File"), nextNode;
+@@ -3647,10 +3671,7 @@ bool NppParameters::getSessionFromXmlTree(const NppXml::Document& pSessionDoc, S
+ 							sfi._foldStates.push_back(static_cast<size_t>(lineNumber));
+ 						}
+ 					}
+-					if (k == 0)
+-						session._mainViewFiles.push_back(sfi);
+-					else // k == 1
+-						session._subViewFiles.push_back(sfi);
++					session.kexViewFiles(static_cast<int>(k)).push_back(sfi);
+ 				}
+ 			}
+ 		}
+@@ -4863,15 +4884,25 @@ void NppParameters::writeSession(const Session& session, const wchar_t* fileName
+ 			size_t activeIndex = 0;
+ 		};
+ 
+-		static constexpr int nbElem = 2;
++		static constexpr int nbElem = 4; // KEX: main, sub, view 3, view 4
+ 		ViewElem viewElems[nbElem]{
+ 			ViewElem{.viewNode = NppXml::createChildElement(sessionNode, "mainView"), .viewFiles = &session._mainViewFiles, .activeIndex = session._activeMainIndex},
+-			ViewElem{.viewNode = NppXml::createChildElement(sessionNode, "subView"), .viewFiles = &session._subViewFiles, .activeIndex = session._activeSubIndex}
++			ViewElem{.viewNode = NppXml::createChildElement(sessionNode, "subView"), .viewFiles = &session._subViewFiles, .activeIndex = session._activeSubIndex},
++			ViewElem{.viewNode = NppXml::createChildElement(sessionNode, "kexView3"), .viewFiles = &session._kexView3Files, .activeIndex = session._kexActiveView3Index},
++			ViewElem{.viewNode = NppXml::createChildElement(sessionNode, "kexView4"), .viewFiles = &session._kexView4Files, .activeIndex = session._kexActiveView4Index}
+ 		};
+ 
+ 		for (size_t k = 0; k < nbElem ; ++k)
+ 		{
+ 			NppXml::setAttribute(viewElems[k].viewNode, "activeIndex", viewElems[k].activeIndex);
++			if (session._kexTornOut[k])
++			{
++				NppXml::setAttribute(viewElems[k].viewNode, "kexTornOut", 1);
++				NppXml::setAttribute(viewElems[k].viewNode, "kexLeft", session._kexTornRect[k].left);
++				NppXml::setAttribute(viewElems[k].viewNode, "kexTop", session._kexTornRect[k].top);
++				NppXml::setAttribute(viewElems[k].viewNode, "kexRight", session._kexTornRect[k].right);
++				NppXml::setAttribute(viewElems[k].viewNode, "kexBottom", session._kexTornRect[k].bottom);
++			}
+ 			const std::vector<sessionFileInfo>& viewSessionFiles = *(viewElems[k].viewFiles);
+ 
+ 			for (const auto& vsFile : viewSessionFiles)
+diff --git a/PowerEditor/src/Parameters.h b/PowerEditor/src/Parameters.h
+index 5db0df6..86a9482 100644
+--- a/PowerEditor/src/Parameters.h
++++ b/PowerEditor/src/Parameters.h
+@@ -166,6 +166,21 @@ struct Session
+ 	std::vector<sessionFileInfo> _mainViewFiles;
+ 	std::vector<sessionFileInfo> _subViewFiles;
+ 	std::vector<FileBrowserRootsInfo> _fileBrowserRoots;
++
++	// KEX: views 3 and 4 (bottom row of the 2x2 grid) and torn-out view windows
++	std::vector<sessionFileInfo> _kexView3Files;
++	std::vector<sessionFileInfo> _kexView4Files;
++	size_t _kexActiveView3Index = 0;
++	size_t _kexActiveView4Index = 0;
++	bool _kexTornOut[4] = {};
++	RECT _kexTornRect[4] = {};
++	std::vector<sessionFileInfo>& kexViewFiles(int view) {
++		return view == 0 ? _mainViewFiles : (view == 1 ? _subViewFiles : (view == 2 ? _kexView3Files : _kexView4Files));
++	}
++	size_t& kexActiveIndex(int view) {
++		return view == 0 ? _activeMainIndex : (view == 1 ? _activeSubIndex : (view == 2 ? _kexActiveView3Index : _kexActiveView4Index));
++	}
++	size_t kexNbFiles() const { return _mainViewFiles.size() + _subViewFiles.size() + _kexView3Files.size() + _kexView4Files.size(); }
+ };
+ 
+ 
+diff --git a/PowerEditor/src/WinControls/SplitterContainer/SplitterContainer.cpp b/PowerEditor/src/WinControls/SplitterContainer/SplitterContainer.cpp
+index 08373c3..c96e8cf 100644
+--- a/PowerEditor/src/WinControls/SplitterContainer/SplitterContainer.cpp
++++ b/PowerEditor/src/WinControls/SplitterContainer/SplitterContainer.cpp
+@@ -196,11 +196,13 @@ LRESULT SplitterContainer::runProc(UINT message, WPARAM wParam, LPARAM lParam)
+ 				case ROTATION_LEFT:
+ 				{
+ 					rotateTo(DIRECTION::LEFT);
++					::SendMessage(_hParent, NPPM_INTERNAL_KEX_SPLITTERROTATED, reinterpret_cast<WPARAM>(_hSelf), static_cast<LPARAM>(DIRECTION::LEFT)); // KEX
+ 					return 0;
+ 				}
+ 				case ROTATION_RIGHT:
+ 				{
+ 					rotateTo(DIRECTION::RIGHT);
++					::SendMessage(_hParent, NPPM_INTERNAL_KEX_SPLITTERROTATED, reinterpret_cast<WPARAM>(_hSelf), static_cast<LPARAM>(DIRECTION::RIGHT)); // KEX
+ 					return 0;
+ 				}
+ 			}
+diff --git a/PowerEditor/src/WinControls/SplitterContainer/SplitterContainer.h b/PowerEditor/src/WinControls/SplitterContainer/SplitterContainer.h
+index ddcf11c..e1f0dbd 100644
+--- a/PowerEditor/src/WinControls/SplitterContainer/SplitterContainer.h
++++ b/PowerEditor/src/WinControls/SplitterContainer/SplitterContainer.h
+@@ -23,6 +23,9 @@
+ #include "Window.h"
+ 
+ 
++// KEX: sent to the parent after the user rotates a splitter (wParam = container HWND, lParam = DIRECTION)
++#define NPPM_INTERNAL_KEX_SPLITTERROTATED (WM_USER + 9000 + 99)
++
+ enum class DIRECTION
+ {
+ 	RIGHT,
+@@ -60,6 +63,17 @@ public:
+ 		return ((_dwSplitterStyle & SV_VERTICAL) != 0);
+ 	}
+ 
++	// KEX: the four-view grid needs to know when a rotation swapped the two panes
++	Window* getWin0() const
++	{
++		return _pWin0;
++	}
++
++	Window* getWin1() const
++	{
++		return _pWin1;
++	}
++
+ private:
+ 	Window* _pWin0 = nullptr; // left or top window
+ 	Window* _pWin1 = nullptr; // right or bottom window
+diff --git a/PowerEditor/src/WinControls/VerticalFileSwitcher/VerticalFileSwitcher.cpp b/PowerEditor/src/WinControls/VerticalFileSwitcher/VerticalFileSwitcher.cpp
+index 726e507..0ec69e3 100644
+--- a/PowerEditor/src/WinControls/VerticalFileSwitcher/VerticalFileSwitcher.cpp
++++ b/PowerEditor/src/WinControls/VerticalFileSwitcher/VerticalFileSwitcher.cpp
+@@ -17,6 +17,7 @@
+ 
+ 
+ #include "VerticalFileSwitcher.h"
++#include "KexApi.h"
+ #include "menuCmdID.h"
+ #include "Parameters.h"
+ #include "resource.h"
+@@ -605,15 +606,17 @@ void VerticalFileSwitcher::activateDoc(TaskLstFnStatus *tlfs) const
+ 	int view = tlfs->_iView;
+ 	BufferID bufferID = static_cast<BufferID>(tlfs->_bufID);
+ 	
+-	auto currentView = ::SendMessage(_hParent, NPPM_GETCURRENTVIEW, 0, 0);
++	auto currentView = ::SendMessage(_hParent, NPPM_KEX_GETCURRENTVIEW, 0, 0); // KEX: 0..3
+ 	BufferID currentBufID = reinterpret_cast<BufferID>(::SendMessage(_hParent, NPPM_GETCURRENTBUFFERID, 0, 0));
+ 
+ 	if (bufferID == currentBufID && view == currentView)
+ 		return;
+ 	
+ 	int docPosInfo = static_cast<int32_t>(::SendMessage(_hParent, NPPM_GETPOSFROMBUFFERID, reinterpret_cast<WPARAM>(bufferID), view));
+-	int view2set = docPosInfo >> 30;
+-	int index2Switch = (docPosInfo << 2) >> 2;
++	if (docPosInfo == -1)
++		return;
++	int view2set = static_cast<int>(static_cast<UINT>(docPosInfo) >> 30); // KEX: views 2 and 3 set the sign bit
++	int index2Switch = docPosInfo & 0x3FFFFFFF;
+ 
+ 	::SendMessage(_hParent, NPPM_ACTIVATEDOC, view2set, index2Switch);
+ }
+@@ -624,8 +627,10 @@ void VerticalFileSwitcher::closeDoc(TaskLstFnStatus *tlfs) const
+ 	BufferID bufferID = static_cast<BufferID>(tlfs->_bufID);
+ 		
+ 	int docPosInfo = static_cast<int32_t>(::SendMessage(_hParent, NPPM_GETPOSFROMBUFFERID, reinterpret_cast<WPARAM>(bufferID), view));
+-	int view2set = docPosInfo >> 30;
+-	int index2Switch = (docPosInfo << 2) >> 2;
++	if (docPosInfo == -1)
++		return;
++	int view2set = static_cast<int>(static_cast<UINT>(docPosInfo) >> 30); // KEX: views 2 and 3 set the sign bit
++	int index2Switch = docPosInfo & 0x3FFFFFFF;
+ 
+ 	::SendMessage(_hParent, NPPM_INTERNAL_CLOSEDOC, view2set, index2Switch);
+ }
+diff --git a/PowerEditor/src/WinControls/VerticalFileSwitcher/VerticalFileSwitcherListView.cpp b/PowerEditor/src/WinControls/VerticalFileSwitcher/VerticalFileSwitcherListView.cpp
+index 3010685..a0bdd46 100644
+--- a/PowerEditor/src/WinControls/VerticalFileSwitcher/VerticalFileSwitcherListView.cpp
++++ b/PowerEditor/src/WinControls/VerticalFileSwitcher/VerticalFileSwitcherListView.cpp
+@@ -73,6 +73,14 @@ void VerticalFileSwitcherListView::init(HINSTANCE hInst, HWND parent, HIMAGELIST
+ 
+ 	ListView_InsertGroup(_hSelf, -1, &group);
+ 	ListView_InsertGroup(_hSelf, -1, &group2);
++
++	// KEX: groups 3 and 4 hold the files of views 3 and 4
++	LVGROUP group3 = group;
++	group3.iGroupId = 3;
++	LVGROUP group4 = group;
++	group4.iGroupId = 4;
++	ListView_InsertGroup(_hSelf, -1, &group3);
++	ListView_InsertGroup(_hSelf, -1, &group4);
+ }
+ 
+ void VerticalFileSwitcherListView::destroy()
+@@ -154,7 +162,7 @@ void VerticalFileSwitcherListView::initList()
+ 		item.iSubItem = 0;
+ 		item.iImage = fileNameStatus._status;
+ 		item.lParam = reinterpret_cast<LPARAM>(tl);
+-		item.iGroupId = (fileNameStatus._iView == MAIN_VIEW) ? _groupID : _group2ID;
++		item.iGroupId = (fileNameStatus._iView == MAIN_VIEW) ? _groupID : (fileNameStatus._iView > SUB_VIEW && fileNameStatus._iView < 4 ? fileNameStatus._iView + 1 : _group2ID); // KEX
+ 		ListView_InsertItem(_hSelf, &item);
+ 		int colIndex2 = 0;
+ 		if (isExtColumn)
+@@ -358,7 +366,7 @@ int VerticalFileSwitcherListView::add(BufferID bufferID, int iView)
+ 	item.iSubItem = 0;
+ 	item.iImage = buf->isMonitoringOn()?3:(buf->isReadOnly()?2:(buf->isDirty()?1:0));
+ 	item.lParam = reinterpret_cast<LPARAM>(tl);
+-	item.iGroupId = (iView == MAIN_VIEW) ? _groupID : _group2ID;
++	item.iGroupId = (iView == MAIN_VIEW) ? _groupID : (iView > SUB_VIEW && iView < 4 ? iView + 1 : _group2ID); // KEX
+ 	ListView_InsertItem(_hSelf, &item);
+ 	int colIndex = 0;
+ 	if (isExtColumn)
+diff --git a/PowerEditor/src/menuCmdID.h b/PowerEditor/src/menuCmdID.h
+index 408b4ac..ffb733d 100644
+--- a/PowerEditor/src/menuCmdID.h
++++ b/PowerEditor/src/menuCmdID.h
+@@ -410,6 +410,26 @@
+     #define    IDM_VIEW_GOTO_START               10005
+     #define    IDM_VIEW_GOTO_END                 10006
+ 
++    // KEX: four views (2x2 grid) and torn-out view windows
++    #define    IDM_KEX                           (IDM_VIEW + 900)
++    #define    IDM_KEX_DOC_TO_VIEW1              (IDM_KEX + 1)
++    #define    IDM_KEX_DOC_TO_VIEW2              (IDM_KEX + 2)
++    #define    IDM_KEX_DOC_TO_VIEW3              (IDM_KEX + 3)
++    #define    IDM_KEX_DOC_TO_VIEW4              (IDM_KEX + 4)
++    #define    IDM_KEX_DOC_CLONE_TO_VIEW1        (IDM_KEX + 5)
++    #define    IDM_KEX_DOC_CLONE_TO_VIEW2        (IDM_KEX + 6)
++    #define    IDM_KEX_DOC_CLONE_TO_VIEW3        (IDM_KEX + 7)
++    #define    IDM_KEX_DOC_CLONE_TO_VIEW4        (IDM_KEX + 8)
++    #define    IDM_KEX_DOC_TEAROUT               (IDM_KEX + 10)
++    #define    IDM_KEX_VIEW_TEAROUT              (IDM_KEX + 11)
++    #define    IDM_KEX_VIEW_SNAPBACK             (IDM_KEX + 12)
++    #define    IDM_KEX_SNAPBACK_ALL              (IDM_KEX + 13)
++    #define    IDM_KEX_FOCUS_VIEW1               (IDM_KEX + 21)
++    #define    IDM_KEX_FOCUS_VIEW2               (IDM_KEX + 22)
++    #define    IDM_KEX_FOCUS_VIEW3               (IDM_KEX + 23)
++    #define    IDM_KEX_FOCUS_VIEW4               (IDM_KEX + 24)
++    #define    IDM_KEX_LAST                      (IDM_KEX + 24)
++
+ #define    IDM_FORMAT    (IDM + 5000)
+     #define    IDM_FORMAT_TODOS             (IDM_FORMAT + 1)
+     #define    IDM_FORMAT_TOUNIX            (IDM_FORMAT + 2)
+-- 
+2.43.0
+

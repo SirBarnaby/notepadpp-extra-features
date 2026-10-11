@@ -1,0 +1,185 @@
+﻿KEX Suite self-test (plugin message: KexSuite_selftest=1;KexSuite_testdir=C:\kexsuite-test)
+INFO Notepad++ version word 0x000803d5; views: KEX patched, count 4; Wine: yes
+PASS S1 KEX-patched Notepad++: NPPM_KEX_GETINFO reports 4 views, using the four-view API
+INFO self-check Falling letters: OK
+INFO self-check Smooth caret: OK
+INFO self-check Global hotkey drop-down: OK
+INFO self-check F12 hover tabs: OK
+INFO self-check Same Notepad++ on every desktop: OK
+PASS S2 startup self-check: KEX Suite: 5/5 features OK (the desktop feature uses fake desktops in self-test mode)
+INFO real IVirtualDesktopManager here: Windows virtual desktop API unavailable (CoCreateInstance(CLSID_VirtualDesktopManager) = 0x80040154)
+PASS S3 real virtual-desktop provider degrades without crashing (available=0)
+PASS S4 Falling letters enabled at startup
+PASS S4 Smooth caret enabled at startup
+PASS S4 Global hotkey drop-down enabled at startup
+PASS S4 F12 hover tabs enabled at startup
+PASS S4 Same Notepad++ on every desktop enabled at startup
+PASS M1 Plugins > KEX Suite submenu present
+INFO menu items: [x] Falling letters  [x] Smooth caret  [x] Global hotkey drop-down  [x] F12 hover tabs  [x] Same Notepad++ on every desktop  [ ] ----  [ ] Options...  
+PASS M2 menu check marks match the running features
+SHOT 1 menu-plugins-kexsuite
+SHOT 2 menu-kexsuite-submenu
+PASS O1 Options dialog opens (modeless)
+INFO options summary line: "KEX Suite: 5/5 features OK"
+PASS O2 Options reports the hotkey state: "Ctrl+Alt+M is registered"
+SHOT 3 options-dialog
+  [kex] Global hotkey drop-down: disabled
+INFO helper window took Ctrl+Alt+M: 1
+  [kex] hotkey Ctrl+Alt+M: NOT registered (error 1409)
+  [kex] Global hotkey drop-down: enabled
+PASS O3 taken hotkey detected: registered=0 error=1409
+  [kex] hotkey Ctrl+Alt+M: NOT registered (error 1409)
+  [kex] Falling letters: disabled
+  [kex] Falling letters: enabled
+  [kex] Smooth caret: disabled
+  [kex] Smooth caret: enabled
+  [kex] Global hotkey drop-down: disabled
+  [kex] hotkey Ctrl+Alt+M: NOT registered (error 1409)
+  [kex] Global hotkey drop-down: enabled
+  [kex] F12 hover tabs: disabled
+  [kex] F12 hover tabs: enabled
+  [kex] Same Notepad++ on every desktop: disabled
+  [kex] per-desktop: provider 'fake desktops (self-test)', Notepad++ is on {4B455844-534B-5450-8000-0000000000A0}, 1 registered desktop(s)
+  [kex] Same Notepad++ on every desktop: enabled
+PASS O4 Options shows: "Ctrl+Alt+M is taken by another program (error 1409)"
+SHOT 4 options-hotkey-taken
+  [kex] hotkey Ctrl+Alt+M: registered (error 0)
+  [kex] Falling letters: disabled
+  [kex] Falling letters: enabled
+  [kex] Smooth caret: disabled
+  [kex] Smooth caret: enabled
+  [kex] Global hotkey drop-down: disabled
+  [kex] hotkey Ctrl+Alt+M: registered (error 0)
+  [kex] Global hotkey drop-down: enabled
+  [kex] F12 hover tabs: disabled
+  [kex] F12 hover tabs: enabled
+  [kex] Same Notepad++ on every desktop: disabled
+  [kex] per-desktop: provider 'fake desktops (self-test)', Notepad++ is on {4B455844-534B-5450-8000-0000000000A0}, 1 registered desktop(s)
+  [kex] Same Notepad++ on every desktop: enabled
+PASS O5 after the other program lets go, Apply registers it again: "Ctrl+Alt+M is registered"
+PASS O6 Options dialog closes
+INFO deleting the selection on line 11 (58 chars, 50 visible non-blank)
+PASS F1 Delete key on a selection: 50 letters spawned, expected 50
+PASS F2 overlay alive with 50 letters, bounding box (98,266)-(457,334) (Notepad++ window (20,16)-(980,676))
+PASS F3 overlay is layered, click-through, non-activating, topmost (exstyle 0x80800a8)
+PASS F4 focus stays in the editor while letters fall
+SHOT 5 falling-letters-selection
+PASS F5 all letters fell off the screen and the overlay hid itself (frames rendered so far: 183)
+PASS F6 Backspace x3: 3 letters spawned
+SHOT 6 falling-letters-backspace
+PASS F7 Edit > Cut of "Particle": 8 letters spawned
+PASS F8 undo of typed text does not rain letters (skipped undo deletes: 1)
+PASS F9 deleting off-screen lines spawns nothing
+PASS F10 Select All + Delete of 3000 lines: 2205 visible letters grouped into 175 falling pieces (cap 200); total time incl. 200 ms wait 2192 ms
+SHOT 7 falling-letters-huge-delete
+PASS F11 Replace All (text replaced) spawned 0 letters; NPPN_GLOBALMODIFIED seen 1 time(s)
+PASS F12 Windows animation effects off: no letters (respected by default)
+PASS F13a c.txt cloned into the second view
+PASS F13 second view: 10 letters spawned from "second line"
+SHOT 8 falling-letters-second-view
+PASS C1 Scintilla's caret hidden in both views (view1 original=0x1 now=0x0; view2 original=0x1 now=0x0; )
+INFO caret glide from (68.0,30.0) to (143.0,120.0): 44ms:(119.7,92.9) 57ms:(130.1,105.5) 78ms:(139.4,116.8) 91ms:(141.7,119.7) 104ms:(142.0,120.0) 118ms:(142.0,120.0) 132ms:(142.0,120.0) 145ms:(142.0,120.0) 159ms:(142.0,120.0) 172ms:(142.0,120.0) 
+PASS C2 caret glides through 3 intermediate positions and lands on the target (142.0,120.0)
+SHOT 9 caret-glide-frozen-midway
+PASS C3 custom caret visible, overlay (110,267)-(114,284)
+SHOT 10 caret-normal
+PASS C4 rectangular selection over 5 lines: 5 carets drawn
+SHOT 11 caret-rectangular-selection
+PASS C5 overtype mode: block caret
+SHOT 12 caret-overtype-block
+PASS C6 zoom +5: caret height 22 = line height 22
+PASS C7 scroll by 3 lines: caret moved 45 px at once (3 lines = 45 px)
+PASS C8 caret hides on focus loss and comes back on focus
+PASS C9 second view focused: caret drawn in view 2
+PASS C10 external caret style change adopted (0x2) and hidden again
+  [kex] Smooth caret: disabled
+PASS C11 caret off from the menu: style restored exactly (view1 0x1, view2 0x1), overlay destroyed
+SHOT 13 caret-disabled-scintilla-caret-back
+  [kex] Smooth caret: enabled
+PASS C12 caret back on from the menu
+PASS D1 started on fake desktop A {4B455844-534B-5450-8000-0000000000A0}: 1 registered desktop
+PASS D2 switch to unregistered desktop B: Notepad++ stays on A (switched to unregistered {4B455844-534B-5450-8000-0000000000A1}: staying put)
+INFO started a second notepad++.exe (pid 1008): 1
+  [kex] per-desktop: registered {4B455844-534B-5450-8000-0000000000A1} (second notepad++.exe launch), copied state from {4B455844-534B-5450-8000-0000000000A0}
+  [kex] per-desktop: second notepad++.exe launch: {4B455844-534B-5450-8000-0000000000A0} -> {4B455844-534B-5450-8000-0000000000A1}
+PASS D3 second notepad++.exe on B: it exited (code 0), B registered (2 desktops), the single window moved to B (summoned (second notepad++.exe launch) on {4B455844-534B-5450-8000-0000000000A1})
+SHOT 14 desktop-B-state
+  [kex] per-desktop: desktop switch: {4B455844-534B-5450-8000-0000000000A1} -> {4B455844-534B-5450-8000-0000000000A0}
+PASS D4 back on A: window followed, A's tab (a.cpp), caret (line 5) and placement (20,16)-(980,676) restored
+SHOT 15 desktop-A-state
+  [kex] per-desktop: desktop switch: {4B455844-534B-5450-8000-0000000000A0} -> {4B455844-534B-5450-8000-0000000000A1}
+PASS D5 back on B: B's tab (c.txt), caret and placement (120,90)-(940,610) restored
+PASS D6 lazy restore on activation: a.cpp on B is at line 25 (B's own position; A keeps line 5)
+  [kex] per-desktop: closed on {4B455844-534B-5450-8000-0000000000A1} only; Notepad++ now lives on {4B455844-534B-5450-8000-0000000000A0} (1 registered)
+PASS D7 X on B closed Notepad++ only on B: still running, now on A, 1 registered, B's INI section removed
+PASS D8 with one registered desktop the X button exits as usual (not intercepted); File > Exit is never intercepted
+  [kex] per-desktop: registered {4B455844-534B-5450-8000-0000000000A2} (hotkey), copied state from {4B455844-534B-5450-8000-0000000000A0}
+  [kex] per-desktop: hotkey: {4B455844-534B-5450-8000-0000000000A0} -> {4B455844-534B-5450-8000-0000000000A2}
+  [kex] hotkey: dropped down (post-it=1)
+PASS D9 hotkey on unregistered desktop C: registered and moved there (summoned (hotkey) on {4B455844-534B-5450-8000-0000000000A2})
+INFO INI sections: Desktop.{4B455844-534B-5450-8000-0000000000A0} Desktop.{4B455844-534B-5450-8000-0000000000A2} 
+PASS D10 state persisted per desktop GUID in Z:\root\kex-out\test\npp\plugins\Config\KexSuite.ini (A's active tab: C:\kexsuite-test\a.cpp)
+  [kex] hotkey: hidden, focus back to 0000000000000000
+  [kex] per-desktop: desktop switch: {4B455844-534B-5450-8000-0000000000A2} -> {4B455844-534B-5450-8000-0000000000A0}
+  [kex] hotkey: dropped down (post-it=1)
+PASS H1 global hotkey Ctrl+Alt+M registered
+INFO started notepad.exe as 'another program': 1
+INFO Notepad++ minimized=1, foreground is the other program: 1
+  [kex] WM_HOTKEY received
+  [kex] hotkey: dropped down (post-it=1)
+INFO SendInput Ctrl+Alt+M -> WM_HOTKEY delivered: yes
+PASS H2 hotkey while minimized: shown, F12 post-it on, in front, editor focused (WM_HOTKEY from real key events: yes)
+SHOT 16 hotkey-dropdown-postit
+  [kex] WM_HOTKEY received
+  [kex] hotkey: hidden, focus back to 00000000000102EC
+PASS H3 hotkey while in front: hidden, focus back to the previous program (WM_HOTKEY: yes)
+SHOT 17 hotkey-hidden-focus-returned
+  [kex] WM_HOTKEY received
+  [kex] hotkey: dropped down (post-it=1)
+PASS H4 hotkey while hidden: back in front
+  [kex] WM_HOTKEY received
+  [kex] hotkey: dropped down (post-it=1)
+PASS H5 hotkey while behind another window: brought to front
+PASS T0 in F12 post-it mode
+  [kex] hover tabs: shown (4 tabs, view 0)
+PASS T1 hovering the top edge shows the floating strip (20,16)-(496,48): 4 tabs (view has 4), active tab 3
+PASS T2 unsaved marker shown on 3 tab(s)
+PASS T3 strip floats over the text; the editor is not pushed down (editor top 16, strip 16..48)
+SHOT 18 f12-hover-tabs
+  [kex] hover tabs: activated tab 0 in view 0
+PASS T4 click on tab 0 switched the document to d.txt (real mouse click)
+  [kex] hover tabs: hidden
+PASS T5 strip hides when the mouse leaves
+PASS T6 outside post-it mode the hot zone does nothing
+  [kex] Falling letters: disabled
+PASS E1 Falling letters off from the menu: unchecked, render thread and overlay gone
+  [kex] Falling letters: enabled
+PASS E2 Falling letters back on from the menu
+  [kex] Smooth caret: disabled
+PASS E1 Smooth caret off from the menu: unchecked, caret style back to 0x1 (original 0x1)
+  [kex] Smooth caret: enabled
+PASS E2 Smooth caret back on from the menu
+  [kex] Global hotkey drop-down: disabled
+PASS E1 Global hotkey drop-down off from the menu: unchecked, Ctrl+Alt+M released
+  [kex] hotkey Ctrl+Alt+M: registered (error 0)
+  [kex] Global hotkey drop-down: enabled
+PASS E2 Global hotkey drop-down back on from the menu
+  [kex] F12 hover tabs: disabled
+PASS E1 F12 hover tabs off from the menu: unchecked, strip window destroyed
+  [kex] F12 hover tabs: enabled
+PASS E2 F12 hover tabs back on from the menu
+  [kex] Same Notepad++ on every desktop: disabled
+PASS E1 Same Notepad++ on every desktop off from the menu: unchecked, close/second-instance hooks removed
+  [kex] per-desktop: provider 'fake desktops (self-test)', Notepad++ is on {4B455844-534B-5450-8000-0000000000A0}, 2 registered desktop(s)
+  [kex] Same Notepad++ on every desktop: enabled
+PASS E2 Same Notepad++ on every desktop back on from the menu
+PASS E3 Notepad++ still responsive
+INFO final summary: KEX Suite: 5/5 features OK
+PASS K1 c.txt cloned into view 3 (bottom left)
+PASS K2 view 3: deleting a line spawned 15 letters (expected 15)
+PASS K3 view 3 focused: smooth caret drawn there (target 0000000000010152, view 3 0000000000010152, visible 1, focus 0000000000010152, carets 1, main 54,0)
+SHOT 19 kex-view3-letters
+PASS K4 view 3 snapped out: caret drawn in its own window, overlay (139,484)-(142,501) inside (64,412)-(552,766)
+SHOT 20 kex-view3-snapped-out-caret
+RESULT 79 passed, 0 failed
+DONE

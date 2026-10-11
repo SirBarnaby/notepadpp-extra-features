@@ -1,0 +1,35 @@
+// resource.h - KEX Suite dialog ids
+#pragma once
+#define IDD_OPTIONS        100
+#define IDC_SUMMARY        1001
+#define IDC_APPLY          1002
+#define IDC_L_EN           1100
+#define IDC_L_STATUS       1101
+#define IDC_L_GRAVITY      1102
+#define IDC_L_MAX          1103
+#define IDC_L_SPIN         1104
+#define IDC_L_DRIFT        1105
+#define IDC_L_RESPECT      1106
+#define IDC_L_UNDO         1107
+#define IDC_C_EN           1200
+#define IDC_C_STATUS       1201
+#define IDC_C_GLIDE        1202
+#define IDC_C_SNAP         1203
+#define IDC_C_FADE         1204
+#define IDC_C_OVB          1205
+#define IDC_H_EN           1300
+#define IDC_H_STATUS       1301
+#define IDC_H_KEY          1302
+#define IDC_H_WIN          1303
+#define IDC_H_KEYSTATUS    1304
+#define IDC_H_POSTIT       1305
+#define IDC_H_SLIDE        1306
+#define IDC_T_EN           1400
+#define IDC_T_STATUS       1401
+#define IDC_T_ZONE         1402
+#define IDC_T_DELAY        1403
+#define IDC_D_EN           1500
+#define IDC_D_STATUS       1501
+#define IDC_D_POLL         1502
+#define IDC_D_CLOSE        1503
+#define IDC_D_INFO         1504

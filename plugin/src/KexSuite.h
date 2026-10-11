@@ -1,0 +1,203 @@
+// KexSuite.h - shared declarations for the KEX Suite Notepad++ plugin.
+#pragma once
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <commctrl.h>
+#include <string>
+#include <vector>
+#include <cstdint>
+#include <algorithm>
+#include "PluginInterface.h"
+#include "menuCmdID.h"
+#include "KexApi.h"
+
+namespace kex {
+
+extern NppData npp;
+extern HINSTANCE hInst;
+extern bool selfTestMode;      // set by -pluginMessage="KexSuite_selftest=1"
+extern bool underWine;         // ntdll exports wine_get_version
+
+// ---- logging (KexSuite.log in the plugin config dir; self-test writes its own log) -----------
+void log(const wchar_t* fmt, ...);
+
+// ---- small helpers ----------------------------------------------------------------------------
+inline LRESULT sci(HWND h, UINT m, WPARAM w = 0, LPARAM l = 0) { return ::SendMessageW(h, m, w, l); }
+inline LRESULT nppMsg(UINT m, WPARAM w = 0, LPARAM l = 0) { return ::SendMessageW(npp._nppHandle, m, w, l); }
+std::wstring bufferPath(intptr_t bufferId);
+std::wstring fileNameOf(const std::wstring& path);
+double nowMs();   // QueryPerformanceCounter in ms
+bool rectsIntersect(const RECT& a, const RECT& b);
+
+// A hidden message-only window that forwards to a member function.
+class MsgWindow {
+public:
+    virtual ~MsgWindow() { destroyMsgWindow(); }
+    bool createMsgWindow(const wchar_t* name);
+    void destroyMsgWindow();
+    HWND hwnd() const { return _hwnd; }
+protected:
+    virtual LRESULT onMessage(UINT m, WPARAM w, LPARAM l) { return ::DefWindowProcW(_hwnd, m, w, l); }
+private:
+    static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l);
+    HWND _hwnd = nullptr;
+};
+
+// ---- views: the two-view plugin API, or the KEX four-view API when the core patch is present ----
+class Views {
+public:
+    void init();                       // call at NPPN_READY
+    bool patched() const { return _patched; }
+    int patchVersion() const { return _patchVersion; }
+    int count() const { return _count; }
+    HWND sci(int v) const;             // that view's Scintilla (nullptr if none)
+    HWND tabBar(int v) const;          // that view's tab control (patched: KEX msg; else located once)
+    int current() const;               // focused view
+    bool visible(int v) const;
+    int nbFiles(int v) const;
+    intptr_t bufferId(int v, int idx) const;
+    int currentIndex(int v) const;
+    void activate(int v, int idx) const;
+    HWND host(int v) const;            // top-level window hosting the view
+    int viewOf(HWND sciHwnd) const;    // -1 if not an editing view
+    std::vector<HWND> hostWindows() const;   // unique top-level hosts other than the main window
+    HWND locateTabBar(int v) const;    // unpatched heuristic (exposed for the self-check)
+private:
+    bool _patched = false;
+    int _count = 2, _patchVersion = 0;
+    mutable HWND _tabCache[4] = {};
+};
+extern Views views;
+
+// ---- settings (INI in NPPM_GETPLUGINSCONFIGDIR) ----------------------------------------------
+class Settings {
+public:
+    void init();
+    const std::wstring& path() const { return _path; }
+    const std::wstring& dir() const { return _dir; }
+    int getInt(const wchar_t* sec, const wchar_t* key, int def) const;
+    void setInt(const wchar_t* sec, const wchar_t* key, int v) const;
+    std::wstring getStr(const wchar_t* sec, const wchar_t* key, const wchar_t* def = L"") const;
+    void setStr(const wchar_t* sec, const wchar_t* key, const std::wstring& v) const;
+    void deleteSection(const wchar_t* sec) const;
+    std::vector<std::wstring> sectionNames() const;
+private:
+    std::wstring _path, _dir;
+};
+extern Settings settings;
+
+// ---- feature modules ------------------------------------------------------------------------
+class Module {
+public:
+    virtual ~Module() {}
+    virtual const wchar_t* key() const = 0;       // INI section name
+    virtual const wchar_t* title() const = 0;     // menu text
+    // Verify the Notepad++ internals this feature relies on. Must not change any state.
+    virtual bool selfCheck(std::wstring& why) = 0;
+    virtual bool enable() = 0;                    // install hooks; false = could not
+    virtual void disable() = 0;                   // remove hooks, restore Notepad++ state exactly
+    virtual void loadOptions() {}
+    virtual void onNotify(SCNotification*) {}
+    bool isEnabled() const { return _enabled; }
+
+    bool _enabled = false;
+    bool _checkOk = false;
+    std::wstring _checkMsg;
+    int _cmdIndex = -1;
+};
+
+// Implemented in the feature files.
+Module* createFallingLetters();
+Module* createSmoothCaret();
+Module* createHotkeyDrop();
+Module* createHoverTabs();
+Module* createDesktopSync();
+
+enum ModuleId { M_LETTERS = 0, M_CARET, M_HOTKEY, M_TABS, M_DESKTOP, M_COUNT };
+extern Module* modules[M_COUNT];
+
+// Core services used across modules.
+bool setModuleEnabled(int id, bool on, bool interactive);
+void refreshMenuChecks();
+void showNote(const std::wstring& text, int ms);   // non-modal note in the corner of Notepad++
+bool isPostItMode();
+void openOptions();
+HWND optionsWindow();
+
+// Main-window subclass hooks (owned by the core, consulted by modules).
+struct MainHooks {
+    // NPPM_INTERNAL_RESTOREFROMMINIMIZED arrived from a second notepad++.exe process.
+    void (*onSecondInstance)() = nullptr;
+    // WM_SYSCOMMAND/SC_CLOSE (title-bar X, taskbar close). Return true to swallow it.
+    bool (*onSysClose)() = nullptr;
+    // main window moved/sized/activated
+    void (*onMainMoved)() = nullptr;
+};
+extern MainHooks mainHooks;
+
+// Hotkey module and desktop module cooperate on "summon to this desktop".
+bool hotkeyHidWindow();            // true while the hotkey module has hidden Notepad++
+void hotkeyForgetHidden();
+void desktopSummonHere(const wchar_t* why);   // register current desktop + move window here
+bool desktopMoveHere();            // plain move of Notepad++ (+ KEX view hosts) to the current desktop
+void restoreNppWindow();           // Notepad++'s own restore (tray/minimized) without triggering our hooks
+int menuCmdId(int index);
+
+// Self-test entry points
+void selfTestStart(const std::wstring& args);
+void selfTestOnNotify(SCNotification* n);
+extern const UINT NPPM_INTERNAL_RESTOREFROMMINIMIZED_;
+
+// Wine compatibility: layered windows there have no partial alpha, so use a threshold.
+inline bool binaryAlpha() { return underWine; }
+
+// Per-module test hooks (only used by the self-test)
+struct LettersStats { int lastSpawned = 0; int lastCandidates = 0; int totalSpawned = 0; int live = 0; int frames = 0;
+                      RECT overlay{}; bool overlayVisible = false; int skippedUndo = 0; int skippedAnimOff = 0; int skippedGlobal = 0; };
+LettersStats lettersStats();
+void lettersFreezeAfter(int ms);   // <0 = run normally
+struct CaretStats { int carets = 0; RECT overlay{}; bool visible = false; HWND target = nullptr; int lastStyleSaved = -1;
+                    float mainX = 0, mainY = 0, mainH = 0; bool block = false; };
+CaretStats caretStats();
+void caretTestFreeze(double glideFraction, bool solidBlink);   // fraction <0 = off
+int caretOriginalStyle(HWND sciHwnd);
+struct HotkeyStats { bool registered = false; DWORD lastError = 0; UINT mods = 0, vk = 0; int presses = 0; std::wstring text; };
+HotkeyStats hotkeyStats();
+void hotkeyPress();              // run the same code path as WM_HOTKEY
+bool hotkeyApply(UINT mods, UINT vk);   // store + re-register; true when registered
+std::wstring hotkeyText(UINT mods, UINT vk);
+struct TabsStats { bool stripVisible = false; RECT strip{}; int tabCount = 0; int activeIndex = -1; int view = 0; std::vector<RECT> tabRects; std::vector<int> dirty; };
+TabsStats tabsStats();
+void tabsTestClick(int index);
+
+// Desktop provider (real IVirtualDesktopManager or the fake used by the self-test)
+class DesktopProvider {
+public:
+    virtual ~DesktopProvider() {}
+    virtual const wchar_t* name() const = 0;
+    virtual bool ok() const = 0;
+    virtual std::wstring error() const { return L""; }
+    virtual bool currentDesktop(GUID* out) = 0;
+    virtual bool windowDesktop(HWND h, GUID* out) = 0;
+    virtual bool isOnCurrent(HWND h) = 0;
+    virtual bool moveWindow(HWND h, const GUID& d) = 0;
+    virtual bool exists(const GUID&) { return true; }
+};
+DesktopProvider* createRealDesktopProvider();
+class FakeDesktopProvider;
+DesktopProvider* desktopProvider();      // the active one (may be null)
+void useFakeDesktops(bool on);
+// Fake provider control for the self-test.
+GUID fakeDesktopGuid(int i);             // deterministic GUID for fake desktop i (0..)
+void fakeSwitchTo(int i);
+int fakeWindowDesktop(HWND h);
+std::wstring guidStr(const GUID& g);
+bool guidFromStr(const std::wstring& s, GUID* g);
+struct DesktopStats { int registered = 0; std::vector<std::wstring> regs; std::wstring here; std::wstring lastAction; int switches = 0; };
+DesktopStats desktopStats();
+void desktopPollNow();
+bool desktopWouldCloseHere();
+
+} // namespace kex

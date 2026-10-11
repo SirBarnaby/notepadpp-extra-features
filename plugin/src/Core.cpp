@@ -1,0 +1,380 @@
+// Core.cpp - plugin entry points, Plugins > KEX Suite menu, module lifecycle, startup self-check,
+// the shared main-window subclass and the non-modal note window.
+#include "KexSuite.h"
+#include <cwchar>
+
+namespace kex {
+
+NppData npp{};
+HINSTANCE hInst = nullptr;
+bool selfTestMode = false;
+bool underWine = false;
+Module* modules[M_COUNT] = {};
+MainHooks mainHooks;
+const UINT NPPM_INTERNAL_RESTOREFROMMINIMIZED_ = WM_USER + 71;   // resource.h:723 (NOTEPADPLUS_USER_INTERNAL + 71)
+
+static std::wstring g_cmdlineArgs;
+static bool g_ready = false, g_shutdown = false, g_subclassed = false;
+static const UINT_PTR kSubclassId = 0x4B455853;   // 'KEXS'
+
+// ---------------------------------------------------------------------------------------------
+// menu
+
+enum { MENU_COUNT = 7, MENU_OPTIONS = 6 };
+static FuncItem g_funcs[MENU_COUNT];
+
+static void toggleModule(int id)
+{
+    Module* m = modules[id];
+    if (!m) return;
+    setModuleEnabled(id, !m->isEnabled(), true);
+}
+static void cmdLetters() { toggleModule(M_LETTERS); }
+static void cmdCaret() { toggleModule(M_CARET); }
+static void cmdHotkey() { toggleModule(M_HOTKEY); }
+static void cmdTabs() { toggleModule(M_TABS); }
+static void cmdDesktop() { toggleModule(M_DESKTOP); }
+static void cmdOptions() { openOptions(); }
+
+void refreshMenuChecks()
+{
+    if (!npp._nppHandle) return;
+    for (int i = 0; i < M_COUNT; ++i)
+        if (modules[i] && g_funcs[i]._cmdID)
+            nppMsg(NPPM_SETMENUITEMCHECK, g_funcs[i]._cmdID, modules[i]->isEnabled() ? TRUE : FALSE);
+}
+
+bool setModuleEnabled(int id, bool on, bool interactive)
+{
+    Module* m = modules[id];
+    if (!m) return false;
+    bool result = true;
+    if (on && !m->isEnabled())
+    {
+        std::wstring why;
+        bool ok = false;
+        try { m->loadOptions(); ok = m->selfCheck(why); }
+        catch (...) { ok = false; why = L"self-check failed with an exception"; }
+        m->_checkOk = ok;
+        m->_checkMsg = ok ? L"OK" : why;
+        if (ok)
+        {
+            try { ok = m->enable(); }
+            catch (...) { ok = false; }
+            if (!ok)
+            {
+                try { m->disable(); } catch (...) {}
+                m->_checkMsg = L"could not start";
+            }
+        }
+        m->_enabled = ok;
+        if (!ok)
+        {
+            log(L"%ls: not enabled (%ls)", m->title(), m->_checkMsg.c_str());
+            if (interactive) showNote(std::wstring(L"KEX Suite: ") + m->title() + L" is unavailable: " + m->_checkMsg, 7000);
+            result = false;
+        }
+        else log(L"%ls: enabled", m->title());
+    }
+    else if (!on && m->isEnabled())
+    {
+        try { m->disable(); } catch (...) { log(L"%ls: exception while disabling", m->title()); }
+        m->_enabled = false;
+        log(L"%ls: disabled", m->title());
+    }
+    if (interactive && result) settings.setInt(m->key(), L"Enabled", on ? 1 : 0);
+    refreshMenuChecks();
+    return result;
+}
+
+// ---------------------------------------------------------------------------------------------
+// post-it detection. Notepad++ has no query message; post-it mode (Notepad_plus::postItToggle)
+// sets the main window style to WS_POPUP and hides the tab bar and the status bar.
+
+bool isPostItMode()
+{
+    LONG_PTR st = ::GetWindowLongPtrW(npp._nppHandle, GWL_STYLE);
+    bool captionless = (st & WS_CAPTION) != WS_CAPTION;
+    return captionless && nppMsg(NPPM_ISTABBARHIDDEN) != 0 && nppMsg(NPPM_ISSTATUSBARHIDDEN) != 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// non-modal note window
+
+static HWND g_note = nullptr;
+static std::wstring g_noteText;
+
+static LRESULT CALLBACK noteProc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    switch (m)
+    {
+    case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+    case WM_LBUTTONUP:
+    case WM_TIMER:
+        ::KillTimer(h, 1);
+        ::ShowWindow(h, SW_HIDE);
+        return 0;
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps; HDC dc = ::BeginPaint(h, &ps);
+        RECT rc; ::GetClientRect(h, &rc);
+        HBRUSH bg = ::CreateSolidBrush(RGB(255, 251, 214));
+        ::FillRect(dc, &rc, bg); ::DeleteObject(bg);
+        ::FrameRect(dc, &rc, static_cast<HBRUSH>(::GetStockObject(GRAY_BRUSH)));
+        ::SetBkMode(dc, TRANSPARENT);
+        ::SetTextColor(dc, RGB(40, 40, 40));
+        HGDIOBJ of = ::SelectObject(dc, ::GetStockObject(DEFAULT_GUI_FONT));
+        RECT tr = rc; ::InflateRect(&tr, -10, -8);
+        ::DrawTextW(dc, g_noteText.c_str(), -1, &tr, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+        ::SelectObject(dc, of);
+        ::EndPaint(h, &ps);
+        return 0;
+    }
+    }
+    return ::DefWindowProcW(h, m, w, l);
+}
+
+void showNote(const std::wstring& text, int ms)
+{
+    if (g_shutdown || !npp._nppHandle) return;
+    if (!g_note)
+    {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = noteProc; wc.hInstance = hInst; wc.lpszClassName = L"KexSuiteNote";
+        wc.hCursor = ::LoadCursor(nullptr, IDC_HAND);
+        ::RegisterClassW(&wc);
+        g_note = ::CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, L"KexSuiteNote", L"KEX Suite",
+            WS_POPUP, 0, 0, 10, 10, npp._nppHandle, nullptr, hInst, nullptr);
+        if (!g_note) return;
+    }
+    g_noteText = text;
+    HDC dc = ::GetDC(g_note);
+    HGDIOBJ of = ::SelectObject(dc, ::GetStockObject(DEFAULT_GUI_FONT));
+    RECT tr{ 0, 0, 400, 0 };
+    ::DrawTextW(dc, text.c_str(), -1, &tr, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+    ::SelectObject(dc, of); ::ReleaseDC(g_note, dc);
+    int w = tr.right + 20, h = tr.bottom + 16;
+    RECT nr; ::GetWindowRect(npp._nppHandle, &nr);
+    ::SetWindowPos(g_note, HWND_TOPMOST, nr.right - w - 24, nr.bottom - h - 40, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    ::InvalidateRect(g_note, nullptr, TRUE);
+    ::SetTimer(g_note, 1, ms, nullptr);
+    log(L"note: %ls", text.c_str());
+}
+
+// ---------------------------------------------------------------------------------------------
+// main window subclass, shared by the modules through mainHooks
+
+static bool g_selfRestore = false;
+
+void restoreNppWindow()
+{
+    // Notepad++'s handler restores from the tray or from minimized; our hooks must not see it as a launch.
+    g_selfRestore = true;
+    ::SendMessageW(npp._nppHandle, NPPM_INTERNAL_RESTOREFROMMINIMIZED_, 0, 0);
+    g_selfRestore = false;
+}
+
+static LRESULT CALLBACK mainSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR)
+{
+    if (m == NPPM_INTERNAL_RESTOREFROMMINIMIZED_ && !g_selfRestore)
+    {
+        // A second notepad++.exe sends this synchronously before SetForegroundWindow (winmain.cpp:817/831).
+        try
+        {
+            if (mainHooks.onSecondInstance) mainHooks.onSecondInstance();
+            if (hotkeyHidWindow()) { ::ShowWindow(h, SW_SHOW); hotkeyForgetHidden(); }
+        }
+        catch (...) { log(L"exception in second-instance hook"); }
+        return ::DefSubclassProc(h, m, w, l);
+    }
+    switch (m)
+    {
+    case WM_SYSCOMMAND:
+        if ((w & 0xFFF0) == SC_CLOSE && mainHooks.onSysClose)
+        {
+            bool swallow = false;
+            try { swallow = mainHooks.onSysClose(); } catch (...) { swallow = false; }
+            if (swallow) return 0;
+        }
+        break;
+    case WM_WINDOWPOSCHANGED:
+    case WM_ACTIVATEAPP:
+    case WM_SIZE:
+    {
+        LRESULT r = ::DefSubclassProc(h, m, w, l);
+        if (mainHooks.onMainMoved) { try { mainHooks.onMainMoved(); } catch (...) {} }
+        return r;
+    }
+    case WM_NCDESTROY:
+        ::RemoveWindowSubclass(h, mainSubclass, kSubclassId);
+        g_subclassed = false;
+        break;
+    }
+    return ::DefSubclassProc(h, m, w, l);
+}
+
+// ---------------------------------------------------------------------------------------------
+// startup
+
+class CoreWindow : public MsgWindow {
+protected:
+    LRESULT onMessage(UINT m, WPARAM w, LPARAM l) override
+    {
+        if (m == WM_TIMER && w == 1)
+        {
+            ::KillTimer(hwnd(), 1);
+            int ok = 0; std::wstring failed;
+            for (int i = 0; i < M_COUNT; ++i)
+            {
+                if (modules[i]->_checkOk) ++ok;
+                else failed += std::wstring(L"\n- ") + modules[i]->title() + L": " + modules[i]->_checkMsg;
+            }
+            wchar_t s[128]; swprintf(s, 128, L"KEX Suite: %d/%d features OK", ok, M_COUNT);
+            nppMsg(NPPM_SETSTATUSBAR, STATUSBAR_DOC_TYPE, reinterpret_cast<LPARAM>(s));
+            if (!failed.empty() || settings.getInt(L"General", L"AlwaysShowSummary", 0))
+                showNote(std::wstring(s) + (failed.empty() ? L"" : L" (switched off:)") + failed, 9000);
+            return 0;
+        }
+        return MsgWindow::onMessage(m, w, l);
+    }
+};
+static CoreWindow g_core;
+
+static void onReady()
+{
+    g_ready = true;
+    views.init();
+    log(L"Notepad++ version word 0x%08lx, KEX views: %ls (count %d, patch v%d), Wine: %ls",
+        static_cast<long>(nppMsg(NPPM_GETNPPVERSION, 1, 0)), views.patched() ? L"patched" : L"standard two-view API",
+        views.count(), views.patchVersion(), underWine ? L"yes" : L"no");
+    g_core.createMsgWindow(L"KexSuiteCore");
+    if (::SetWindowSubclass(npp._nppHandle, mainSubclass, kSubclassId, 0)) g_subclassed = true;
+    else log(L"could not subclass the Notepad++ main window");
+
+    if (selfTestMode) useFakeDesktops(true);
+
+    // Startup self-check: every module verifies what it relies on, then the enabled ones start.
+    for (int i = 0; i < M_COUNT; ++i)
+    {
+        Module* m = modules[i];
+        std::wstring why;
+        bool ok = false;
+        try { m->loadOptions(); ok = m->selfCheck(why); }
+        catch (...) { ok = false; why = L"self-check failed with an exception"; }
+        m->_checkOk = ok;
+        m->_checkMsg = ok ? L"OK" : why;
+        log(L"self-check %-34ls %ls", m->title(), ok ? L"OK" : why.c_str());
+    }
+    for (int i = 0; i < M_COUNT; ++i)
+    {
+        Module* m = modules[i];
+        if (settings.getInt(m->key(), L"Enabled", 1) && m->_checkOk)
+            setModuleEnabled(i, true, false);
+    }
+    refreshMenuChecks();
+    ::SetTimer(g_core.hwnd(), 1, 600, nullptr);   // status bar summary once the first buffer is shown
+    if (selfTestMode) selfTestStart(g_cmdlineArgs);
+}
+
+static void onShutdown()
+{
+    if (g_shutdown) return;
+    g_shutdown = true;
+    for (int i = M_COUNT - 1; i >= 0; --i)
+        if (modules[i] && modules[i]->isEnabled())
+        {
+            try { modules[i]->disable(); } catch (...) {}
+            modules[i]->_enabled = false;   // the INI keeps the user's choice
+        }
+    if (g_subclassed) { ::RemoveWindowSubclass(npp._nppHandle, mainSubclass, kSubclassId); g_subclassed = false; }
+    if (g_note) { ::DestroyWindow(g_note); g_note = nullptr; }
+    if (HWND o = optionsWindow()) ::DestroyWindow(o);
+    g_core.destroyMsgWindow();
+}
+
+} // namespace kex
+
+using namespace kex;
+
+BOOL APIENTRY DllMain(HANDLE h, DWORD reason, LPVOID)
+{
+    if (reason == DLL_PROCESS_ATTACH)
+    {
+        hInst = static_cast<HINSTANCE>(h);
+        underWine = ::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"), "wine_get_version") != nullptr;
+    }
+    return TRUE;
+}
+
+extern "C" __declspec(dllexport) void setInfo(NppData d)
+{
+    npp = d;
+    settings.init();
+    modules[M_LETTERS] = createFallingLetters();
+    modules[M_CARET] = createSmoothCaret();
+    modules[M_HOTKEY] = createHotkeyDrop();
+    modules[M_TABS] = createHoverTabs();
+    modules[M_DESKTOP] = createDesktopSync();
+}
+
+extern "C" __declspec(dllexport) const wchar_t* getName() { return L"KEX Suite"; }
+
+// Tells a KEX-patched Notepad++ that this plugin knows about views 3 and 4 (see KexApi.h):
+// it then gets their notifications and its commands also run while view 3 or 4 has focus.
+extern "C" __declspec(dllexport) BOOL kexAware() { return TRUE; }
+
+extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* n)
+{
+    PFUNCPLUGINCMD fns[M_COUNT] = { cmdLetters, cmdCaret, cmdHotkey, cmdTabs, cmdDesktop };
+    for (int i = 0; i < M_COUNT; ++i)
+    {
+        wcsncpy(g_funcs[i]._itemName, modules[i]->title(), menuItemSize - 1);
+        g_funcs[i]._pFunc = fns[i];
+        g_funcs[i]._init2Check = settings.getInt(modules[i]->key(), L"Enabled", 1) != 0;
+        g_funcs[i]._pShKey = nullptr;
+        modules[i]->_cmdIndex = i;
+    }
+    g_funcs[5]._itemName[0] = 0;   // separator
+    g_funcs[5]._pFunc = nullptr;
+    wcsncpy(g_funcs[MENU_OPTIONS]._itemName, L"Options...", menuItemSize - 1);
+    g_funcs[MENU_OPTIONS]._pFunc = cmdOptions;
+    *n = MENU_COUNT;
+    return g_funcs;
+}
+
+namespace kex { int menuCmdId(int i) { return (i >= 0 && i < MENU_COUNT) ? g_funcs[i]._cmdID : 0; } }
+
+extern "C" __declspec(dllexport) void beNotified(SCNotification* n)
+{
+    switch (n->nmhdr.code)
+    {
+    case NPPN_CMDLINEPLUGINMSG:
+    {
+        const wchar_t* s = reinterpret_cast<const wchar_t*>(n->nmhdr.idFrom);
+        if (s && wcsstr(s, L"KexSuite_selftest=1")) { selfTestMode = true; g_cmdlineArgs = s; }
+        return;
+    }
+    case NPPN_READY:
+        try { onReady(); } catch (...) { log(L"exception during startup"); }
+        return;
+    case NPPN_SHUTDOWN:
+        for (int i = 0; i < M_COUNT; ++i)
+            if (modules[i] && modules[i]->isEnabled()) { try { modules[i]->onNotify(n); } catch (...) {} }
+        onShutdown();
+        return;
+    }
+    if (!g_ready || g_shutdown) return;
+    for (int i = 0; i < M_COUNT; ++i)
+    {
+        Module* m = modules[i];
+        if (m && m->isEnabled())
+        {
+            try { m->onNotify(n); }
+            catch (...) { log(L"%ls: exception in notification %u, switching it off", m->title(), n->nmhdr.code); setModuleEnabled(i, false, false); }
+        }
+    }
+    if (selfTestMode) { try { selfTestOnNotify(n); } catch (...) {} }
+}
+
+extern "C" __declspec(dllexport) LRESULT messageProc(UINT, WPARAM, LPARAM) { return TRUE; }
+extern "C" __declspec(dllexport) BOOL isUnicode() { return TRUE; }

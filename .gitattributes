@@ -1,0 +1,5 @@
+# The patch and its base files keep Notepad++'s CRLF line endings byte for byte.
+patch/** -text
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+windows/*.txt text eol=crlf

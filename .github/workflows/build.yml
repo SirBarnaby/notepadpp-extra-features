@@ -1,0 +1,125 @@
+name: Build
+
+# Daily: if Notepad++ has a release that hasn't been built here yet, patch it, build it, test it under
+# Wine and publish "Notepad++-<version>-KEX.zip" as a release. A push to main rebuilds the current
+# release (so fixes to the patch or plugin reach the installed copies). A failed build opens an issue
+# and publishes nothing, so installed copies stay on the last good version.
+on:
+  schedule:
+    - cron: '23 5 * * *'
+  push:
+    branches: [main]
+    paths-ignore: ['README.md']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Notepad++ release tag, e.g. v8.9.8.1 (blank = latest)'
+        required: false
+      skip_tests:
+        description: 'Publish without running the Wine tests'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION_INPUT: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick the Notepad++ release
+        id: pick
+        run: |
+          latest=$(gh release view -R notepad-plus-plus/notepad-plus-plus --json tagName -q .tagName)
+          tag=${VERSION_INPUT:-$latest}
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "latest=$([ "$tag" = "$latest" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = schedule ] && gh release view "$tag-kex" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$tag-kex is already built."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      # GitHub pauses scheduled workflows in repositories with no activity for 60 days; this keeps it on
+      - name: Keep the daily schedule enabled
+        if: github.event_name == 'schedule'
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/enable" || true
+
+      - name: Install build and test tools
+        if: steps.pick.outputs.skip != '1'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends \
+            g++-mingw-w64-x86-64-posix gcc-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64 \
+            wine wine64 xvfb xdotool imagemagick
+
+      - name: Patch, build, package and test
+        id: build
+        if: steps.pick.outputs.skip != '1'
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+          KEX_TEST: ${{ inputs.skip_tests && '0' || '1' }}
+        run: |
+          set +e
+          bash ci/build.sh "$TAG" out
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit $code
+
+      - name: Keep test screenshots and logs
+        if: always() && steps.pick.outputs.skip != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: out/test
+          if-no-files-found: ignore
+
+      - name: Publish the release
+        if: steps.pick.outputs.skip != '1'
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+          LATEST: ${{ steps.pick.outputs.latest }}
+        run: |
+          ver=${TAG#v}
+          zip="out/Notepad++-$ver-KEX.zip"
+          if gh release view "$TAG-kex" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG-kex" "$zip" --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG-kex" "$zip" -R "$GITHUB_REPOSITORY" --latest="$LATEST" \
+              --title "Notepad++ $ver KEX" \
+              --notes "Notepad++ $ver (official $TAG source) with the KEX four-view patch and the KEX Suite plugin. Download the zip, right-click it > Properties > Unblock, extract it, and read KEX-README.txt."
+          fi
+          gh issue list -R "$GITHUB_REPOSITORY" --state open --search "KEX build failed for Notepad++ $TAG in:title" --json number -q '.[].number' |
+            while read -r n; do gh issue close "$n" -R "$GITHUB_REPOSITORY" -c "Fixed: $TAG-kex is published."; done
+
+      - name: Open an issue when the build fails
+        if: failure() && steps.pick.outputs.skip != '1'
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+          CODE: ${{ steps.build.outputs.code }}
+        run: |
+          case "$CODE" in
+            2) why="The KEX patch doesn't apply to Notepad++ $TAG; the patch needs updating for this release." ;;
+            4) why="Notepad++ $TAG with the KEX patch doesn't compile." ;;
+            3) why="Notepad++ $TAG built, but the Wine tests failed (screenshots and logs are in the run's test-results artifact)." ;;
+            *) why="The build stopped before finishing (code ${CODE:-none})." ;;
+          esac
+          title="KEX build failed for Notepad++ $TAG"
+          if [ -z "$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "$title in:title" --json number -q '.[].number')" ]; then
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body "$why
+
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          Nothing was published, so installed copies stay on the last good KEX build. The daily build retries automatically."
+          fi
