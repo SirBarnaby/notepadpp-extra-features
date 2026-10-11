@@ -43,11 +43,12 @@ Each feature has an on/off tick in that menu, and Options... has its settings.
     window with the same tabs; each desktop keeps its own active tab, caret and scroll.
   * Falling letters: deleted text falls off the screen, CS2D style.
   * Smooth caret: the caret glides to its new position.
-  * Global hotkey drop-down (Ctrl+Alt+M by default, changeable in Options): brings Notepad++ up
-    in F12 (post-it) mode over whatever you're doing, on the current desktop; press it again to
-    hide it and return to what you were doing.
-  * F12 hover tabs: in F12 (post-it) mode, touching the top edge of the window shows a floating
-    strip with the focused view's tabs.
+  * Quick note (Ctrl+Alt+M by default, changeable in Options): a small note window fades in at
+    the centre of the screen over whatever you're doing, even with Notepad++ minimised. Press it
+    again (or Esc) to fade it out and go back to what you were doing. What you type is saved as
+    you go (plugins\Config\KexQuickNote.txt) and is there next time.
+  * F12 hover tabs: in F12 (post-it) mode, touching the top edge of any view shows a floating
+    strip with that view's tabs.
 
 New Notepad++ versions
 ----------------------

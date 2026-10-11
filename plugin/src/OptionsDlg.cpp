@@ -28,8 +28,8 @@ const BoolField kBools[] = {
     { IDC_L_UNDO, M_LETTERS, L"AnimateUndoRedo", 0 },
     { IDC_C_FADE, M_CARET, L"FadeBlink", 1 },
     { IDC_C_OVB, M_CARET, L"OvertypeBlock", 1 },
-    { IDC_H_POSTIT, M_HOTKEY, L"SwitchOnPostIt", 1 },
-    { IDC_H_SLIDE, M_HOTKEY, L"SlideAnimation", 1 },
+    { IDC_H_POSTIT, M_HOTKEY, L"KeepText", 1 },
+    { IDC_H_SLIDE, M_HOTKEY, L"Fade", 1 },
     { IDC_D_CLOSE, M_DESKTOP, L"CloseOnlyThisDesktop", 1 },
 };
 const int kEnable[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN };

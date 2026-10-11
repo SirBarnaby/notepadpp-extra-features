@@ -13,5 +13,5 @@ WINDRES=${WINDRES:-x86_64-w64-mingw32-windres}
     -I"$HERE/src" -I"$HERE/include/npp" -I"$HERE/../include" \
     -shared -static -static-libgcc -static-libstdc++ -s \
     -o "$OUT/KexSuite.dll" "$HERE"/src/*.cpp "$OUT/KexSuite.res.o" \
-    -Wl,--enable-stdcall-fixup -luser32 -lgdi32 -lcomctl32 -lole32 -luuid -ladvapi32 -lshell32
+    -Wl,--enable-stdcall-fixup -luser32 -lgdi32 -lcomctl32 -lole32 -luuid -ladvapi32 -lshell32 -ldwmapi
 echo "built $OUT/KexSuite.dll ($(stat -c %s "$OUT/KexSuite.dll") bytes)"

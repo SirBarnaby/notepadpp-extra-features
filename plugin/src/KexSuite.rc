@@ -32,15 +32,15 @@ BEGIN
     AUTOCHECKBOX    "Fade blink", IDC_C_FADE, 190, 98, 50, 10
     AUTOCHECKBOX    "Block caret in overtype", IDC_C_OVB, 244, 98, 86, 10
 
-    GROUPBOX        "Global hotkey drop-down", -1, 7, 120, 326, 62
+    GROUPBOX        "Quick note (global hotkey)", -1, 7, 120, 326, 62
     AUTOCHECKBOX    "Enabled", IDC_H_EN, 14, 132, 50, 10
     LTEXT           "", IDC_H_STATUS, 70, 133, 258, 9
     LTEXT           "Hotkey:", -1, 14, 149, 28, 8
     CONTROL         "", IDC_H_KEY, "msctls_hotkey32", WS_BORDER | WS_TABSTOP, 44, 147, 84, 12
     AUTOCHECKBOX    "+ Win", IDC_H_WIN, 134, 148, 34, 10
     LTEXT           "", IDC_H_KEYSTATUS, 172, 149, 156, 9
-    AUTOCHECKBOX    "Switch on F12 post-it mode", IDC_H_POSTIT, 14, 165, 110, 10
-    AUTOCHECKBOX    "Slide animation", IDC_H_SLIDE, 134, 165, 80, 10
+    AUTOCHECKBOX    "Keep the text between uses", IDC_H_POSTIT, 14, 165, 110, 10
+    AUTOCHECKBOX    "Fade in and out", IDC_H_SLIDE, 134, 165, 80, 10
 
     GROUPBOX        "F12 hover tabs", -1, 7, 186, 326, 46
     AUTOCHECKBOX    "Enabled", IDC_T_EN, 14, 198, 50, 10

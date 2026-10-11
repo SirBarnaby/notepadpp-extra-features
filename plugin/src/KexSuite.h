@@ -137,9 +137,7 @@ struct MainHooks {
 };
 extern MainHooks mainHooks;
 
-// Hotkey module and desktop module cooperate on "summon to this desktop".
-bool hotkeyHidWindow();            // true while the hotkey module has hidden Notepad++
-void hotkeyForgetHidden();
+// Desktop module: "summon to this desktop".
 void desktopSummonHere(const wchar_t* why);   // register current desktop + move window here
 bool desktopMoveHere();            // plain move of Notepad++ (+ KEX view hosts) to the current desktop
 void restoreNppWindow();           // Notepad++'s own restore (tray/minimized) without triggering our hooks
@@ -163,11 +161,14 @@ struct CaretStats { int carets = 0; RECT overlay{}; bool visible = false; HWND t
 CaretStats caretStats();
 void caretTestFreeze(double glideFraction, bool solidBlink);   // fraction <0 = off
 int caretOriginalStyle(HWND sciHwnd);
-struct HotkeyStats { bool registered = false; DWORD lastError = 0; UINT mods = 0, vk = 0; int presses = 0; std::wstring text; };
+struct HotkeyStats { bool registered = false; DWORD lastError = 0; UINT mods = 0, vk = 0; int presses = 0; std::wstring text; bool noteOpen = false; };
 HotkeyStats hotkeyStats();
 void hotkeyPress();              // run the same code path as WM_HOTKEY
 bool hotkeyApply(UINT mods, UINT vk);   // store + re-register; true when registered
 std::wstring hotkeyText(UINT mods, UINT vk);
+HWND quickNoteWindow();          // the open quick note (nullptr when closed or fading out)
+HWND quickNoteEditor();
+std::wstring quickNoteFile();
 struct TabsStats { bool stripVisible = false; RECT strip{}; int tabCount = 0; int activeIndex = -1; int view = 0; std::vector<RECT> tabRects; std::vector<int> dirty; };
 TabsStats tabsStats();
 void tabsTestClick(int index);

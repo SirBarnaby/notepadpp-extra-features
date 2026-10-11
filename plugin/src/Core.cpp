@@ -182,7 +182,6 @@ static LRESULT CALLBACK mainSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PT
         try
         {
             if (mainHooks.onSecondInstance) mainHooks.onSecondInstance();
-            if (hotkeyHidWindow()) { ::ShowWindow(h, SW_SHOW); hotkeyForgetHidden(); }
         }
         catch (...) { log(L"exception in second-instance hook"); }
         return ::DefSubclassProc(h, m, w, l);

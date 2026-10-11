@@ -8,8 +8,8 @@ An unofficial build of [Notepad++](https://github.com/notepad-plus-plus/notepad-
   - the same Notepad++ on every virtual desktop, with each desktop keeping its own active tab and position
   - falling letters when you delete text
   - a smooth, gliding caret
-  - a global hotkey (Ctrl+Alt+M) that drops Notepad++ down in F12 post-it mode
-  - a tab strip that appears on hover in F12 mode
+  - a quick note on a global hotkey (Ctrl+Alt+M): a small note fades in over any app and fades out on the next press
+  - a tab strip that appears when you hover the top of a view in F12 mode
 
 Not affiliated with the Notepad++ project. Built from the official source of each release.
 

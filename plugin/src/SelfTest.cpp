@@ -542,9 +542,11 @@ void buildSteps()
             int orig = caretOriginalStyle(s), cur = static_cast<int>(sci(s, SCI_GETCARETSTYLE));
             wchar_t b[96]; swprintf(b, 96, L"view%d original=0x%x now=0x%x; ", v + 1, orig, cur);
             detail += b;
-            if (orig < 0 || cur != hiddenOf(orig)) ok = false;
+            // hidden only where the smooth caret is drawn, so a lost overlay can never leave you without a caret
+            bool drawnHere = caretStats().target == s && caretStats().visible;
+            if (orig < 0 || cur != (drawnHere ? hiddenOf(orig) : orig)) ok = false;
         }
-        check(ok, L"C1", L"Scintilla's caret hidden in both views (%ls)", detail.c_str());
+        check(ok, L"C1", L"Scintilla's caret hidden only in the view the smooth caret is drawn in (%ls)", detail.c_str());
         switchTo(L"a.cpp");
         focusEditor();
         ::SetFocus(views.sci(0));
@@ -760,10 +762,10 @@ void buildSteps()
         check(!desktopWouldCloseHere(), L"D8", L"with one registered desktop the X button exits as usual (not intercepted); File > Exit is never intercepted");
         fakeSwitchTo(2);
         desktopPollNow();
-        hotkeyPress();
+        ::SendMessageW(npp._nppHandle, NPPM_INTERNAL_RESTOREFROMMINIMIZED_, 0, 0);   // what a second notepad++.exe sends
         pump(400);
         d = desktopStats();
-        check(d.registered == 2 && fakeWindowDesktop(npp._nppHandle) == 2, L"D9", L"hotkey on unregistered desktop C: registered and moved there (%ls)", d.lastAction.c_str());
+        check(d.registered == 2 && fakeWindowDesktop(npp._nppHandle) == 2, L"D9", L"second instance on unregistered desktop C: registered and moved there (%ls)", d.lastAction.c_str());
         return 200;
     });
     add([] {
@@ -773,12 +775,9 @@ void buildSteps()
         std::wstring a = settings.getStr((L"Desktop." + guidStr(fakeDesktopGuid(0))).c_str(), L"Active0", L"");
         check(regs.find(guidStr(fakeDesktopGuid(0))) != std::wstring::npos && regs.find(guidStr(fakeDesktopGuid(2))) != std::wstring::npos, L"D10",
             L"state persisted per desktop GUID in %ls (A's active tab: %ls)", settings.path().c_str(), a.c_str());
-        hotkeyPress();   // in front -> hides
-        pump(400);
         fakeSwitchTo(0);
-        desktopPollNow();
-        hotkeyPress();   // shows on A
-        pump(400);
+        desktopPollNow();   // A is registered: the window follows
+        pump(300);
         if (isPostItMode()) nppMsg(NPPM_MENUCOMMAND, 0, IDM_VIEW_POSTIT);
         pump(200);
         return 200;
@@ -795,39 +794,74 @@ void buildSteps()
     });
     add([] {
         if (g_otherWnd) ::MoveWindow(g_otherWnd, 340, 220, 620, 420, TRUE);
+        ::DeleteFileW(quickNoteFile().c_str());
         ::ShowWindow(npp._nppHandle, SW_MINIMIZE);
         pump(200);
         if (g_otherWnd) ::SetForegroundWindow(g_otherWnd);
+        ::SetCursorPos(420, 300);
         pump(250);
         tlog(L"INFO Notepad++ minimized=%d, foreground is the other program: %d", ::IsIconic(npp._nppHandle), ::GetForegroundWindow() == g_otherWnd);
         int delivered = pressHotkey();
         tlog(L"INFO SendInput Ctrl+Alt+M -> WM_HOTKEY delivered: %ls", delivered ? L"yes" : L"no (handler driven directly)");
-        HWND n = npp._nppHandle;
-        check(::IsWindowVisible(n) && !::IsIconic(n) && isPostItMode() && ::GetForegroundWindow() == n && views.viewOf(::GetFocus()) >= 0, L"H2",
-            L"hotkey while minimized: shown, F12 post-it on, in front, editor focused (WM_HOTKEY from real key events: %ls)", delivered ? L"yes" : L"no");
+        HWND q = quickNoteWindow();
+        RECT r{}; if (q) ::GetWindowRect(q, &r);
+        POINT pt{ 420, 300 };
+        MONITORINFO mi{ sizeof(mi) }; ::GetMonitorInfoW(::MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
+        int dx = (r.left + r.right) / 2 - (mi.rcWork.left + mi.rcWork.right) / 2, dy = (r.top + r.bottom) / 2 - (mi.rcWork.top + mi.rcWork.bottom) / 2;
+        check(q && ::IsWindowVisible(q) && std::abs(dx) <= 2 && std::abs(dy) <= 2, L"Q1",
+            L"hotkey from another program while Notepad++ is minimized: quick note %ls centred on the screen (off by %d,%d; WM_HOTKEY from real key events: %ls)",
+            rectStr(r).c_str(), dx, dy, delivered ? L"yes" : L"no");
+        check(q && ::GetForegroundWindow() == q && ::GetFocus() == quickNoteEditor() && ::IsIconic(npp._nppHandle), L"Q2",
+            L"the note is in front with the typing focus; Notepad++ stays minimized");
+        tap('N'); tap('O'); tap('T'); tap('E');
         return 300;
     });
-    add([] { return shot(L"hotkey-dropdown-postit"); });
+    add([] { return shot(L"quick-note"); });
     add([] {
+        HWND ed = quickNoteEditor();
+        char buf[64] = {};
+        if (ed) sci(ed, SCI_GETTEXT, sizeof(buf), reinterpret_cast<LPARAM>(buf));
+        check(strcmp(buf, "note") == 0, L"Q3", L"typing goes into the note: \"%hs\"", buf);
         int delivered = pressHotkey();
-        check(!::IsWindowVisible(npp._nppHandle) && ::GetForegroundWindow() == g_otherWnd, L"H3",
-            L"hotkey while in front: hidden, focus back to the previous program (WM_HOTKEY: %ls)", delivered ? L"yes" : L"no");
+        pump(200);
+        std::string saved;
+        if (FILE* f = _wfopen(quickNoteFile().c_str(), L"rb")) { char b[64] = {}; size_t n = fread(b, 1, sizeof(b) - 1, f); fclose(f); saved.assign(b, n); }
+        check(!quickNoteWindow() && !::FindWindowW(L"KexQuickNote", nullptr) && ::GetForegroundWindow() == g_otherWnd && saved == "note", L"Q4",
+            L"hotkey again: note gone, focus back to the other program, text saved to %ls (\"%hs\"; WM_HOTKEY: %ls)",
+            quickNoteFile().c_str(), saved.c_str(), delivered ? L"yes" : L"no");
         return 200;
     });
-    add([] { return shot(L"hotkey-hidden-focus-returned"); });
     add([] {
         pressHotkey();
-        check(::IsWindowVisible(npp._nppHandle) && ::GetForegroundWindow() == npp._nppHandle, L"H4", L"hotkey while hidden: back in front");
-        ::SetForegroundWindow(g_otherWnd);
-        ::SetWindowPos(g_otherWnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-        pump(250);
+        HWND ed = quickNoteEditor();
+        char buf[64] = {};
+        if (ed) sci(ed, SCI_GETTEXT, sizeof(buf), reinterpret_cast<LPARAM>(buf));
+        check(ed && strcmp(buf, "note") == 0 && sci(ed, SCI_GETCURRENTPOS) == 4, L"Q5", L"reopened with the text kept, caret at the end: \"%hs\"", buf);
+        tap(VK_ESCAPE);
+        pump(300);
+        check(!quickNoteWindow() && ::GetForegroundWindow() == g_otherWnd, L"Q6", L"Esc hides the note and gives the focus back");
+        return 100;
+    });
+    add([] {
         pressHotkey();
-        check(::IsWindowVisible(npp._nppHandle) && ::GetForegroundWindow() == npp._nppHandle, L"H5", L"hotkey while behind another window: brought to front");
+        ::SetForegroundWindow(g_otherWnd);
+        pump(250);
+        HWND q = quickNoteWindow();
+        bool lostFocus = ::GetForegroundWindow() == g_otherWnd;
+        pressHotkey();
+        check(q && lostFocus && quickNoteWindow() == q && ::GetForegroundWindow() == q, L"Q7", L"hotkey while the note is open but not in front: brought to front, not hidden");
+        pressHotkey();
+        check(!quickNoteWindow(), L"Q8", L"and the next press hides it");
+        ::ShowWindow(npp._nppHandle, SW_RESTORE);
+        focusEditor();
+        pump(200);
         return 200;
     });
 
     // ---- F12 hover tabs --------------------------------------------------------------------------
     add([] {
+        if (!isPostItMode()) nppMsg(NPPM_MENUCOMMAND, 0, IDM_VIEW_POSTIT);
+        pump(300);
         check(isPostItMode(), L"T0", L"in F12 post-it mode");
         switchTo(L"b.py");
         HWND s = curSci();
@@ -835,7 +869,8 @@ void buildSteps()
         sci(s, SCI_REPLACESEL, 0, reinterpret_cast<LPARAM>("\r\n# unsaved edit"));
         switchTo(L"a.cpp");
         RECT r; ::GetWindowRect(npp._nppHandle, &r);
-        ::SetCursorPos((r.left + r.right) / 2, r.top + 2);
+        RECT sr; ::GetWindowRect(curSci(), &sr);
+        ::SetCursorPos((sr.left + sr.right) / 2, r.top + 2);
         return until([] { return tabsStats().stripVisible; }, 2000);
     });
     add([] {
@@ -950,6 +985,32 @@ void buildSteps()
         return 300;
     });
     add([] { return views.patched() ? shot(L"kex-view3-letters") : 0; });
+    add([] {
+        if (!views.patched()) return 0;
+        lettersFreezeAfter(-1);
+        if (!isPostItMode()) nppMsg(NPPM_MENUCOMMAND, 0, IDM_VIEW_POSTIT);
+        pump(300);
+        RECT r; ::GetWindowRect(views.sci(2), &r);
+        ::SetCursorPos((r.left + r.right) / 2, r.top + 2);
+        return until([] { return tabsStats().stripVisible; }, 2000);
+    });
+    add([] {
+        if (!views.patched()) return 0;
+        TabsStats t = tabsStats();
+        RECT r; ::GetWindowRect(views.sci(2), &r);
+        check(g_untilOk && t.view == 2 && t.strip.top >= r.top - 2 && t.strip.top <= r.top + 4 && t.strip.left >= r.left - 2 && t.strip.right <= r.right + 2, L"K5",
+            L"F12: hovering the top of view 3 shows view 3's tabs over view 3 (strip %ls, view 3 %ls, view %d)", rectStr(t.strip).c_str(), rectStr(r).c_str(), t.view + 1);
+        return 100;
+    });
+    add([] { return views.patched() ? shot(L"kex-view3-hover-tabs") : 0; });
+    add([] {
+        if (!views.patched()) return 0;
+        ::SetCursorPos(10, 10);
+        pump(600);
+        if (isPostItMode()) nppMsg(NPPM_MENUCOMMAND, 0, IDM_VIEW_POSTIT);
+        pump(300);
+        return 100;
+    });
     add([] {
         if (!views.patched()) return 0;
         lettersFreezeAfter(-1);

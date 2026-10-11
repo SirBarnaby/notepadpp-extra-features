@@ -2,7 +2,12 @@
 // invisible insert style; the exact original value is restored on disable) and our caret is drawn
 // on a small layered popup owned by the editor's top-level window. It glides to each new position
 // with an ease-out curve and fades instead of blinking hard.
+//
+// Fail-safe: Scintilla's caret is only hidden while our caret is really on screen (overlay shown and
+// not cloaked, e.g. left behind on another virtual desktop). Whenever that can't be confirmed, the
+// normal caret comes back, so there is never no caret at all. A watchdog re-checks every 300 ms.
 #include "Overlay.h"
+#include <dwmapi.h>
 #include <cmath>
 #include <map>
 
@@ -18,7 +23,7 @@ CaretStats s_stats;
 std::map<HWND, int> s_origStyle;   // view -> caret style to restore
 
 const UINT WM_KEX_CARET_UPDATE = WM_APP + 31;
-const UINT_PTR TIMER_FRAME = 1;
+const UINT_PTR TIMER_FRAME = 1, TIMER_WATCH = 2;
 const UINT_PTR kSciSubclassId = 0x4B455843;   // 'KEXC'
 
 class SmoothCaret;
@@ -65,6 +70,7 @@ public:
         int v = views.viewOf(f);
         _target = v >= 0 ? f : views.sci(views.current());
         _focused = (v >= 0);
+        ::SetTimer(hwnd(), TIMER_WATCH, 300, nullptr);
         update(true);
         return true;
     }
@@ -72,7 +78,7 @@ public:
     void disable() override
     {
         if (mainHooks.onMainMoved) mainHooks.onMainMoved = nullptr;
-        if (hwnd()) ::KillTimer(hwnd(), TIMER_FRAME);
+        if (hwnd()) { ::KillTimer(hwnd(), TIMER_FRAME); ::KillTimer(hwnd(), TIMER_WATCH); }
         for (HWND h : _hooked)
             if (::IsWindow(h)) ::RemoveWindowSubclass(h, sciSubclass, kSciSubclassId);
         _hooked.clear();
@@ -166,6 +172,12 @@ protected:
             render();
             return 0;
         }
+        if (m == WM_TIMER && w == TIMER_WATCH)
+        {
+            // watchdog: redraw (cheap) so the native caret comes back if our overlay was lost
+            if (_focused && _target) render();
+            return 0;
+        }
         return MsgWindow::onMessage(m, w, l);
     }
 
@@ -177,7 +189,6 @@ private:
             HWND s = views.sci(v);
             if (!s || std::find(_hooked.begin(), _hooked.end(), s) != _hooked.end()) continue;
             if (::SetWindowSubclass(s, sciSubclass, kSciSubclassId, 0)) _hooked.push_back(s);
-            hideScintillaCaret(s);
         }
     }
 
@@ -197,8 +208,22 @@ private:
         }
     }
 
+    void showScintillaCaret(HWND s)
+    {
+        auto it = s_origStyle.find(s);
+        if (it != s_origStyle.end() && ::IsWindow(s) && sci(s, SCI_GETCARETSTYLE) == hiddenStyleOf(it->second))
+            sci(s, SCI_SETCARETSTYLE, it->second);
+    }
+
+    static bool cloaked(HWND h)
+    {
+        DWORD c = 0;
+        return SUCCEEDED(::DwmGetWindowAttribute(h, DWMWA_CLOAKED, &c, sizeof(c))) && c != 0;
+    }
+
     void hide()
     {
+        for (auto& o : s_origStyle) showScintillaCaret(o.first);   // nothing of ours on screen: native caret back
         if (_overlay && ::IsWindowVisible(_overlay)) ::ShowWindow(_overlay, SW_HIDE);
         if (hwnd()) ::KillTimer(hwnd(), TIMER_FRAME);
         _timerMs = 0;
@@ -221,6 +246,10 @@ private:
     std::vector<Car> compute(HWND s)
     {
         std::vector<Car> out;
+        // Notepad++ re-applied its caret setting (Preferences > Editing) while ours was showing: adopt it
+        auto known = s_origStyle.find(s);
+        int now = static_cast<int>(sci(s, SCI_GETCARETSTYLE));
+        if (known != s_origStyle.end() && now != known->second && now != hiddenStyleOf(known->second)) known->second = now;
         int style = s_origStyle.count(s) ? s_origStyle[s] : CARETSTYLE_LINE;
         int width = static_cast<int>(sci(s, SCI_GETCARETWIDTH));
         bool overtype = sci(s, SCI_GETOVERTYPE) != 0;
@@ -291,7 +320,7 @@ private:
     {
         if (!_target || !::IsWindow(_target)) { hide(); return; }
         if (!_focused || !::IsWindowVisible(_target) || ::IsIconic(::GetAncestor(_target, GA_ROOT))) { hide(); return; }
-        hideScintillaCaret(_target);
+        if (!s_origStyle.count(_target)) s_origStyle[_target] = static_cast<int>(sci(_target, SCI_GETCARETSTYLE));
         float lh = static_cast<float>(sci(_target, SCI_TEXTHEIGHT, 0));
         float fvl = static_cast<float>(sci(_target, SCI_GETFIRSTVISIBLELINE));
         float xo = static_cast<float>(sci(_target, SCI_GETXOFFSET));
@@ -413,6 +442,17 @@ private:
             HWND above = ::GetWindow(_owner, GW_HWNDPREV);
             ::SetWindowPos(_overlay, above ? above : HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         }
+        if (!::IsWindowVisible(_overlay) || (cloaked(_overlay) && !cloaked(_owner)))
+        {
+            // our caret isn't really on screen (e.g. the overlay stayed on another virtual desktop):
+            // show the normal caret and start over with a fresh overlay next time
+            showScintillaCaret(_target);
+            ::DestroyWindow(_overlay); _overlay = nullptr;
+            s_stats.visible = false;
+            scheduleFrames(false, -1);
+            return;
+        }
+        hideScintillaCaret(_target);
         s_stats.visible = true;
         s_stats.overlay = RECT{ pos.x, pos.y, pos.x + iw, pos.y + ih };
         scheduleFrames(gliding, nextMs);

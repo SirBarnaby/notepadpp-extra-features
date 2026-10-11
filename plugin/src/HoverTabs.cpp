@@ -1,5 +1,5 @@
-// HoverTabs.cpp - in F12 post-it mode, hovering a thin zone along the top edge of Notepad++ shows a
-// floating tab strip (over the text, nothing is pushed down) with the focused view's tabs.
+// HoverTabs.cpp - in F12 post-it mode, hovering a thin zone along the top edge of any view shows a
+// floating tab strip with that view's tabs, over the top of that view (nothing is pushed down).
 #include "KexSuite.h"
 #include <cmath>
 
@@ -113,8 +113,8 @@ private:
         HWND n = npp._nppHandle;
         if (!::IsWindowVisible(n) || ::IsIconic(n) || !isPostItMode()) { hideStrip(); return; }
         POINT pt; ::GetCursorPos(&pt);
-        RECT wr; ::GetWindowRect(n, &wr);
-        bool inZone = pt.x >= wr.left && pt.x < wr.right && pt.y >= wr.top - 2 && pt.y < wr.top + _zone;
+        int zv = zoneView(pt);
+        bool inZone = zv >= 0;
         if (inZone)
         {
             HWND under = ::WindowFromPoint(pt);
@@ -123,19 +123,47 @@ private:
         }
         if (!_shown)
         {
-            if (inZone) showStrip();
+            if (inZone) showStrip(zv);
             return;
         }
         RECT sr; ::GetWindowRect(_strip, &sr);
         ::InflateRect(&sr, 6, 6);
-        if (inZone || ::PtInRect(&sr, pt)) _leftAt = 0;
+        bool overStrip = ::PtInRect(&sr, pt) != FALSE;
+        if (inZone && zv != _view && !overStrip) { _view = zv; refresh(); }   // moved to another view's edge
+        if (inZone || overStrip) _leftAt = 0;
         else if (_leftAt == 0) _leftAt = nowMs();
         else if (nowMs() - _leftAt > _hideDelay) hideStrip();
     }
 
+    // The view whose top edge the mouse is on (-1 if none). Views in the top row also count the strip
+    // of window above them, so the very top edge of the screen works for a maximised window.
+    int zoneView(POINT pt) const
+    {
+        HWND n = npp._nppHandle;
+        RECT wr; ::GetWindowRect(n, &wr);
+        int best = -1; LONG bestDx = LONG_MAX;
+        int focused = views.current();
+        for (int v = 0; v < views.count(); ++v)
+        {
+            HWND s = views.sci(v);
+            if (!s || !views.visible(v) || views.host(v) != n || !::IsWindowVisible(s)) continue;
+            RECT r; ::GetWindowRect(s, &r);
+            bool topRow = r.top - wr.top < 40;
+            LONG top = topRow ? std::min(r.top - 2, wr.top - 2) : r.top - 2;
+            if (pt.y < top || pt.y >= r.top + _zone) continue;
+            LONG dx = pt.x < r.left ? r.left - pt.x : pt.x >= r.right ? pt.x - r.right + 1 : 0;
+            if (dx == 0) return v;
+            if (dx > 16 && !(topRow && pt.x >= wr.left && pt.x < wr.right)) continue;
+            // over a splitter or the window edge next to the views: the focused view wins, else the nearest
+            if (v == focused) dx = 0;
+            if (dx < bestDx) { bestDx = dx; best = v; }
+        }
+        return best;
+    }
+
     void collect()
     {
-        _view = views.current();
+        if (_view < 0 || _view >= views.count() || !views.sci(_view)) _view = views.current();
         _tabs.clear();
         int nb = views.nbFiles(_view);
         int cur = views.currentIndex(_view);
@@ -206,8 +234,9 @@ private:
         updateStats();
     }
 
-    void showStrip()
+    void showStrip(int v)
     {
+        _view = v;
         collect();
         _shown = true;
         _leftAt = 0;

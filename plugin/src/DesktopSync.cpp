@@ -79,7 +79,15 @@ public:
         snapshot(_here);
         GUID cur;
         _lastCur = _prov->currentDesktop(&cur) ? guidStr(cur) : _here;
-        mainHooks.onSecondInstance = [] { if (s_self) s_self->summon(L"second notepad++.exe launch"); };
+        mainHooks.onSecondInstance = [] {
+            if (!s_self) return;
+            bool wasHere = s_self->_prov->isOnCurrent(npp._nppHandle);
+            s_self->summon(L"second notepad++.exe launch");
+            // The second notepad++.exe activates the window as soon as this returns. If the shell still has
+            // it on the old desktop at that moment, Windows switches the user back there; so return only
+            // once the move has landed.
+            if (!wasHere) s_self->waitUntilHere(1500);
+        };
         mainHooks.onSysClose = [] { return s_self ? s_self->onClose() : false; };
         ::SetTimer(hwnd(), TIMER_POLL, _pollMs, nullptr);
         ::SetTimer(hwnd(), TIMER_SAVE, 3000, nullptr);
@@ -170,6 +178,25 @@ public:
         else moveHostsHere(c);
         _dirty = true;
         updateStats(std::wstring(L"summoned (") + why + L") on " + c);
+    }
+
+    void waitUntilHere(int ms)
+    {
+        HWND n = npp._nppHandle;
+        double t0 = nowMs();
+        auto waitSent = [](int forMs) {
+            // handle only messages sent to us (the shell may call back into this thread), never input or timers
+            double end = nowMs() + forMs;
+            while (nowMs() < end)
+            {
+                ::MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_SENDMESSAGE, 0);
+                MSG m; ::PeekMessageW(&m, nullptr, 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE);
+            }
+        };
+        bool here = _prov->isOnCurrent(n);
+        while (!here && nowMs() - t0 < ms) { waitSent(10); here = _prov->isOnCurrent(n); }
+        if (here) waitSent(60);   // let the shell finish uncloaking before the window is activated
+        log(L"per-desktop: window %ls on the current desktop after %.0f ms", here ? L"arrived" : L"did NOT arrive", nowMs() - t0);
     }
 
     bool wouldCloseHere() const
@@ -371,8 +398,11 @@ private:
         {
             WINDOWPLACEMENT wp = d.wp;
             wp.length = sizeof(wp);
+            // never activate here: activating a window the shell still has on another desktop switches
+            // the user to that desktop
             if (!::IsWindowVisible(npp._nppHandle)) wp.showCmd = SW_HIDE;
-            else if (wp.showCmd != SW_SHOWMAXIMIZED) wp.showCmd = SW_SHOWNORMAL;
+            else if (wp.showCmd != SW_SHOWMAXIMIZED) wp.showCmd = SW_SHOWNOACTIVATE;
+            else if (::IsZoomed(npp._nppHandle)) wp.showCmd = SW_SHOWNA;
             ::SetWindowPlacement(npp._nppHandle, &wp);
         }
         // active tab of each view, the focused view last

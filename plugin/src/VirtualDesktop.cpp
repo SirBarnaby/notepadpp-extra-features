@@ -84,9 +84,10 @@ public:
         if (!_vdm) return false;
         // 1. Notepad++ itself is on the desktop being shown
         if (isOnCurrent(npp._nppHandle) && windowDesktop(npp._nppHandle, out)) return true;
-        // 2. the foreground window's desktop (what the user is looking at)
+        // 2. the foreground window's desktop (what the user is looking at), unless it is part of the
+        //    shell: the taskbar, Start and the desktop are on every desktop, so their answer is unreliable
         HWND fg = ::GetForegroundWindow();
-        if (fg && isOnCurrent(fg) && windowDesktop(fg, out)) return true;
+        if (fg && !isShellWindow(fg) && isOnCurrent(fg) && windowDesktop(fg, out)) return true;
         // 3. the shell's own record (undocumented but stable since Windows 10)
         return registryCurrent(out);
     }
@@ -100,6 +101,17 @@ public:
     }
 
 private:
+    static bool isShellWindow(HWND h)
+    {
+        static const wchar_t* shell[] = { L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd", L"Progman", L"WorkerW",
+            L"Windows.UI.Core.CoreWindow", L"NotifyIconOverflowWindow", L"TopLevelWindowForOverflowXamlIsland",
+            L"XamlExplorerHostIslandWindow", L"Xaml_WindowedPopupClass", L"ForegroundStaging", L"MultitaskingViewFrame",
+            L"TaskListThumbnailWnd", L"ApplicationFrameWindow" };
+        wchar_t cls[96] = {};
+        ::GetClassNameW(::GetAncestor(h, GA_ROOTOWNER) ? ::GetAncestor(h, GA_ROOTOWNER) : h, cls, 95);
+        for (const wchar_t* c : shell) if (!wcscmp(cls, c)) return true;
+        return false;
+    }
     static bool readKey(HKEY root, const std::wstring& path, const wchar_t* value, std::vector<BYTE>& out)
     {
         HKEY k;

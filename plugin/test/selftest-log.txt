@@ -3,7 +3,7 @@ INFO Notepad++ version word 0x000803d5; views: KEX patched, count 4; Wine: yes
 PASS S1 KEX-patched Notepad++: NPPM_KEX_GETINFO reports 4 views, using the four-view API
 INFO self-check Falling letters: OK
 INFO self-check Smooth caret: OK
-INFO self-check Global hotkey drop-down: OK
+INFO self-check Quick note (global hotkey): OK
 INFO self-check F12 hover tabs: OK
 INFO self-check Same Notepad++ on every desktop: OK
 PASS S2 startup self-check: KEX Suite: 5/5 features OK (the desktop feature uses fake desktops in self-test mode)
@@ -11,11 +11,11 @@ INFO real IVirtualDesktopManager here: Windows virtual desktop API unavailable (
 PASS S3 real virtual-desktop provider degrades without crashing (available=0)
 PASS S4 Falling letters enabled at startup
 PASS S4 Smooth caret enabled at startup
-PASS S4 Global hotkey drop-down enabled at startup
+PASS S4 Quick note (global hotkey) enabled at startup
 PASS S4 F12 hover tabs enabled at startup
 PASS S4 Same Notepad++ on every desktop enabled at startup
 PASS M1 Plugins > KEX Suite submenu present
-INFO menu items: [x] Falling letters  [x] Smooth caret  [x] Global hotkey drop-down  [x] F12 hover tabs  [x] Same Notepad++ on every desktop  [ ] ----  [ ] Options...  
+INFO menu items: [x] Falling letters  [x] Smooth caret  [x] Quick note (global hotkey)  [x] F12 hover tabs  [x] Same Notepad++ on every desktop  [ ] ----  [ ] Options...  
 PASS M2 menu check marks match the running features
 SHOT 1 menu-plugins-kexsuite
 SHOT 2 menu-kexsuite-submenu
@@ -23,19 +23,19 @@ PASS O1 Options dialog opens (modeless)
 INFO options summary line: "KEX Suite: 5/5 features OK"
 PASS O2 Options reports the hotkey state: "Ctrl+Alt+M is registered"
 SHOT 3 options-dialog
-  [kex] Global hotkey drop-down: disabled
+  [kex] Quick note (global hotkey): disabled
 INFO helper window took Ctrl+Alt+M: 1
   [kex] hotkey Ctrl+Alt+M: NOT registered (error 1409)
-  [kex] Global hotkey drop-down: enabled
+  [kex] Quick note (global hotkey): enabled
 PASS O3 taken hotkey detected: registered=0 error=1409
   [kex] hotkey Ctrl+Alt+M: NOT registered (error 1409)
   [kex] Falling letters: disabled
   [kex] Falling letters: enabled
   [kex] Smooth caret: disabled
   [kex] Smooth caret: enabled
-  [kex] Global hotkey drop-down: disabled
+  [kex] Quick note (global hotkey): disabled
   [kex] hotkey Ctrl+Alt+M: NOT registered (error 1409)
-  [kex] Global hotkey drop-down: enabled
+  [kex] Quick note (global hotkey): enabled
   [kex] F12 hover tabs: disabled
   [kex] F12 hover tabs: enabled
   [kex] Same Notepad++ on every desktop: disabled
@@ -48,9 +48,9 @@ SHOT 4 options-hotkey-taken
   [kex] Falling letters: enabled
   [kex] Smooth caret: disabled
   [kex] Smooth caret: enabled
-  [kex] Global hotkey drop-down: disabled
+  [kex] Quick note (global hotkey): disabled
   [kex] hotkey Ctrl+Alt+M: registered (error 0)
-  [kex] Global hotkey drop-down: enabled
+  [kex] Quick note (global hotkey): enabled
   [kex] F12 hover tabs: disabled
   [kex] F12 hover tabs: enabled
   [kex] Same Notepad++ on every desktop: disabled
@@ -60,25 +60,25 @@ PASS O5 after the other program lets go, Apply registers it again: "Ctrl+Alt+M i
 PASS O6 Options dialog closes
 INFO deleting the selection on line 11 (58 chars, 50 visible non-blank)
 PASS F1 Delete key on a selection: 50 letters spawned, expected 50
-PASS F2 overlay alive with 50 letters, bounding box (98,266)-(457,334) (Notepad++ window (20,16)-(980,676))
+PASS F2 overlay alive with 50 letters, bounding box (98,265)-(457,334) (Notepad++ window (20,16)-(980,676))
 PASS F3 overlay is layered, click-through, non-activating, topmost (exstyle 0x80800a8)
 PASS F4 focus stays in the editor while letters fall
 SHOT 5 falling-letters-selection
-PASS F5 all letters fell off the screen and the overlay hid itself (frames rendered so far: 183)
+PASS F5 all letters fell off the screen and the overlay hid itself (frames rendered so far: 175)
 PASS F6 Backspace x3: 3 letters spawned
 SHOT 6 falling-letters-backspace
 PASS F7 Edit > Cut of "Particle": 8 letters spawned
 PASS F8 undo of typed text does not rain letters (skipped undo deletes: 1)
 PASS F9 deleting off-screen lines spawns nothing
-PASS F10 Select All + Delete of 3000 lines: 2205 visible letters grouped into 175 falling pieces (cap 200); total time incl. 200 ms wait 2192 ms
+PASS F10 Select All + Delete of 3000 lines: 2205 visible letters grouped into 175 falling pieces (cap 200); total time incl. 200 ms wait 2263 ms
 SHOT 7 falling-letters-huge-delete
 PASS F11 Replace All (text replaced) spawned 0 letters; NPPN_GLOBALMODIFIED seen 1 time(s)
 PASS F12 Windows animation effects off: no letters (respected by default)
 PASS F13a c.txt cloned into the second view
 PASS F13 second view: 10 letters spawned from "second line"
 SHOT 8 falling-letters-second-view
-PASS C1 Scintilla's caret hidden in both views (view1 original=0x1 now=0x0; view2 original=0x1 now=0x0; )
-INFO caret glide from (68.0,30.0) to (143.0,120.0): 44ms:(119.7,92.9) 57ms:(130.1,105.5) 78ms:(139.4,116.8) 91ms:(141.7,119.7) 104ms:(142.0,120.0) 118ms:(142.0,120.0) 132ms:(142.0,120.0) 145ms:(142.0,120.0) 159ms:(142.0,120.0) 172ms:(142.0,120.0) 
+PASS C1 Scintilla's caret hidden only in the view the smooth caret is drawn in (view1 original=0x1 now=0x1; view2 original=0x1 now=0x0; )
+INFO caret glide from (68.0,30.0) to (143.0,120.0): 38ms:(115.3,87.6) 50ms:(129.3,104.6) 65ms:(138.2,115.4) 82ms:(141.7,119.6) 96ms:(142.0,120.0) 109ms:(142.0,120.0) 123ms:(142.0,120.0) 135ms:(142.0,120.0) 148ms:(142.0,120.0) 161ms:(142.0,120.0) 
 PASS C2 caret glides through 3 intermediate positions and lands on the target (142.0,120.0)
 SHOT 9 caret-glide-frozen-midway
 PASS C3 custom caret visible, overlay (110,267)-(114,284)
@@ -102,6 +102,7 @@ PASS D2 switch to unregistered desktop B: Notepad++ stays on A (switched to unre
 INFO started a second notepad++.exe (pid 1008): 1
   [kex] per-desktop: registered {4B455844-534B-5450-8000-0000000000A1} (second notepad++.exe launch), copied state from {4B455844-534B-5450-8000-0000000000A0}
   [kex] per-desktop: second notepad++.exe launch: {4B455844-534B-5450-8000-0000000000A0} -> {4B455844-534B-5450-8000-0000000000A1}
+  [kex] per-desktop: window arrived on the current desktop after 63 ms
 PASS D3 second notepad++.exe on B: it exited (code 0), B registered (2 desktops), the single window moved to B (summoned (second notepad++.exe launch) on {4B455844-534B-5450-8000-0000000000A1})
 SHOT 14 desktop-B-state
   [kex] per-desktop: desktop switch: {4B455844-534B-5450-8000-0000000000A1} -> {4B455844-534B-5450-8000-0000000000A0}
@@ -113,39 +114,44 @@ PASS D6 lazy restore on activation: a.cpp on B is at line 25 (B's own position; 
   [kex] per-desktop: closed on {4B455844-534B-5450-8000-0000000000A1} only; Notepad++ now lives on {4B455844-534B-5450-8000-0000000000A0} (1 registered)
 PASS D7 X on B closed Notepad++ only on B: still running, now on A, 1 registered, B's INI section removed
 PASS D8 with one registered desktop the X button exits as usual (not intercepted); File > Exit is never intercepted
-  [kex] per-desktop: registered {4B455844-534B-5450-8000-0000000000A2} (hotkey), copied state from {4B455844-534B-5450-8000-0000000000A0}
-  [kex] per-desktop: hotkey: {4B455844-534B-5450-8000-0000000000A0} -> {4B455844-534B-5450-8000-0000000000A2}
-  [kex] hotkey: dropped down (post-it=1)
-PASS D9 hotkey on unregistered desktop C: registered and moved there (summoned (hotkey) on {4B455844-534B-5450-8000-0000000000A2})
+  [kex] per-desktop: registered {4B455844-534B-5450-8000-0000000000A2} (second notepad++.exe launch), copied state from {4B455844-534B-5450-8000-0000000000A0}
+  [kex] per-desktop: second notepad++.exe launch: {4B455844-534B-5450-8000-0000000000A0} -> {4B455844-534B-5450-8000-0000000000A2}
+  [kex] per-desktop: window arrived on the current desktop after 63 ms
+PASS D9 second instance on unregistered desktop C: registered and moved there (summoned (second notepad++.exe launch) on {4B455844-534B-5450-8000-0000000000A2})
 INFO INI sections: Desktop.{4B455844-534B-5450-8000-0000000000A0} Desktop.{4B455844-534B-5450-8000-0000000000A2} 
-PASS D10 state persisted per desktop GUID in Z:\root\kex-out\test\npp\plugins\Config\KexSuite.ini (A's active tab: C:\kexsuite-test\a.cpp)
-  [kex] hotkey: hidden, focus back to 0000000000000000
+PASS D10 state persisted per desktop GUID in Z:\root\st\npp\plugins\Config\KexSuite.ini (A's active tab: C:\kexsuite-test\a.cpp)
   [kex] per-desktop: desktop switch: {4B455844-534B-5450-8000-0000000000A2} -> {4B455844-534B-5450-8000-0000000000A0}
-  [kex] hotkey: dropped down (post-it=1)
 PASS H1 global hotkey Ctrl+Alt+M registered
 INFO started notepad.exe as 'another program': 1
 INFO Notepad++ minimized=1, foreground is the other program: 1
   [kex] WM_HOTKEY received
-  [kex] hotkey: dropped down (post-it=1)
+  [kex] quick note: opened at 320,190 640x420, previous window 00000000000102E6
 INFO SendInput Ctrl+Alt+M -> WM_HOTKEY delivered: yes
-PASS H2 hotkey while minimized: shown, F12 post-it on, in front, editor focused (WM_HOTKEY from real key events: yes)
-SHOT 16 hotkey-dropdown-postit
+PASS Q1 hotkey from another program while Notepad++ is minimized: quick note (320,190)-(960,610) centred on the screen (off by 0,0; WM_HOTKEY from real key events: yes)
+PASS Q2 the note is in front with the typing focus; Notepad++ stays minimized
+SHOT 16 quick-note
+PASS Q3 typing goes into the note: "note"
   [kex] WM_HOTKEY received
-  [kex] hotkey: hidden, focus back to 00000000000102EC
-PASS H3 hotkey while in front: hidden, focus back to the previous program (WM_HOTKEY: yes)
-SHOT 17 hotkey-hidden-focus-returned
+  [kex] quick note: closed, focus back to 00000000000102E6
+PASS Q4 hotkey again: note gone, focus back to the other program, text saved to Z:\root\st\npp\plugins\Config\KexQuickNote.txt ("note"; WM_HOTKEY: yes)
   [kex] WM_HOTKEY received
-  [kex] hotkey: dropped down (post-it=1)
-PASS H4 hotkey while hidden: back in front
+  [kex] quick note: opened at 320,190 640x420, previous window 00000000000102E6
+PASS Q5 reopened with the text kept, caret at the end: "note"
+  [kex] quick note: closed, focus back to 00000000000102E6
+PASS Q6 Esc hides the note and gives the focus back
   [kex] WM_HOTKEY received
-  [kex] hotkey: dropped down (post-it=1)
-PASS H5 hotkey while behind another window: brought to front
+  [kex] quick note: opened at 320,190 640x420, previous window 00000000000102E6
+  [kex] WM_HOTKEY received
+PASS Q7 hotkey while the note is open but not in front: brought to front, not hidden
+  [kex] WM_HOTKEY received
+  [kex] quick note: closed, focus back to 00000000000102E6
+PASS Q8 and the next press hides it
 PASS T0 in F12 post-it mode
   [kex] hover tabs: shown (4 tabs, view 0)
 PASS T1 hovering the top edge shows the floating strip (20,16)-(496,48): 4 tabs (view has 4), active tab 3
 PASS T2 unsaved marker shown on 3 tab(s)
 PASS T3 strip floats over the text; the editor is not pushed down (editor top 16, strip 16..48)
-SHOT 18 f12-hover-tabs
+SHOT 17 f12-hover-tabs
   [kex] hover tabs: activated tab 0 in view 0
 PASS T4 click on tab 0 switched the document to d.txt (real mouse click)
   [kex] hover tabs: hidden
@@ -159,11 +165,11 @@ PASS E2 Falling letters back on from the menu
 PASS E1 Smooth caret off from the menu: unchecked, caret style back to 0x1 (original 0x1)
   [kex] Smooth caret: enabled
 PASS E2 Smooth caret back on from the menu
-  [kex] Global hotkey drop-down: disabled
-PASS E1 Global hotkey drop-down off from the menu: unchecked, Ctrl+Alt+M released
+  [kex] Quick note (global hotkey): disabled
+PASS E1 Quick note (global hotkey) off from the menu: unchecked, Ctrl+Alt+M released
   [kex] hotkey Ctrl+Alt+M: registered (error 0)
-  [kex] Global hotkey drop-down: enabled
-PASS E2 Global hotkey drop-down back on from the menu
+  [kex] Quick note (global hotkey): enabled
+PASS E2 Quick note (global hotkey) back on from the menu
   [kex] F12 hover tabs: disabled
 PASS E1 F12 hover tabs off from the menu: unchecked, strip window destroyed
   [kex] F12 hover tabs: enabled
@@ -178,8 +184,12 @@ INFO final summary: KEX Suite: 5/5 features OK
 PASS K1 c.txt cloned into view 3 (bottom left)
 PASS K2 view 3: deleting a line spawned 15 letters (expected 15)
 PASS K3 view 3 focused: smooth caret drawn there (target 0000000000010152, view 3 0000000000010152, visible 1, focus 0000000000010152, carets 1, main 54,0)
-SHOT 19 kex-view3-letters
+SHOT 18 kex-view3-letters
+  [kex] hover tabs: shown (1 tabs, view 2)
+PASS K5 F12: hovering the top of view 3 shows view 3's tabs over view 3 (strip (20,350)-(496,382), view 3 (20,350)-(496,676), view 3)
+SHOT 19 kex-view3-hover-tabs
+  [kex] hover tabs: hidden
 PASS K4 view 3 snapped out: caret drawn in its own window, overlay (139,484)-(142,501) inside (64,412)-(552,766)
 SHOT 20 kex-view3-snapped-out-caret
-RESULT 79 passed, 0 failed
+RESULT 84 passed, 0 failed
 DONE
