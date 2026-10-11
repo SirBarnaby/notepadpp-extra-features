@@ -1,4 +1,4 @@
-From 9618aabb094698cde63ce745732591938fad13dc Mon Sep 17 00:00:00 2001
+From 4c15b1000505afc9edd0f802032d72cb1ba8db98 Mon Sep 17 00:00:00 2001
 From: KEX patch <noreply@anthropic.com>
 Date: Sun, 11 Oct 2026 15:07:35 +0000
 Subject: [PATCH] KEX: four views in a 2x2 grid, snap-out windows, built-in KEX
@@ -7,35 +7,42 @@ Subject: [PATCH] KEX: four views in a 2x2 grid, snap-out windows, built-in KEX
 Four views, snap-out view windows and plugin gating for two-view
 plugins. The KEX suite (PowerEditor/src/KexSuite, copied in by
 kex-patch.sh) is built into notepad++.exe and gets its settings pages in
-Settings > Preferences ("KEX Editing", "KEX Windows"), reachable from
-Settings > KEX Features.
+Settings > Preferences ("KEX Editing", "KEX Tabs", "KEX Windows"),
+reachable from Settings > KEX Features.
+
+Tab snapping: while a tab is dragged the core works out where it would
+land (the side of a view a hidden view would open on, or another view)
+and the suite draws the preview; with it on, a drop goes there instead
+of showing the Move/Clone menu.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
 ---
- PowerEditor/gcc/makefile                      |   1 +
- PowerEditor/src/KexViews.cpp                  | 852 ++++++++++++++++++
- PowerEditor/src/MISC/PluginsManager/KexApi.h  |  42 +
- .../src/MISC/PluginsManager/KexSuiteHost.h    |  21 +
- .../MISC/PluginsManager/PluginsManager.cpp    |  52 +-
- .../src/MISC/PluginsManager/PluginsManager.h  |   6 +
- PowerEditor/src/Notepad_plus.cpp              | 501 +++++-----
- PowerEditor/src/Notepad_plus.h                |  59 +-
- PowerEditor/src/Notepad_plus.rc               |   1 +
- PowerEditor/src/NppBigSwitch.cpp              | 164 +++-
- PowerEditor/src/NppCommands.cpp               | 116 ++-
- PowerEditor/src/NppIO.cpp                     | 311 ++++---
- PowerEditor/src/NppNotification.cpp           | 128 ++-
- PowerEditor/src/Parameters.cpp                |  55 +-
- PowerEditor/src/Parameters.h                  |  15 +
- .../WinControls/Preference/preferenceDlg.cpp  |  41 +
- .../WinControls/Preference/preferenceDlg.h    |  12 +
- .../SplitterContainer/SplitterContainer.cpp   |   2 +
- .../SplitterContainer/SplitterContainer.h     |  14 +
- .../VerticalFileSwitcher.cpp                  |  15 +-
- .../VerticalFileSwitcherListView.cpp          |  12 +-
- PowerEditor/src/menuCmdID.h                   |  21 +
- 22 files changed, 1952 insertions(+), 489 deletions(-)
+ PowerEditor/gcc/makefile                      |    1 +
+ PowerEditor/src/KexViews.cpp                  | 1078 +++++++++++++++++
+ PowerEditor/src/MISC/PluginsManager/KexApi.h  |   42 +
+ .../src/MISC/PluginsManager/KexSuiteHost.h    |   30 +
+ .../MISC/PluginsManager/PluginsManager.cpp    |   52 +-
+ .../src/MISC/PluginsManager/PluginsManager.h  |    6 +
+ PowerEditor/src/Notepad_plus.cpp              |  501 ++++----
+ PowerEditor/src/Notepad_plus.h                |   64 +-
+ PowerEditor/src/Notepad_plus.rc               |    1 +
+ PowerEditor/src/NppBigSwitch.cpp              |  164 ++-
+ PowerEditor/src/NppCommands.cpp               |  116 +-
+ PowerEditor/src/NppIO.cpp                     |  311 ++---
+ PowerEditor/src/NppNotification.cpp           |  135 ++-
+ PowerEditor/src/Parameters.cpp                |   55 +-
+ PowerEditor/src/Parameters.h                  |   15 +
+ .../WinControls/Preference/preferenceDlg.cpp  |   42 +
+ .../WinControls/Preference/preferenceDlg.h    |   12 +
+ .../SplitterContainer/SplitterContainer.cpp   |    2 +
+ .../SplitterContainer/SplitterContainer.h     |   14 +
+ PowerEditor/src/WinControls/TabBar/TabBar.cpp |    2 +
+ PowerEditor/src/WinControls/TabBar/TabBar.h   |    7 +
+ .../VerticalFileSwitcher.cpp                  |   15 +-
+ .../VerticalFileSwitcherListView.cpp          |   12 +-
+ PowerEditor/src/menuCmdID.h                   |   21 +
+ 24 files changed, 2209 insertions(+), 489 deletions(-)
  create mode 100644 PowerEditor/src/KexViews.cpp
  create mode 100644 PowerEditor/src/MISC/PluginsManager/KexApi.h
  create mode 100644 PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
@@ -54,10 +61,10 @@ index 3f38aa9..849daf5 100644
  
 diff --git a/PowerEditor/src/KexViews.cpp b/PowerEditor/src/KexViews.cpp
 new file mode 100644
-index 0000000..fce06f4
+index 0000000..a6c695a
 --- /dev/null
 +++ b/PowerEditor/src/KexViews.cpp
-@@ -0,0 +1,852 @@
+@@ -0,0 +1,1078 @@
 +// This file is part of the KEX four-view patch for Notepad++.
 +//
 +// This program is free software: you can redistribute it and/or modify
@@ -83,6 +90,7 @@ index 0000000..fce06f4
 +// The grid is rebuilt from the visibility bits in _mainWindowStatus by kexLayoutViews().
 +
 +#include <algorithm>
++#include <cmath>
 +#include <string>
 +#include "Notepad_plus.h"
 +#include "Notepad_plus_Window.h"
@@ -782,6 +790,225 @@ index 0000000..fce06f4
 +
 +
 +//
++// Tab snapping: drag a tab to the edge of a view to open a new view there, or onto another view
++// to move it there. While the tab moves the suite draws where it would land (kexsuite::tabSnapPreview).
++//
++
++static constexpr double KEX_SNAP_BAND = 0.33; // the outer third of a view, towards a side where a view can open
++
++static RECT kexWindowRect(HWND hwnd)
++{
++	RECT rc{};
++	::GetWindowRect(hwnd, &rc);
++	return rc;
++}
++
++static LONG kexRectArea(const RECT& rc)
++{
++	return (rc.right > rc.left && rc.bottom > rc.top) ? (rc.right - rc.left) * (rc.bottom - rc.top) : 0;
++}
++
++// Splits rc the way a splitter container splits its two panes: its orientation, its current
++// ratio (where its bar sits, even while it is hidden) and the width of its bar.
++static void kexSplitLike(const SplitterContainer& container, const RECT& rc, RECT& first, RECT& second)
++{
++	const bool leftRight = container.isVertical();
++	double ratio = 0.5;
++	int bar = 4;
++	HWND hBar = ::GetWindow(container.getHSelf(), GW_CHILD);
++	RECT rcContainer{};
++	::GetClientRect(container.getHSelf(), &rcContainer);
++	if (hBar)
++	{
++		RECT rcBar = kexWindowRect(hBar);
++		::MapWindowPoints(nullptr, container.getHSelf(), reinterpret_cast<POINT*>(&rcBar), 2);
++		const LONG extent = leftRight ? rcContainer.right : rcContainer.bottom;
++		const LONG thickness = leftRight ? (rcBar.right - rcBar.left) : (rcBar.bottom - rcBar.top);
++		if (extent > 0 && thickness > 0 && thickness < extent)
++		{
++			const double r = ((leftRight ? rcBar.left : rcBar.top) + thickness / 2.0) / extent;
++			if (r > 0.05 && r < 0.95)
++				ratio = r;
++			bar = thickness;
++		}
++	}
++	first = second = rc;
++	if (leftRight)
++	{
++		const LONG x = rc.left + static_cast<LONG>((rc.right - rc.left) * ratio) - bar / 2;
++		first.right = x;
++		second.left = x + bar;
++	}
++	else
++	{
++		const LONG y = rc.top + static_cast<LONG>((rc.bottom - rc.top) * ratio) - bar / 2;
++		first.bottom = y;
++		second.top = y + bar;
++	}
++}
++
++// Where view whichOne would sit inside area if the docked views were dockedViews (bit v = view v),
++// following kexEditorAreaWindow(): a column per pair (main/view 3, sub/view 4), split when both are in.
++RECT Notepad_plus::kexPredictViewRect(int whichOne, unsigned dockedViews, const RECT& area)
++{
++	auto docked = [dockedViews](int v) { return (dockedViews & (1u << v)) != 0; };
++
++	RECT column[2] = { area, area };
++	if ((docked(MAIN_VIEW) || docked(VIEW_3)) && (docked(SUB_VIEW) || docked(VIEW_4)))
++	{
++		RECT first{}, second{};
++		kexSplitLike(_subSplitter, area, first, second);
++		const Window* win0 = _subSplitter.getWin0();
++		const bool swapped = (win0 == &_kexColumnSplitter[1] || win0 == &_subDocTab || win0 == &_view4DocTab);
++		column[0] = swapped ? second : first;
++		column[1] = swapped ? first : second;
++	}
++
++	const int col = whichOne % 2; // main and view 3 share the first column, sub and view 4 the second
++	const int top = col;
++	const int bottom = col + VIEW_3;
++	if (docked(top) && docked(bottom))
++	{
++		RECT first{}, second{};
++		kexSplitLike(_kexColumnSplitter[col], column[col], first, second);
++		const bool swapped = (_kexColumnSplitter[col].getWin0() == kexDocTab(bottom));
++		return ((whichOne == top) != swapped) ? first : second;
++	}
++	return column[col];
++}
++
++Notepad_plus::KexSnapTarget Notepad_plus::kexSnapTargetAt(POINT screenPoint, bool clone)
++{
++	KexSnapTarget none;
++	const int source = currentView();
++	HWND hNpp = _pPublicInterface->getHSelf();
++	HWND hit = ::WindowFromPoint(screenPoint);
++	if (!hit)
++		return none;
++
++	// a torn-out view takes the tab as a whole
++	const int hitView = kexViewFromHwnd(hit);
++	if (hitView != -1 && kexIsTornOut(hitView))
++	{
++		if (hitView == source)
++			return none;
++		KexSnapTarget target;
++		target.view = hitView;
++		::GetClientRect(_kexViewWindow[hitView], &target.preview);
++		::MapWindowPoints(_kexViewWindow[hitView], nullptr, reinterpret_cast<POINT*>(&target.preview), 2);
++		return target;
++	}
++	if (::GetAncestor(hit, GA_ROOT) != hNpp || ::IsIconic(hNpp))
++		return none;
++
++	// the docked views, the area they fill and the one under the pointer
++	unsigned dockedViews = 0;
++	RECT viewRect[NB_VIEWS]{};
++	RECT area{};
++	int over = -1;
++	for (int v = 0; v < NB_VIEWS; ++v)
++	{
++		if (!viewVisible(v) || kexIsTornOut(v))
++			continue;
++		dockedViews |= 1u << v;
++		viewRect[v] = kexWindowRect(kexDocTab(v)->getHSelf()); // the tab control spans the whole pane
++		::UnionRect(&area, &area, &viewRect[v]);
++		if (::PtInRect(&viewRect[v], screenPoint))
++			over = v;
++	}
++	if (over == -1)
++		return none;
++	const RECT& rcOver = viewRect[over];
++	const RECT rcEdit = kexWindowRect(kexEditView(over)->getHSelf());
++	const bool overTabStrip = !::PtInRect(&rcEdit, screenPoint);
++
++	// Near an edge: a hidden view that would open on that side of this view. Notepad++ never
++	// moves the only tab of a view into a hidden view (docGotoAnotherEditView), but it can clone it.
++	const bool canOpenView = !overTabStrip && (clone || kexDocTab(source)->nbItem() > 1);
++	const double w = (std::max)(1L, rcOver.right - rcOver.left);
++	const double h = (std::max)(1L, rcOver.bottom - rcOver.top);
++	KexSnapTarget best;
++	double bestDepth = KEX_SNAP_BAND;
++	bool bestSameRow = false;
++	for (int v = 0; canOpenView && v < NB_VIEWS; ++v)
++	{
++		if (viewVisible(v))
++			continue;
++		const RECT predicted = kexPredictViewRect(v, dockedViews | (1u << v), area);
++		RECT inside{};
++		if (!::IntersectRect(&inside, &predicted, &rcOver) || kexRectArea(inside) * 10 < kexRectArea(predicted) * 3)
++			continue; // it would not open inside the view under the pointer
++
++		// which side of the view it takes, and how far the pointer is from that edge
++		const double dx = ((inside.left + inside.right) - (rcOver.left + rcOver.right)) / 2.0 / w;
++		const double dy = ((inside.top + inside.bottom) - (rcOver.top + rcOver.bottom)) / 2.0 / h;
++		if (std::abs(dx) < 0.05 && std::abs(dy) < 0.05)
++			continue;
++		double depth = 0;
++		if (std::abs(dx) >= std::abs(dy))
++			depth = (dx > 0) ? (rcOver.right - screenPoint.x) / w : (screenPoint.x - rcOver.left) / w;
++		else
++			depth = (dy > 0) ? (rcOver.bottom - screenPoint.y) / h : (screenPoint.y - rcOver.top) / h;
++
++		// two hidden views can open in the same place (e.g. sub and view 4 next to a lone main view):
++		// prefer the one in the same row as the view under the pointer
++		const bool sameRow = ((v >= VIEW_3) == (over >= VIEW_3));
++		if (depth < bestDepth || (depth == bestDepth && sameRow && !bestSameRow))
++		{
++			best.view = v;
++			best.preview = predicted;
++			bestDepth = depth;
++			bestSameRow = sameRow;
++		}
++	}
++	if (best.view != -1)
++		return best;
++
++	// anywhere else on another view: the tab moves into it
++	if (over == source)
++		return none;
++	KexSnapTarget target;
++	target.view = over;
++	target.preview = rcOver;
++	return target;
++}
++
++// A tab was dropped at screenPoint with tab snapping on. False = the drop was outside every
++// Notepad++ window, so the usual handling applies (a window of its own, or another instance).
++bool Notepad_plus::kexSnapDrop(POINT screenPoint, bool clone)
++{
++	kexsuite::tabSnapPreview(nullptr);
++	const KexSnapTarget target = kexSnapTargetAt(screenPoint, clone);
++	if (target.view != -1)
++	{
++		docGotoAnotherEditView(clone ? TransferClone : TransferMove, target.view);
++		checkSyncState();
++		return true;
++	}
++
++	// anywhere else in Notepad++ (its own view, the toolbar...) the drop does nothing, with no menu
++	HWND hit = ::WindowFromPoint(screenPoint);
++	return hit && (::GetAncestor(hit, GA_ROOT) == _pPublicInterface->getHSelf() || kexViewFromHwnd(hit) != -1);
++}
++
++void Notepad_plus::kexOnTabDrag(int state)
++{
++	if (state == KEX_TABDRAG_MOVED && kexsuite::tabSnapOn())
++	{
++		POINT p{};
++		::GetCursorPos(&p);
++		const bool clone = (::GetKeyState(VK_LCONTROL) & 0x80000000) != 0; // as the drop handler reads it
++		const KexSnapTarget target = kexSnapTargetAt(p, clone);
++		kexsuite::tabSnapPreview(target.view != -1 ? &target.preview : nullptr);
++	}
++	else
++	{
++		kexsuite::tabSnapPreview(nullptr);
++	}
++}
++
++
++//
 +// Menus and messages
 +//
 +
@@ -900,6 +1127,12 @@ index 0000000..fce06f4
 +			return reinterpret_cast<LRESULT>(kexIsTornOut(view) ? _kexViewWindow[view] : _pPublicInterface->getHSelf());
 +		}
 +
++		case NPPM_INTERNAL_KEX_TABDRAG:
++		{
++			kexOnTabDrag(static_cast<int>(wParam));
++			return TRUE;
++		}
++
 +		case NPPM_INTERNAL_KEX_SPLITTERROTATED:
 +		{
 +			kexOnSplitterRotated(reinterpret_cast<HWND>(wParam), static_cast<int>(lParam));
@@ -960,20 +1193,21 @@ index 0000000..a60b9c2
 +#define NPPM_KEX_GETVIEWHOSTWINDOW    (KEX_USER + 11)
 diff --git a/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h b/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
 new file mode 100644
-index 0000000..12c5f38
+index 0000000..ed25948
 --- /dev/null
 +++ b/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
-@@ -0,0 +1,21 @@
-+// KexSuiteHost.h - the KEX suite (falling letters, smooth caret, quick note, F12 hover tabs, the same
-+// Notepad++ on every virtual desktop) is built into notepad++.exe. Its sources live in
-+// PowerEditor/src/KexSuite (kex-patch.sh copies them in from the KEX repository's suite/ folder).
-+// It drives Notepad++ through the documented plugin messages, so the core only hands it the plugin
-+// data, every notification, and the window procedure of its two Preferences pages.
+@@ -0,0 +1,30 @@
++// KexSuiteHost.h - the KEX suite (falling letters, smooth caret, quick note, F12 hover tabs, tab
++// snapping, the same Notepad++ on every virtual desktop) is built into notepad++.exe. Its sources
++// live in PowerEditor/src/KexSuite (kex-patch.sh copies them in from the KEX repository's suite/
++// folder). It drives Notepad++ through the documented plugin messages, so the core only hands it the
++// plugin data, every notification, the window procedure of its Preferences pages and tab drags.
 +#pragma once
 +
-+// Settings > Preferences > "KEX Editing" and "KEX Windows" (dialog templates in KexSuite/KexSuite.rc)
-+#define IDD_KEX_PREF_EDITING 30500
-+#define IDD_KEX_PREF_WINDOWS 30501
++// Settings > Preferences gets the suite's pages: dialog templates IDD_KEX_PREF_FIRST,
++// IDD_KEX_PREF_FIRST + 1, ... (KexSuite/KexSuite.rc), at most KEX_PREF_PAGES_MAX of them.
++#define IDD_KEX_PREF_FIRST 30500
++#define KEX_PREF_PAGES_MAX 4
 +
 +#ifndef RC_INVOKED
 +#include <windows.h>
@@ -982,7 +1216,15 @@ index 0000000..12c5f38
 +namespace kexsuite {
 +void setInfo(HINSTANCE hInst, const NppData& data);                           // once the Scintilla views exist
 +void notify(SCNotification* n);                                                // every notification, views 3 and 4 included
-+intptr_t prefPageProc(HWND page, UINT message, WPARAM wParam, LPARAM lParam);   // both Preferences pages
++intptr_t prefPageProc(HWND page, UINT message, WPARAM wParam, LPARAM lParam);   // all its Preferences pages
++int prefPageCount();                                                           // pages to add (<= KEX_PREF_PAGES_MAX)
++const wchar_t* prefPageTitle(int page);                                        // shown in the Preferences list
++const wchar_t* prefPageName(int page);                                         // internal name (showDialogByName)
++
++// Tab snapping: while a tab is dragged the core works out where it would land and the suite
++// draws the preview. tabSnapOn() false = the classic drop menu.
++bool tabSnapOn();
++void tabSnapPreview(const RECT* screenRect);                                   // nullptr hides it
 +}
 +#endif
 diff --git a/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp b/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp
@@ -2107,7 +2349,7 @@ index 4bf5a90..01a88ba 100644
  	{
  		for (size_t i = 0; i < pTabView->nbItem(); ++i)
 diff --git a/PowerEditor/src/Notepad_plus.h b/PowerEditor/src/Notepad_plus.h
-index fefc2bd..9aeb5b9 100644
+index fefc2bd..87aec87 100644
 --- a/PowerEditor/src/Notepad_plus.h
 +++ b/PowerEditor/src/Notepad_plus.h
 @@ -44,6 +44,7 @@
@@ -2172,7 +2414,7 @@ index fefc2bd..9aeb5b9 100644
  
      ContextMenu _tabPopupMenu;
  	ContextMenu _tabPopupDropMenu;
-@@ -457,21 +474,57 @@ private:
+@@ -457,21 +474,62 @@ private:
  		return _activeView;
  	}
  
@@ -2219,6 +2461,11 @@ index fefc2bd..9aeb5b9 100644
 +	bool kexIsOverDockedTabBar(POINT screenPoint);
 +	bool kexTearOutDoc(FileTransferMode mode, const POINT* where);
 +	void kexDestroyTornOutWindows();
++	struct KexSnapTarget { int view = -1; RECT preview{}; };
++	KexSnapTarget kexSnapTargetAt(POINT screenPoint, bool clone);
++	RECT kexPredictViewRect(int whichOne, unsigned dockedViews, const RECT& area);
++	bool kexSnapDrop(POINT screenPoint, bool clone);
++	void kexOnTabDrag(int state);
 +	int _kexLastDockedView = MAIN_VIEW;
 +	static LRESULT CALLBACK kexViewWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 +
@@ -2625,7 +2872,7 @@ index 3a8dad0..889c1f8 100644
  				for (size_t i = 0, len = pTab[v]->nbItem(); i < len; ++i)
  				{
 diff --git a/PowerEditor/src/NppCommands.cpp b/PowerEditor/src/NppCommands.cpp
-index a1a5912..b599665 100644
+index a1a5912..484acbe 100644
 --- a/PowerEditor/src/NppCommands.cpp
 +++ b/PowerEditor/src/NppCommands.cpp
 @@ -1538,10 +1538,11 @@ void Notepad_plus::command(int id)
@@ -2716,7 +2963,7 @@ index a1a5912..b599665 100644
  				_nativeLangSpeaker.changePreferenceDlgLang(_preference);
  			}
 +			if (id == IDM_SETTING_KEX)
-+				_preference.showDialogByName(L"KexEditing");
++				_preference.showDialogByName(kexsuite::prefPageName(0));
  			break;
  		}
  
@@ -3513,7 +3760,7 @@ index 71fb3b3..2a0cc6c 100644
  		if (!isEmptyNpp && (nppGUI._multiInstSetting == multiInstOnSession || nppGUI._multiInstSetting == multiInst))
  		{
 diff --git a/PowerEditor/src/NppNotification.cpp b/PowerEditor/src/NppNotification.cpp
-index 8b85774..9ca5813 100644
+index 8b85774..e9439a0 100644
 --- a/PowerEditor/src/NppNotification.cpp
 +++ b/PowerEditor/src/NppNotification.cpp
 @@ -34,14 +34,19 @@ BOOL Notepad_plus::notify(SCNotification *notification)
@@ -3706,7 +3953,17 @@ index 8b85774..9ca5813 100644
  					{
  						_pDocMap->showInMapTemporarily(pBuf, notifyView);
  						_pDocMap->setSyntaxHiliting();
-@@ -775,6 +787,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+@@ -772,9 +784,17 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+ 			{
+ 				POINT p = sender->getDraggingPoint();
+ 
++				// KEX: tab snapping (Settings > KEX Features) replaces the drop menu
++				if (kexsuite::tabSnapOn() && kexSnapDrop(p, isInCtrlStat))
++				{
++					sender->resetDraggingPoint();
++					return TRUE;
++				}
++
  				//It's the coordinate of screen, so we can call
  				//"WindowFromPoint" function without converting the point
  				HWND hWin = ::WindowFromPoint(p);
@@ -3714,7 +3971,7 @@ index 8b85774..9ca5813 100644
  				if (hWin == _pEditView->getHSelf()) // In the same view group
  				{
  					if (!_tabPopupDropMenu.isCreated())
-@@ -784,26 +797,39 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+@@ -784,26 +804,39 @@ BOOL Notepad_plus::notify(SCNotification *notification)
  						vector<MenuItemUnit> itemUnitArray;
  						itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_GOTO_ANOTHER_VIEW, goToView));
  						itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_CLONE_TO_ANOTHER_VIEW, cloneToView));
@@ -3758,7 +4015,7 @@ index 8b85774..9ca5813 100644
  					wstring quotFileName = L"\"";
  					quotFileName += _pEditView->getCurrentBuffer()->getFullPathName();
  					quotFileName += L"\"";
-@@ -821,7 +847,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+@@ -821,7 +854,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
  						int index = _pDocTab->getCurrentTabIndex();
  						BufferID bufferToClose = notifyDocTab->getBufferByIndex(index);
  						Buffer * buf = MainFileManager.getBufferByID(bufferToClose);
@@ -3767,7 +4024,7 @@ index 8b85774..9ca5813 100644
  						if (buf->isDirty())
  						{
  							_nativeLangSpeaker.messageBox("CannotMoveDoc",
-@@ -858,7 +884,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+@@ -858,7 +891,7 @@ BOOL Notepad_plus::notify(SCNotification *notification)
  			int index = tabNotification->_tabOrigin;
  			BufferID bufferToClose = notifyDocTab->getBufferByIndex(index);
  			Buffer * buf = MainFileManager.getBufferByID(bufferToClose);
@@ -3776,7 +4033,7 @@ index 8b85774..9ca5813 100644
  			if (buf->isDirty())
  			{
  				activateBuffer(bufferToClose, iView);
-@@ -896,6 +922,13 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+@@ -896,6 +929,13 @@ BOOL Notepad_plus::notify(SCNotification *notification)
  				else
  					_subDocTab.tabToEnd(index);
  			}
@@ -3790,7 +4047,7 @@ index 8b85774..9ca5813 100644
  			else
  				return FALSE;
  
-@@ -915,6 +948,10 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+@@ -915,6 +955,10 @@ BOOL Notepad_plus::notify(SCNotification *notification)
  			{
  				iView = SUB_VIEW;
  			}
@@ -3801,7 +4058,7 @@ index 8b85774..9ca5813 100644
  			else
  				break;
  
-@@ -973,6 +1010,15 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+@@ -973,6 +1017,15 @@ BOOL Notepad_plus::notify(SCNotification *notification)
  				// Switch off
  				switchEditViewTo(SUB_VIEW);
  			}
@@ -3817,7 +4074,7 @@ index 8b85774..9ca5813 100644
  
  			break;
  		}
-@@ -1034,6 +1080,10 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+@@ -1034,6 +1087,10 @@ BOOL Notepad_plus::notify(SCNotification *notification)
  			{
  				switchEditViewTo(SUB_VIEW);
  			}
@@ -3828,7 +4085,7 @@ index 8b85774..9ca5813 100644
  			else if (notification->nmhdr.hwndFrom == _statusBar.getHSelf())  // From Status Bar
  			{
  				LPNMMOUSE lpnm = (LPNMMOUSE)notification;
-@@ -1140,6 +1190,15 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+@@ -1140,6 +1197,15 @@ BOOL Notepad_plus::notify(SCNotification *notification)
  					itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_CLONE_TO_ANOTHER_VIEW, L"Clone to Other View", L"Move Document"));
  					itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_GOTO_NEW_INSTANCE, L"Move to New Instance", L"Move Document"));
  					itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_LOAD_IN_NEW_INSTANCE, L"Open in New Instance", L"Move Document"));
@@ -3844,7 +4101,7 @@ index 8b85774..9ca5813 100644
  					itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_TAB_COLOUR_1, L"Apply Color 1", L"Apply Color to Tab"));
  					itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_TAB_COLOUR_2, L"Apply Color 2", L"Apply Color to Tab"));
  					itemUnitArray.push_back(MenuItemUnit(IDM_VIEW_TAB_COLOUR_3, L"Apply Color 3", L"Apply Color to Tab"));
-@@ -1276,10 +1335,15 @@ BOOL Notepad_plus::notify(SCNotification *notification)
+@@ -1276,10 +1342,15 @@ BOOL Notepad_plus::notify(SCNotification *notification)
  				else
  				{
  					BufferID idd = BUFFER_INVALID;
@@ -3990,7 +4247,7 @@ index 5db0df6..86a9482 100644
  
  
 diff --git a/PowerEditor/src/WinControls/Preference/preferenceDlg.cpp b/PowerEditor/src/WinControls/Preference/preferenceDlg.cpp
-index 8dbc75c..3af9d29 100644
+index 8dbc75c..c028e18 100644
 --- a/PowerEditor/src/WinControls/Preference/preferenceDlg.cpp
 +++ b/PowerEditor/src/WinControls/Preference/preferenceDlg.cpp
 @@ -39,6 +39,7 @@
@@ -4001,34 +4258,35 @@ index 8dbc75c..3af9d29 100644
  #include "Notepad_plus_msgs.h"
  #include "NppConstants.h"
  #include "NppDarkMode.h"
-@@ -309,6 +310,12 @@ intptr_t CALLBACK PreferenceDlg::run_dlgProc(UINT message, WPARAM wParam, LPARAM
+@@ -309,6 +310,13 @@ intptr_t CALLBACK PreferenceDlg::run_dlgProc(UINT message, WPARAM wParam, LPARAM
  			_searchEngineSubDlg.init(_hInst, _hSelf);
  			_searchEngineSubDlg.create(IDD_PREFERENCE_SUB_SEARCHENGINE, false, false);
  
-+			_kexEditingSubDlg.init(_hInst, _hSelf);
-+			_kexEditingSubDlg.create(IDD_KEX_PREF_EDITING, false, false);
-+
-+			_kexWindowsSubDlg.init(_hInst, _hSelf);
-+			_kexWindowsSubDlg.create(IDD_KEX_PREF_WINDOWS, false, false);
++			const int kexPages = (std::min)(kexsuite::prefPageCount(), KEX_PREF_PAGES_MAX);
++			for (int i = 0; i < kexPages; ++i)
++			{
++				_kexSubDlg[i].init(_hInst, _hSelf);
++				_kexSubDlg[i].create(IDD_KEX_PREF_FIRST + i, false, false);
++			}
 +
  			_wVector.push_back(DlgInfo(&_generalSubDlg, L"General", L"Global"));
  			_wVector.push_back(DlgInfo(&_toolbarSubDlg, L"Toolbar", L"Toolbar"));
  			_wVector.push_back(DlgInfo(&_tabbarSubDlg, L"Tab Bar", L"Tabbar"));
-@@ -333,6 +340,8 @@ intptr_t CALLBACK PreferenceDlg::run_dlgProc(UINT message, WPARAM wParam, LPARAM
+@@ -333,6 +341,8 @@ intptr_t CALLBACK PreferenceDlg::run_dlgProc(UINT message, WPARAM wParam, LPARAM
  			_wVector.push_back(DlgInfo(&_cloudAndLinkSubDlg, L"Cloud & Link", L"Cloud"));
  			_wVector.push_back(DlgInfo(&_searchEngineSubDlg, L"Search Engine", L"SearchEngine"));
  			_wVector.push_back(DlgInfo(&_miscSubDlg, L"MISC.", L"MISC"));
-+			_wVector.push_back(DlgInfo(&_kexEditingSubDlg, L"KEX Editing", L"KexEditing"));
-+			_wVector.push_back(DlgInfo(&_kexWindowsSubDlg, L"KEX Windows", L"KexWindows"));
++			for (int i = 0; i < kexPages; ++i)
++				_wVector.push_back(DlgInfo(&_kexSubDlg[i], kexsuite::prefPageTitle(i), kexsuite::prefPageName(i)));
  
  
  			makeCategoryList();
-@@ -662,6 +671,38 @@ void PreferenceDlg::destroy()
+@@ -662,6 +672,38 @@ void PreferenceDlg::destroy()
  	_multiInstanceSubDlg.destroy();
  	_delimiterSubDlg.destroy();
  	_performanceSubDlg.destroy();
-+	_kexEditingSubDlg.destroy();
-+	_kexWindowsSubDlg.destroy();
++	for (KexSubDlg& kexPage : _kexSubDlg)
++		kexPage.destroy();
 +}
 +
 +intptr_t CALLBACK KexSubDlg::run_dlgProc(UINT message, WPARAM wParam, LPARAM lParam)
@@ -4063,14 +4321,22 @@ index 8dbc75c..3af9d29 100644
  
  void TabbarSubDlg::setTabbarAlternateIcons(bool enable)
 diff --git a/PowerEditor/src/WinControls/Preference/preferenceDlg.h b/PowerEditor/src/WinControls/Preference/preferenceDlg.h
-index 57f3f0c..512e0c9 100644
+index 57f3f0c..174c5f5 100644
 --- a/PowerEditor/src/WinControls/Preference/preferenceDlg.h
 +++ b/PowerEditor/src/WinControls/Preference/preferenceDlg.h
-@@ -386,6 +386,16 @@ private :
+@@ -29,6 +29,7 @@
+ #include "ControlsTab.h"
+ #include "Notepad_plus_msgs.h"
+ #include "Parameters.h"
++#include "KexSuiteHost.h" // KEX
+ #include "StaticDialog.h"
+ #include "dpiManagerV2.h"
+ #include "preference_rc.h"
+@@ -386,6 +387,16 @@ private :
  	HWND _largeFileRestrictionTip = nullptr;
  };
  
-+// KEX: Settings > Preferences > "KEX Editing" and "KEX Windows"; the built-in KEX suite runs these pages
++// KEX: the built-in KEX suite's pages in Settings > Preferences (KexSuiteHost.h); the suite runs them
 +class KexSubDlg : public StaticDialog
 +{
 +public:
@@ -4083,12 +4349,11 @@ index 57f3f0c..512e0c9 100644
  class PreferenceDlg : public StaticDialog
  {
  friend class NativeLangSpeaker;
-@@ -447,6 +457,8 @@ private :
+@@ -447,6 +458,7 @@ private :
  	CloudAndLinkSubDlg _cloudAndLinkSubDlg;
  	SearchEngineSubDlg _searchEngineSubDlg;
  	SearchingSubDlg _searchingSubDlg;
-+	KexSubDlg _kexEditingSubDlg;
-+	KexSubDlg _kexWindowsSubDlg;
++	KexSubDlg _kexSubDlg[KEX_PREF_PAGES_MAX];
  
  	ControlInfoTip _gotoTip;
  };
@@ -4142,6 +4407,44 @@ index ddcf11c..e1f0dbd 100644
  private:
  	Window* _pWin0 = nullptr; // left or top window
  	Window* _pWin1 = nullptr; // right or bottom window
+diff --git a/PowerEditor/src/WinControls/TabBar/TabBar.cpp b/PowerEditor/src/WinControls/TabBar/TabBar.cpp
+index 57b5251..03201e6 100644
+--- a/PowerEditor/src/WinControls/TabBar/TabBar.cpp
++++ b/PowerEditor/src/WinControls/TabBar/TabBar.cpp
+@@ -948,6 +948,7 @@ LRESULT TabBarPlus::runProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lPara
+ 				// For using the function "WindowFromPoint" afterward!!!
+ 				::GetCursorPos(&_draggingPoint);
+ 				draggingCursor(_draggingPoint);
++				::SendMessage(_hParent, NPPM_INTERNAL_KEX_TABDRAG, _isDraggingInside ? KEX_TABDRAG_OVERTABS : KEX_TABDRAG_MOVED, reinterpret_cast<LPARAM>(_hSelf)); // KEX: tab snapping preview
+ 				return TRUE;
+ 			}
+ 			else
+@@ -1184,6 +1185,7 @@ LRESULT TabBarPlus::runProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lPara
+ 			if (_isDragging)
+ 			{
+ 				_isDragging = false;
++				::SendMessage(_hParent, NPPM_INTERNAL_KEX_TABDRAG, KEX_TABDRAG_ENDED, reinterpret_cast<LPARAM>(_hSelf)); // KEX
+ 				return 0;
+ 			}
+ 			break;
+diff --git a/PowerEditor/src/WinControls/TabBar/TabBar.h b/PowerEditor/src/WinControls/TabBar/TabBar.h
+index a2c3e1f..4a41b06 100644
+--- a/PowerEditor/src/WinControls/TabBar/TabBar.h
++++ b/PowerEditor/src/WinControls/TabBar/TabBar.h
+@@ -17,6 +17,13 @@
+ 
+ #pragma once
+ 
++// KEX: a dragged tab reports where it is so the tab snapping preview can follow it.
++// wParam: one of KEX_TABDRAG_*, lParam: the tab bar's HWND.
++#define NPPM_INTERNAL_KEX_TABDRAG (WM_USER + 9000 + 98)
++#define KEX_TABDRAG_ENDED 0
++#define KEX_TABDRAG_MOVED 1
++#define KEX_TABDRAG_OVERTABS 2
++
+ #include <windows.h>
+ 
+ #include <commctrl.h>
 diff --git a/PowerEditor/src/WinControls/VerticalFileSwitcher/VerticalFileSwitcher.cpp b/PowerEditor/src/WinControls/VerticalFileSwitcher/VerticalFileSwitcher.cpp
 index 726e507..0ec69e3 100644
 --- a/PowerEditor/src/WinControls/VerticalFileSwitcher/VerticalFileSwitcher.cpp

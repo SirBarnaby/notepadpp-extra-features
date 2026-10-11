@@ -1,7 +1,7 @@
-// PrefPages.cpp - Settings > Preferences > "KEX Editing" and "KEX Windows" (the core creates both
-// pages inside Notepad++'s Preferences dialog and hands their messages to prefPageProc). Like the
-// other Preferences pages, every change takes effect at once; numbers apply half a second after
-// the last keystroke.
+// PrefPages.cpp - Settings > Preferences > "KEX Editing", "KEX Tabs" and "KEX Windows" (the core
+// creates the pages inside Notepad++'s Preferences dialog and hands their messages to prefPageProc).
+// Like the other Preferences pages, every change takes effect at once; numbers apply half a second
+// after the last keystroke.
 #include "KexSuite.h"
 #include "KexSuiteRes.h"
 #include <cwchar>
@@ -11,7 +11,9 @@ namespace kex {
 namespace {
 
 const UINT_PTR TIMER_APPLY = 1;
-HWND g_pages[2] = {};
+HWND g_pages[PAGE_COUNT] = {};
+const wchar_t* const kPageTitle[PAGE_COUNT] = { L"KEX Editing", L"KEX Tabs", L"KEX Windows" };
+const wchar_t* const kPageName[PAGE_COUNT] = { L"KexEditing", L"KexTabs", L"KexWindows" };
 bool g_filling = false;
 
 struct IntField { int id; int module; const wchar_t* key; int def; };
@@ -35,9 +37,11 @@ const BoolField kBools[] = {
     { IDC_H_KEEP, M_HOTKEY, L"KeepText", 1 },
     { IDC_H_FADE, M_HOTKEY, L"Fade", 1 },
     { IDC_D_CLOSE, M_DESKTOP, L"CloseOnlyThisDesktop", 1 },
+    { IDC_S_ANIM, M_SNAP, L"Animate", 1 },
+    { IDC_J_ALL, M_KEYS, L"AlsoNotepadKeys", 1 },
 };
-const int kEnable[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN };
-const int kStatus[M_COUNT] = { IDC_L_STATUS, IDC_C_STATUS, IDC_H_STATUS, IDC_T_STATUS, IDC_D_STATUS };
+const int kEnable[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN };
+const int kStatus[M_COUNT] = { IDC_L_STATUS, IDC_C_STATUS, IDC_H_STATUS, IDC_T_STATUS, IDC_D_STATUS, IDC_S_STATUS, IDC_J_STATUS };
 
 bool has(HWND d, int id) { return ::GetDlgItem(d, id) != nullptr; }
 
@@ -165,6 +169,8 @@ void onCommand(HWND d, int id, int code)
                 return;
             }
         if (id == IDC_H_WIN) { applyHotkey(d); refreshPrefPages(); }
+        if (id == IDC_J_LIST)
+            ::MessageBoxW(::GetParent(d), jetBrainsKeyList().c_str(), L"JetBrains shortcuts", MB_OK | MB_ICONINFORMATION);
         return;
     }
     if (code == EN_CHANGE)
@@ -175,11 +181,21 @@ void onCommand(HWND d, int id, int code)
     }
 }
 
-int pageIndex(HWND d) { return has(d, IDC_L_EN) ? 0 : 1; }
+int pageIndex(HWND d) { return has(d, IDC_L_EN) ? PAGE_EDITING : (has(d, IDC_S_EN) ? PAGE_TABS : PAGE_WINDOWS); }
 
 } // namespace
 
-HWND prefPage(int i) { return (i == 0 || i == 1) ? g_pages[i] : nullptr; }
+HWND prefPage(int i) { return (i >= 0 && i < PAGE_COUNT) ? g_pages[i] : nullptr; }
+
+int pageOfModule(int module)
+{
+    switch (module)
+    {
+    case M_LETTERS: case M_CARET: case M_KEYS: return PAGE_EDITING;
+    case M_TABS: case M_SNAP: return PAGE_TABS;
+    default: return PAGE_WINDOWS;
+    }
+}
 
 void refreshPrefPages()
 {
@@ -194,6 +210,10 @@ void openPreferences() { nppMsg(NPPM_MENUCOMMAND, 0, IDM_SETTING_KEX); }
 namespace kexsuite {
 
 using namespace kex;
+
+int prefPageCount() { return PAGE_COUNT; }
+const wchar_t* prefPageTitle(int page) { return (page >= 0 && page < PAGE_COUNT) ? kPageTitle[page] : L"KEX"; }
+const wchar_t* prefPageName(int page) { return (page >= 0 && page < PAGE_COUNT) ? kPageName[page] : L"Kex"; }
 
 intptr_t prefPageProc(HWND d, UINT m, WPARAM w, LPARAM)
 {

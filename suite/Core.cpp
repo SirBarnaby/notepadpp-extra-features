@@ -18,7 +18,7 @@ static bool g_ready = false, g_shutdown = false, g_subclassed = false;
 static const UINT_PTR kSubclassId = 0x4B455853;   // 'KEXS'
 
 // ---------------------------------------------------------------------------------------------
-// switching features on and off (Settings > Preferences > KEX Editing / KEX Windows)
+// switching features on and off (Settings > Preferences > the KEX pages)
 
 bool setModuleEnabled(int id, bool on, bool interactive)
 {
@@ -288,6 +288,8 @@ void setInfo(HINSTANCE inst, const NppData& d)
         modules[M_HOTKEY] = createHotkeyDrop();
         modules[M_TABS] = createHoverTabs();
         modules[M_DESKTOP] = createDesktopSync();
+        modules[M_SNAP] = createTabSnap();
+        modules[M_KEYS] = createJetBrainsKeys();
     }
     catch (...) { for (Module*& m : modules) m = nullptr; }
 }

@@ -1,0 +1,242 @@
+// TabSnap.cpp - "Tab snapping": while a tab is dragged, a translucent rounded rectangle shows where
+// it will land: the part of a view a new view would open in, or the whole view it would move to.
+// The core works out the target (KexViews.cpp, kexSnapTargetAt) and calls kexsuite::tabSnapPreview;
+// this draws the preview and glides it from one target to the next. Esc cancels the drag.
+#include "KexSuite.h"
+
+namespace kex {
+
+namespace {
+
+const UINT_PTR TIMER_FRAME = 1;
+const double GLIDE_MS = 120;
+const BYTE PREVIEW_ALPHA = 110;
+SnapStats s_stats;
+
+COLORREF blend(COLORREF a, COLORREF b, double t)
+{
+    return RGB(static_cast<int>(GetRValue(a) + (GetRValue(b) - GetRValue(a)) * t),
+               static_cast<int>(GetGValue(a) + (GetGValue(b) - GetGValue(a)) * t),
+               static_cast<int>(GetBValue(a) + (GetBValue(b) - GetBValue(a)) * t));
+}
+
+int dpiFor(HWND h)
+{
+    typedef UINT(WINAPI * GetDpiForWindowFn)(HWND);
+    static GetDpiForWindowFn fn = reinterpret_cast<GetDpiForWindowFn>(::GetProcAddress(::GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+    int dpi = (fn && h) ? static_cast<int>(fn(h)) : 96;
+    return dpi > 0 ? dpi : 96;
+}
+
+RECT lerpRect(const RECT& a, const RECT& b, double t)
+{
+    auto l = [t](LONG x, LONG y) { return static_cast<LONG>(x + (y - x) * t + (y >= x ? 0.5 : -0.5)); };
+    return RECT{ l(a.left, b.left), l(a.top, b.top), l(a.right, b.right), l(a.bottom, b.bottom) };
+}
+
+class TabSnap;
+TabSnap* s_snap = nullptr;
+
+class TabSnap : public Module {
+public:
+    const wchar_t* key() const override { return L"TabSnap"; }
+    const wchar_t* title() const override { return L"Tab snapping"; }
+
+    void loadOptions() override { _animate = settings.getInt(key(), L"Animate", 1) != 0; }
+
+    bool selfCheck(std::wstring& why) override
+    {
+        // the targets come from the KEX core (NPPM_INTERNAL_KEX_TABDRAG from the tab bars)
+        if (!views.patched()) { why = L"needs the KEX four-view Notepad++"; return false; }
+        return true;
+    }
+
+    bool enable() override
+    {
+        loadOptions();
+        static bool registered = false;
+        if (!registered)
+        {
+            WNDCLASSW wc{};
+            wc.lpfnWndProc = proc; wc.hInstance = hInst; wc.lpszClassName = L"KexSuiteSnapPreview";
+            wc.hCursor = ::LoadCursor(nullptr, IDC_ARROW);
+            registered = ::RegisterClassW(&wc) != 0 || ::GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+        }
+        // click-through (WindowFromPoint looks past it), never activated, above the views it covers
+        _wnd = ::CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+            L"KexSuiteSnapPreview", L"KEX tab snapping", WS_POPUP, 0, 0, 1, 1, npp._nppHandle, nullptr, hInst, nullptr);
+        if (!_wnd) return false;
+        ::SetLayeredWindowAttributes(_wnd, 0, 0, LWA_ALPHA);
+        s_snap = this;
+        return true;
+    }
+
+    void disable() override
+    {
+        hide();
+        if (_wnd) { ::DestroyWindow(_wnd); _wnd = nullptr; }
+        if (s_snap == this) s_snap = nullptr;
+        s_stats = SnapStats();
+    }
+
+    void preview(const RECT* rc)
+    {
+        if (!_wnd) return;
+        if (!rc) { hide(); return; }
+        const int inset = ::MulDiv(5, dpiFor(npp._nppHandle), 96);   // a little margin, like Windows' snap zones
+        RECT to = *rc;
+        if (to.right - to.left > 4 * inset && to.bottom - to.top > 4 * inset) ::InflateRect(&to, -inset, -inset);
+        s_stats.target = *rc;
+        if (!_shown)
+        {
+            _to = to;
+            _start = nowMs();
+            if (_animate)
+            {
+                // grow out of the middle of the target while fading in
+                const LONG dx = (to.right - to.left) / 12, dy = (to.bottom - to.top) / 12;
+                _from = RECT{ to.left + dx, to.top + dy, to.right - dx, to.bottom - dy };
+            }
+            else _from = to;
+            _cur = RECT{};
+            _shown = true;
+            _shownTime = nowMs();
+            ++s_stats.shows;
+            place(_from, _animate ? 0 : PREVIEW_ALPHA);
+            ::ShowWindow(_wnd, SW_SHOWNOACTIVATE);
+            ::SetTimer(_wnd, TIMER_FRAME, 15, nullptr);
+            frame();
+        }
+        else if (!::EqualRect(&to, &_to))
+        {
+            _from = _cur;
+            _to = to;
+            _start = nowMs();
+            ++s_stats.moves;
+            frame();
+        }
+    }
+
+    void frame()
+    {
+        if (!_shown) return;
+        // Esc while dragging: let go of the tab (the tab bar sees its capture end and drops nothing)
+        if (::GetAsyncKeyState(VK_ESCAPE) & 0x8000)
+        {
+            HWND cap = ::GetCapture();
+            wchar_t cls[64] = {};
+            if (cap) ::GetClassNameW(cap, cls, 63);
+            hide();
+            if (cap && ::lstrcmpiW(cls, WC_TABCONTROLW) == 0) ::ReleaseCapture();
+            ++s_stats.cancels;
+            log(L"tab snapping: drag cancelled with Esc");
+            return;
+        }
+        double t = _animate ? (nowMs() - _start) / GLIDE_MS : 1.0;
+        if (t > 1) t = 1;
+        const double e = 1 - (1 - t) * (1 - t) * (1 - t);   // ease out
+        int alpha = PREVIEW_ALPHA;
+        if (_animate) alpha = static_cast<int>(PREVIEW_ALPHA * std::min(1.0, (nowMs() - _shownTime) / GLIDE_MS));
+        place(lerpRect(_from, _to, e), static_cast<BYTE>(alpha));
+    }
+
+    static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l)
+    {
+        switch (m)
+        {
+        case WM_TIMER:
+            if (w == TIMER_FRAME && s_snap) { try { s_snap->frame(); } catch (...) {} }
+            return 0;
+        case WM_MOUSEACTIVATE:
+            return MA_NOACTIVATE;
+        case WM_NCHITTEST:
+            return HTTRANSPARENT;
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT:
+        {
+            PAINTSTRUCT ps; HDC dc = ::BeginPaint(h, &ps);
+            RECT rc; ::GetClientRect(h, &rc);
+            const int dpi = dpiFor(h);
+            const COLORREF accent = ::GetSysColor(COLOR_HIGHLIGHT);
+            HBRUSH fill = ::CreateSolidBrush(blend(accent, RGB(255, 255, 255), 0.45));
+            HPEN pen = ::CreatePen(PS_INSIDEFRAME, std::max(2, ::MulDiv(3, dpi, 96)), accent);
+            HGDIOBJ ob = ::SelectObject(dc, fill), op = ::SelectObject(dc, pen);
+            const int r = ::MulDiv(12, dpi, 96);
+            ::RoundRect(dc, rc.left, rc.top, rc.right, rc.bottom, r, r);
+            ::SelectObject(dc, ob); ::SelectObject(dc, op);
+            ::DeleteObject(fill); ::DeleteObject(pen);
+            ::EndPaint(h, &ps);
+            return 0;
+        }
+        }
+        return ::DefWindowProcW(h, m, w, l);
+    }
+
+private:
+    void place(const RECT& rc, BYTE alpha)
+    {
+        const int w = std::max(1L, rc.right - rc.left), h = std::max(1L, rc.bottom - rc.top);
+        const bool resized = (w != _cur.right - _cur.left) || (h != _cur.bottom - _cur.top);
+        const bool moved = resized || rc.left != _cur.left || rc.top != _cur.top;
+        if (moved)
+        {
+            ::SetWindowPos(_wnd, HWND_TOPMOST, rc.left, rc.top, w, h, SWP_NOACTIVATE | (resized ? 0 : SWP_NOSIZE));
+            if (resized)
+            {
+                const int r = ::MulDiv(12, dpiFor(_wnd), 96);
+                ::SetWindowRgn(_wnd, ::CreateRoundRectRgn(0, 0, w + 1, h + 1, r, r), TRUE);
+                ::InvalidateRect(_wnd, nullptr, FALSE);
+            }
+            _cur = rc;
+        }
+        if (alpha != _alpha) { ::SetLayeredWindowAttributes(_wnd, 0, alpha, LWA_ALPHA); _alpha = alpha; }
+        if (!_animate || (::EqualRect(&_cur, &_to) && _alpha == PREVIEW_ALPHA))
+            ::SetTimer(_wnd, TIMER_FRAME, 50, nullptr);   // settled: only watch for Esc
+        else
+            ::SetTimer(_wnd, TIMER_FRAME, 15, nullptr);
+        s_stats.visible = true;
+        s_stats.window = _cur;
+        s_stats.alpha = _alpha;
+    }
+
+    void hide()
+    {
+        if (!_wnd || !_shown) return;
+        ::KillTimer(_wnd, TIMER_FRAME);
+        ::ShowWindow(_wnd, SW_HIDE);
+        _shown = false;
+        _alpha = 0;
+        ::SetLayeredWindowAttributes(_wnd, 0, 0, LWA_ALPHA);
+        s_stats.visible = false;
+    }
+
+    HWND _wnd = nullptr;
+    bool _animate = true, _shown = false;
+    RECT _from{}, _to{}, _cur{};
+    double _start = 0, _shownTime = 0;
+    BYTE _alpha = 0;
+};
+
+} // namespace
+
+Module* createTabSnap() { return new TabSnap(); }
+SnapStats snapStats() { return s_stats; }
+
+} // namespace kex
+
+namespace kexsuite {
+
+bool tabSnapOn()
+{
+    kex::Module* m = kex::modules[kex::M_SNAP];
+    return m && m->isEnabled();
+}
+
+void tabSnapPreview(const RECT* screenRect)
+{
+    try { if (kex::s_snap) kex::s_snap->preview(screenRect); }
+    catch (...) { kex::log(L"tab snapping: exception while drawing the preview"); }
+}
+
+} // namespace kexsuite

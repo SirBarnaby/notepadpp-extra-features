@@ -247,12 +247,11 @@ int pressHotkey()
 }
 
 // The on/off tick of a feature on its Preferences page, clicked the way the user does it.
-const int kEnableBox[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN };
-int pageOf(int module) { return (module == M_LETTERS || module == M_CARET) ? 0 : 1; }
+const int kEnableBox[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN };
 HWND enableBox(int module)
 {
-    if (!prefPage(pageOf(module))) { openPreferences(); pump(300); }
-    HWND p = prefPage(pageOf(module));
+    if (!prefPage(pageOfModule(module))) { openPreferences(); pump(300); }
+    HWND p = prefPage(pageOfModule(module));
     return p ? ::GetDlgItem(p, kEnableBox[module]) : nullptr;
 }
 void clickEnable(int module)
@@ -274,6 +273,89 @@ void showPrefPage(const wchar_t* name)
     ::SendMessageW(d, WM_COMMAND, MAKEWPARAM(IDC_LIST_DLGTITLE, LBN_SELCHANGE), reinterpret_cast<LPARAM>(list));
 }
 std::wstring itemText(HWND page, int id) { wchar_t t[256] = {}; if (page) ::GetDlgItemTextW(page, id, t, 255); return t; }
+
+std::string selText(HWND s)
+{
+    intptr_t a = sci(s, SCI_GETSELECTIONSTART), b = sci(s, SCI_GETSELECTIONEND);
+    if (b <= a) return std::string();
+    const char* p = reinterpret_cast<const char*>(sci(s, SCI_GETRANGEPOINTER, a, b - a));
+    return p ? std::string(p, static_cast<size_t>(b - a)) : std::string();
+}
+std::string lineText(HWND s, intptr_t line)
+{
+    intptr_t a = sci(s, SCI_POSITIONFROMLINE, line), b = sci(s, SCI_GETLINEENDPOSITION, line);
+    if (a < 0 || b <= a) return std::string();
+    const char* p = reinterpret_cast<const char*>(sci(s, SCI_GETRANGEPOINTER, a, b - a));
+    return p ? std::string(p, static_cast<size_t>(b - a)) : std::string();
+}
+
+// ---- real mouse input for tab drags --------------------------------------------------------------
+void mouseTo(int x, int y)
+{
+    INPUT in{}; in.type = INPUT_MOUSE;
+    const int sw = std::max(1, ::GetSystemMetrics(SM_CXSCREEN) - 1), sh = std::max(1, ::GetSystemMetrics(SM_CYSCREEN) - 1);
+    in.mi.dx = ::MulDiv(x, 65535, sw); in.mi.dy = ::MulDiv(y, 65535, sh);
+    in.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+    ::SendInput(1, &in, sizeof(in));
+}
+void mouseButton(bool down)
+{
+    INPUT in{}; in.type = INPUT_MOUSE; in.mi.dwFlags = down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+    ::SendInput(1, &in, sizeof(in));
+}
+RECT screenRectOf(HWND h) { RECT r{}; if (h) ::GetWindowRect(h, &r); return r; }
+RECT viewRect(int v) { return screenRectOf(views.tabBar(v)); }   // the tab control spans the whole pane
+bool rectNear(const RECT& a, const RECT& b, int tol)
+{
+    return std::abs(a.left - b.left) <= tol && std::abs(a.top - b.top) <= tol && std::abs(a.right - b.right) <= tol && std::abs(a.bottom - b.bottom) <= tol;
+}
+int viewOfFile(const std::wstring& name)
+{
+    for (int v = 0; v < views.count(); ++v)
+        for (int i = 0; views.visible(v) && i < views.nbFiles(v); ++i)
+            if (fileNameOf(bufferPath(views.bufferId(v, i))) == name) return v;
+    return -1;
+}
+std::wstring g_dragFile;   // the file whose tab is being dragged
+// press on the active tab of view v and pull it off the tab strip
+void dragStart(int v)
+{
+    HWND tab = views.tabBar(v);
+    int idx = views.currentIndex(v);
+    g_dragFile = fileNameOf(bufferPath(views.bufferId(v, idx)));
+    RECT r{};
+    ::SendMessageW(tab, TCM_GETITEMRECT, static_cast<WPARAM>(idx), reinterpret_cast<LPARAM>(&r));
+    ::MapWindowPoints(tab, nullptr, reinterpret_cast<POINT*>(&r), 2);
+    const int x = r.left + 14, y = (r.top + r.bottom) / 2;
+    mouseTo(x, y); pump(80);
+    POINT c{}; ::GetCursorPos(&c);
+    wchar_t cls[64] = {}; ::GetClassNameW(::WindowFromPoint(c), cls, 63);
+    mouseButton(true); pump(120);
+    // a few small moves on the tab itself start the drag (Windows' tab control captures the mouse
+    // on the press; under Wine the tab bar only takes it once it is dragging), then pull it away
+    for (int i = 1; i <= 4; ++i) { mouseTo(x + 3 * i, y); pump(40); }
+    for (int i = 1; i <= 4; ++i) { mouseTo(x + 12, y + 12 * i); pump(30); }
+    wchar_t cap[64] = {}; if (::GetCapture()) ::GetClassNameW(::GetCapture(), cap, 63);
+    tlog(L"INFO drag %ls from view %d: tab %d at (%d,%d), cursor (%ld,%ld) over %ls, capture %ls, current view %d",
+        g_dragFile.c_str(), v + 1, idx, x, y, c.x, c.y, cls, cap, views.current() + 1);
+}
+void dragTo(int x, int y)
+{
+    POINT c{}; ::GetCursorPos(&c);
+    for (int i = 1; i <= 6; ++i) { mouseTo(c.x + (x - c.x) * i / 6, c.y + (y - c.y) * i / 6); pump(30); }
+    pump(300);   // the preview glides in about 120 ms
+}
+void dragEnd()
+{
+    mouseButton(false); pump(400);
+    std::wstring where;
+    for (int v = 0; v < views.count(); ++v)
+    {
+        wchar_t b[96]; swprintf(b, 96, L" view%d:%ls%d", v + 1, views.visible(v) ? L"" : L"hidden/", views.visible(v) ? views.nbFiles(v) : 0);
+        where += b;
+    }
+    tlog(L"INFO after drop: %ls in view %d;%ls", g_dragFile.c_str(), viewOfFile(g_dragFile) + 1, where.c_str());
+}
 
 void buildSteps()
 {
@@ -348,13 +430,22 @@ void buildSteps()
     add([] {
         showPrefPage(L"KEX Windows");
         pump(200);
-        HWND p = prefPage(1);
+        HWND p = prefPage(PAGE_WINDOWS);
         std::wstring k = itemText(p, IDC_H_KEYSTATUS);
-        check(p && ::IsWindowVisible(p) && !::IsWindowVisible(prefPage(0)), L"P3", L"\"KEX Windows\" page shows when picked in the list");
+        check(p && ::IsWindowVisible(p) && !::IsWindowVisible(prefPage(PAGE_EDITING)), L"P3", L"\"KEX Windows\" page shows when picked in the list");
         check(k.find(L"works") != std::wstring::npos, L"P4", L"the page reports the quick note hotkey: \"%ls\"", k.c_str());
         return 300;
     });
     add([] { return shot(L"preferences-kex-windows"); });
+    add([] {
+        showPrefPage(L"KEX Tabs");
+        pump(200);
+        HWND p = prefPage(PAGE_TABS);
+        check(p && ::IsWindowVisible(p) && !::IsWindowVisible(prefPage(PAGE_WINDOWS)) && ::IsDlgButtonChecked(p, IDC_S_EN) == BST_CHECKED,
+            L"P3b", L"\"KEX Tabs\" page shows tab snapping (on) and F12 hover tabs: \"%ls\"", itemText(p, IDC_S_STATUS).c_str());
+        return 300;
+    });
+    add([] { return shot(L"preferences-kex-tabs"); });
     add([] {
         // "another program" owns Ctrl+Alt+M: drop ours, take it with a foreign window, start ours again
         setModuleEnabled(M_HOTKEY, false, false);
@@ -364,7 +455,7 @@ void buildSteps()
         HotkeyStats hs = hotkeyStats();
         check(!hs.registered && hs.lastError == ERROR_HOTKEY_ALREADY_REGISTERED, L"P5",
             L"taken hotkey detected: registered=%d error=%lu", hs.registered ? 1 : 0, hs.lastError);
-        std::wstring k = itemText(prefPage(1), IDC_H_KEYSTATUS);
+        std::wstring k = itemText(prefPage(PAGE_WINDOWS), IDC_H_KEYSTATUS);
         check(k.find(L"taken") != std::wstring::npos, L"P6", L"the page shows: \"%ls\"", k.c_str());
         return 400;
     });
@@ -373,10 +464,10 @@ void buildSteps()
         ::UnregisterHotKey(g_testWnd, 77);
         clickEnable(M_HOTKEY);   // off
         clickEnable(M_HOTKEY);   // and on again
-        std::wstring k = itemText(prefPage(1), IDC_H_KEYSTATUS);
+        std::wstring k = itemText(prefPage(PAGE_WINDOWS), IDC_H_KEYSTATUS);
         check(hotkeyStats().registered && k.find(L"works") != std::wstring::npos, L"P7",
             L"after the other program lets go, switching the quick note off and on takes the key back: \"%ls\"", k.c_str());
-        HWND p1 = prefPage(1);
+        HWND p1 = prefPage(PAGE_TABS);
         ::SetDlgItemInt(p1, IDC_T_DELAY, 420, FALSE);   // typed number: applied half a second later
         pump(800);
         check(settings.getInt(modules[M_TABS]->key(), L"HideDelayMs", 0) == 420 && modules[M_TABS]->isEnabled(), L"P8",
@@ -966,6 +1057,7 @@ void buildSteps()
             }
             case M_TABS: restored = ::FindWindowW(L"KexSuiteTabStrip", nullptr) == nullptr; extra = L"strip window destroyed"; break;
             case M_DESKTOP: restored = mainHooks.onSysClose == nullptr && mainHooks.onSecondInstance == nullptr; extra = L"close/second-instance hooks removed"; break;
+            case M_SNAP: restored = ::FindWindowW(L"KexSuiteSnapPreview", nullptr) == nullptr && !kexsuite::tabSnapOn(); extra = L"preview window destroyed, the core is back to the drop menu"; break;
             }
             check(off && unchecked && restored, L"E1", L"%ls off from Preferences: unticked and remembered, %ls", modules[i]->title(), extra.c_str());
             clickEnable(i);
@@ -1057,6 +1149,241 @@ void buildSteps()
         nppMsg(NPPM_KEX_TEAROUTVIEW, 2, FALSE);
         pump(200);
         return 100;
+    });
+    // ---- JetBrains shortcuts ----------------------------------------------------------------------
+    add([] {
+        writeFile(path(L"j.cpp"), "int value = 1;\r\nint other = value + value;\r\ncall(alpha, \"a string here\", beta);\r\n// fourth line\r\n");
+        open(L"j.cpp");
+        pump(200);
+        if (!modules[M_KEYS]->isEnabled()) setModuleEnabled(M_KEYS, true, false);
+        focusEditor();
+        HWND s = curSci();
+        sci(s, SCI_GOTOPOS, 6);   // inside "value"
+        pump(100);
+        chord({ VK_MENU }, 'J'); pump(150);
+        std::string first = selText(s);
+        chord({ VK_MENU }, 'J'); pump(150);
+        chord({ VK_MENU }, 'J'); pump(150);
+        int n = static_cast<int>(sci(s, SCI_GETSELECTIONS));
+        check(first == "value" && n == 3, L"J1", L"Alt+J from the caret selects the word, then each next occurrence: \"%hs\", %d selections", first.c_str(), n);
+        chord({ VK_SHIFT, VK_MENU }, 'J'); pump(150);
+        n = static_cast<int>(sci(s, SCI_GETSELECTIONS));
+        GUITHREADINFO gi{}; gi.cbSize = sizeof(gi);
+        ::GetGUIThreadInfo(::GetCurrentThreadId(), &gi);
+        check(n == 2 && !(gi.flags & GUI_INMENUMODE), L"J2", L"Shift+Alt+J drops the last one (%d left); releasing Alt does not open the menu bar", n);
+        sci(s, SCI_GOTOPOS, 6); pump(50);
+        chord({ VK_CONTROL, VK_SHIFT, VK_MENU }, 'J'); pump(150);
+        n = static_cast<int>(sci(s, SCI_GETSELECTIONS));
+        check(n == 3, L"J3", L"Ctrl+Shift+Alt+J selects all %d occurrences", n);
+        sci(s, SCI_GOTOPOS, 6);
+        return 100;
+    });
+    add([] {
+        HWND s = curSci();
+        intptr_t l2 = sci(s, SCI_POSITIONFROMLINE, 2);
+        sci(s, SCI_GOTOPOS, l2 + 16);   // inside "string"
+        pump(50);
+        const char* expect[] = { "string", "a string here", "\"a string here\"", "alpha, \"a string here\", beta", "(alpha, \"a string here\", beta)",
+                                 "call(alpha, \"a string here\", beta)", "call(alpha, \"a string here\", beta);" };
+        bool ok = true;
+        std::string got;
+        for (const char* e : expect)
+        {
+            chord({ VK_CONTROL }, 'W'); pump(120);
+            got = selText(s);
+            if (got != e) { ok = false; break; }
+        }
+        check(ok, L"J4", L"Ctrl+W extends the selection word > string > quotes > brackets > call > line (stopped at \"%hs\")", got.c_str());
+        chord({ VK_CONTROL, VK_SHIFT }, 'W'); pump(120);
+        got = selText(s);
+        check(got == "call(alpha, \"a string here\", beta)", L"J5", L"Ctrl+Shift+W shrinks it back: \"%hs\"", got.c_str());
+        check(::IsWindow(s) && curName() == L"j.cpp", L"J6", L"Ctrl+W no longer closes the tab while JetBrains keys are on");
+        return 100;
+    });
+    add([] {
+        HWND s = curSci();
+        intptr_t lines = sci(s, SCI_GETLINECOUNT);
+        sci(s, SCI_GOTOPOS, sci(s, SCI_POSITIONFROMLINE, 3));
+        chord({ VK_CONTROL }, 'Y'); pump(150);
+        bool deleted = sci(s, SCI_GETLINECOUNT) == lines - 1 && lineText(s, 3).empty();
+        chord({ VK_CONTROL }, 'Z'); pump(150);
+        check(deleted && sci(s, SCI_GETLINECOUNT) == lines, L"J7", L"Ctrl+Y deletes the line (Ctrl+Z brings it back)");
+        sci(s, SCI_GOTOPOS, 0);
+        chord({ VK_CONTROL }, VK_OEM_2); pump(150);
+        std::string commented = lineText(s, 0);
+        chord({ VK_CONTROL }, VK_OEM_2); pump(150);
+        check(commented.rfind("//", 0) == 0 && lineText(s, 0) == "int value = 1;", L"J8", L"Ctrl+/ comments the line and uncomments it: \"%hs\"", commented.c_str());
+        sci(s, SCI_GOTOPOS, 2);
+        chord({ VK_SHIFT, VK_MENU }, VK_DOWN); pump(150);
+        bool moved = lineText(s, 1) == "int value = 1;" && lineText(s, 0) == "int other = value + value;";
+        chord({ VK_SHIFT, VK_MENU }, VK_UP); pump(150);
+        check(moved && lineText(s, 0) == "int value = 1;", L"J9", L"Shift+Alt+Down / Up move the line");
+        sci(s, SCI_GOTOPOS, 4);
+        chord({ VK_SHIFT }, VK_RETURN); pump(150);
+        intptr_t caretLine = sci(s, SCI_LINEFROMPOSITION, sci(s, SCI_GETCURRENTPOS));
+        bool newLine = lineText(s, 0) == "int value = 1;" && caretLine == 1 && lineText(s, 1).empty();
+        chord({ VK_CONTROL }, 'Z'); pump(150);
+        check(newLine, L"J10", L"Shift+Enter starts a new line below without splitting this one");
+        std::wstring before = curName();
+        chord({ VK_MENU }, VK_RIGHT); pump(200);
+        std::wstring after = curName();
+        chord({ VK_MENU }, VK_LEFT); pump(200);
+        check(after != before && curName() == before, L"J11", L"Alt+Right / Alt+Left switch tabs (%ls > %ls > %ls)", before.c_str(), after.c_str(), curName().c_str());
+        return 100;
+    });
+    add([] {
+        // keeping Notepad++'s own keys: Ctrl+Y is redo again, Alt+J still works
+        settings.setInt(L"JetBrainsKeys", L"AlsoNotepadKeys", 0);
+        setModuleEnabled(M_KEYS, false, false); setModuleEnabled(M_KEYS, true, false);
+        focusEditor();
+        HWND s = curSci();
+        sci(s, SCI_EMPTYUNDOBUFFER);   // so Notepad++'s redo has nothing to redo
+        intptr_t lines = sci(s, SCI_GETLINECOUNT);
+        sci(s, SCI_GOTOPOS, sci(s, SCI_POSITIONFROMLINE, 3));
+        chord({ VK_CONTROL }, 'Y'); pump(150);
+        bool kept = sci(s, SCI_GETLINECOUNT) == lines;
+        sci(s, SCI_GOTOPOS, 6);
+        chord({ VK_MENU }, 'J'); pump(150);
+        check(kept && selText(s) == "value", L"J12", L"\"Also the keys Notepad++ uses\" off: Ctrl+Y left to Notepad++, Alt+J still works");
+        settings.setInt(L"JetBrainsKeys", L"AlsoNotepadKeys", 1);
+        setModuleEnabled(M_KEYS, false, false);
+        sci(s, SCI_GOTOPOS, sci(s, SCI_POSITIONFROMLINE, 3));
+        chord({ VK_MENU }, 'J'); pump(150);
+        bool inert = sci(s, SCI_GETSELECTIONEMPTY) != 0;
+        ::EndMenu(); tap(VK_ESCAPE); pump(100);
+        setModuleEnabled(M_KEYS, true, false);
+        check(inert && modules[M_KEYS]->isEnabled(), L"J13", L"switched off, Alt+J does nothing; back on afterwards (%d keys handled in all)", jetBrainsStats().handled);
+        return 100;
+    });
+    // ---- tab snapping: drag a tab to the edge of a view ------------------------------------------
+    add([] {
+        if (!views.patched()) { tlog(L"SKIP N1-N9: Notepad++ is not KEX-patched"); return 50; }
+        // start from one view: every tab back in the main view
+        for (int v = 1; v < views.count(); ++v)
+            for (int guard = 0; views.visible(v) && views.nbFiles(v) > 0 && guard < 20; ++guard)
+            {
+                views.activate(v, views.nbFiles(v) - 1);
+                pump(50);
+                nppMsg(NPPM_MENUCOMMAND, 0, IDM_KEX_DOC_TO_VIEW1);
+                pump(80);
+            }
+        ::ShowWindow(npp._nppHandle, SW_RESTORE);
+        ::MoveWindow(npp._nppHandle, 20, 16, 960, 660, TRUE);
+        ::SetForegroundWindow(npp._nppHandle);
+        switchTo(L"b.py");
+        pump(300);
+        check(views.visible(0) && !views.visible(1) && !views.visible(2) && !views.visible(3) && views.nbFiles(0) >= 4, L"N0",
+            L"one view with %d tabs to drag from", views.nbFiles(0));
+        return 200;
+    });
+    add([] {
+        if (!views.patched()) return 0;
+        RECT rv = viewRect(0);
+        const int w = rv.right - rv.left;
+        dragStart(0);
+        dragTo(rv.right - w / 10, (rv.top + rv.bottom) / 2);
+        SnapStats st = snapStats();
+        const int mid = rv.left + w / 2;
+        bool rightHalf = st.target.left > mid - 12 && st.target.left < mid + 12 && std::abs(st.target.right - rv.right) <= 3
+                      && std::abs(st.target.top - rv.top) <= 3 && std::abs(st.target.bottom - rv.bottom) <= 3;
+        bool inside = st.window.left >= st.target.left && st.window.right <= st.target.right && st.window.top >= st.target.top && st.window.bottom <= st.target.bottom;
+        check(st.visible && rightHalf && inside, L"N1", L"dragging %ls to the right edge previews the right half: %ls (view %ls, preview window %ls)",
+            g_dragFile.c_str(), rectStr(st.target).c_str(), rectStr(rv).c_str(), rectStr(st.window).c_str());
+        HWND pw = ::FindWindowW(L"KexSuiteSnapPreview", nullptr);
+        LONG_PTR ex = pw ? ::GetWindowLongPtrW(pw, GWL_EXSTYLE) : 0;
+        check(pw && ::IsWindowVisible(pw) && (ex & WS_EX_TRANSPARENT) && (ex & WS_EX_LAYERED) && (ex & WS_EX_NOACTIVATE), L"N2",
+            L"the preview is a click-through layered window that never takes focus");
+        return 50;
+    });
+    add([] { return views.patched() ? shot(L"tab-snap-preview-right") : 0; });
+    add([] {
+        if (!views.patched()) return 0;
+        RECT predicted = snapStats().target;
+        dragEnd();
+        RECT r1 = viewRect(1);
+        check(views.visible(1) && viewOfFile(g_dragFile) == 1 && views.nbFiles(1) == 1 && views.current() == 1 && !snapStats().visible, L"N3",
+            L"dropped there: %ls opened in a new view on the right, preview gone", g_dragFile.c_str());
+        check(rectNear(r1, predicted, 6), L"N4", L"the new view sits where the preview was: %ls vs preview %ls", rectStr(r1).c_str(), rectStr(predicted).c_str());
+        return 200;
+    });
+    add([] {
+        if (!views.patched()) return 0;
+        // two views side by side: the bottom of the left one opens a view below it (a quarter)
+        switchTo(L"c.txt");
+        pump(150);
+        RECT rv = viewRect(0);
+        const int h = rv.bottom - rv.top;
+        dragStart(0);
+        dragTo((rv.left + rv.right) / 2, rv.bottom - h / 10);
+        SnapStats st = snapStats();
+        const int mid = rv.top + h / 2;
+        bool bottomHalf = st.visible && st.target.top > mid - 14 && st.target.top < mid + 14 && std::abs(st.target.bottom - rv.bottom) <= 3
+                       && std::abs(st.target.left - rv.left) <= 3 && std::abs(st.target.right - rv.right) <= 3;
+        check(bottomHalf, L"N5", L"the bottom edge of the left view previews its bottom half: %ls (view %ls)", rectStr(st.target).c_str(), rectStr(rv).c_str());
+        return 50;
+    });
+    add([] { return views.patched() ? shot(L"tab-snap-preview-quarter") : 0; });
+    add([] {
+        if (!views.patched()) return 0;
+        RECT predicted = snapStats().target;
+        dragEnd();
+        RECT r3 = viewRect(2);
+        check(views.visible(2) && viewOfFile(g_dragFile) == 2 && rectNear(r3, predicted, 6), L"N6",
+            L"dropped: %ls opened bottom left at %ls (preview %ls)", g_dragFile.c_str(), rectStr(r3).c_str(), rectStr(predicted).c_str());
+        return 200;
+    });
+    add([] {
+        if (!views.patched()) return 0;
+        // the middle of another view: the tab moves into it, the preview covers that view
+        switchTo(L"d.txt");
+        pump(150);
+        RECT r1 = viewRect(1);
+        int before = views.nbFiles(1);
+        dragStart(viewOfFile(L"d.txt"));
+        dragTo((r1.left + r1.right) / 2, (r1.top + r1.bottom) / 2);
+        SnapStats st = snapStats();
+        check(st.visible && rectNear(st.target, r1, 3), L"N7", L"over the middle of the right view the preview covers it: %ls (view %ls)",
+            rectStr(st.target).c_str(), rectStr(r1).c_str());
+        dragEnd();
+        check(viewOfFile(L"d.txt") == 1 && views.nbFiles(1) == before + 1, L"N8", L"dropped: d.txt moved into the right view");
+        return 200;
+    });
+    add([] {
+        if (!views.patched()) return 0;
+        // Esc while dragging cancels: nothing moves
+        switchTo(L"a.cpp");
+        pump(150);
+        const int from = viewOfFile(L"a.cpp");
+        RECT r1 = viewRect(1);
+        int cancels = snapStats().cancels;
+        dragStart(from);
+        dragTo((r1.left + r1.right) / 2, r1.bottom - (r1.bottom - r1.top) / 10);
+        bool shown = snapStats().visible;
+        key(VK_ESCAPE, true); pump(200); key(VK_ESCAPE, false); pump(100);
+        bool hidden = !snapStats().visible && snapStats().cancels == cancels + 1;
+        dragEnd();
+        check(shown && hidden && viewOfFile(L"a.cpp") == from && !views.visible(3), L"N9",
+            L"Esc during a drag hides the preview and drops nothing (a.cpp still in view %d)", viewOfFile(L"a.cpp") + 1);
+        return 200;
+    });
+    add([] {
+        if (!views.patched()) return 0;
+        // switched off: no preview, the classic drop handling (a drop on another view still moves it)
+        setModuleEnabled(M_SNAP, false, false);
+        switchTo(L"a.cpp");
+        pump(150);
+        const int from = viewOfFile(L"a.cpp");
+        const int to = (from == 1) ? 0 : 1;
+        RECT rt = viewRect(to);
+        int shows = snapStats().shows;
+        dragStart(from);
+        dragTo((rt.left + rt.right) / 2, (rt.top + rt.bottom) / 2);
+        bool noPreview = !snapStats().visible && snapStats().shows == shows;
+        dragEnd();
+        check(noPreview && viewOfFile(L"a.cpp") == to, L"N10", L"tab snapping off: no preview, dropping on another view still moves the tab (view %d)", viewOfFile(L"a.cpp") + 1);
+        setModuleEnabled(M_SNAP, true, false);
+        check(kexsuite::tabSnapOn(), L"N11", L"tab snapping back on");
+        return 200;
     });
     add([] {
         if (g_other.hProcess) { ::TerminateProcess(g_other.hProcess, 0); ::CloseHandle(g_other.hProcess); ::CloseHandle(g_other.hThread); }

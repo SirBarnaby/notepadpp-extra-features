@@ -6,7 +6,9 @@ INFO self-check Smooth caret: OK
 INFO self-check Quick note (global hotkey): OK
 INFO self-check F12 hover tabs: OK
 INFO self-check Same Notepad++ on every desktop: OK
-PASS S2 startup self-check: KEX Suite: 5/5 features OK (the desktop feature uses fake desktops in self-test mode)
+INFO self-check Tab snapping: OK
+INFO self-check JetBrains shortcuts: OK
+PASS S2 startup self-check: KEX Suite: 7/7 features OK (the desktop feature uses fake desktops in self-test mode)
 INFO real IVirtualDesktopManager here: Windows virtual desktop API unavailable (CoCreateInstance(CLSID_VirtualDesktopManager) = 0x80040154)
 PASS S3 real virtual-desktop provider degrades without crashing (available=0)
 PASS S4 Falling letters enabled at startup
@@ -14,23 +16,27 @@ PASS S4 Smooth caret enabled at startup
 PASS S4 Quick note (global hotkey) enabled at startup
 PASS S4 F12 hover tabs enabled at startup
 PASS S4 Same Notepad++ on every desktop enabled at startup
+PASS S4 Tab snapping enabled at startup
+PASS S4 JetBrains shortcuts enabled at startup
 PASS M1 Settings menu has "KEX Features..."
 PASS M2 nothing KEX left in the Plugins menu (the suite is built in)
 SHOT 1 menu-settings-kex
 PASS P1 Settings > KEX Features opens Preferences on the "KEX Editing" page
 PASS P2 the on/off ticks on both pages match the running features
-INFO page summary: "5 of 5 KEX features passed their start-up self-check."
+INFO page summary: "7 of 7 KEX features passed their start-up self-check."
 SHOT 2 preferences-kex-editing
 PASS P3 "KEX Windows" page shows when picked in the list
 PASS P4 the page reports the quick note hotkey: "works from any program"
 SHOT 3 preferences-kex-windows
+PASS P3b "KEX Tabs" page shows tab snapping (on) and F12 hover tabs: "Running"
+SHOT 4 preferences-kex-tabs
   [kex] Quick note (global hotkey): disabled
 INFO helper window took Ctrl+Alt+M: 1
   [kex] hotkey Ctrl+Alt+M: NOT registered (error 1409)
   [kex] Quick note (global hotkey): enabled
 PASS P5 taken hotkey detected: registered=0 error=1409
 PASS P6 the page shows: "taken by another program (error 1409)"
-SHOT 4 preferences-hotkey-taken
+SHOT 5 preferences-hotkey-taken
   [kex] Quick note (global hotkey): disabled
   [kex] hotkey Ctrl+Alt+M: registered (error 0)
   [kex] Quick note (global hotkey): enabled
@@ -46,30 +52,30 @@ PASS F1 Delete key on a selection: 50 letters spawned, expected 50
 PASS F2 overlay alive with 50 letters, bounding box (98,265)-(457,334) (Notepad++ window (20,16)-(980,676))
 PASS F3 overlay is layered, click-through, non-activating, topmost (exstyle 0x80800a8)
 PASS F4 focus stays in the editor while letters fall
-SHOT 5 falling-letters-selection
-PASS F5 all letters fell off the screen and the overlay hid itself (frames rendered so far: 186)
+SHOT 6 falling-letters-selection
+PASS F5 all letters fell off the screen and the overlay hid itself (frames rendered so far: 192)
 PASS F6 Backspace x3: 3 letters spawned
-SHOT 6 falling-letters-backspace
+SHOT 7 falling-letters-backspace
 PASS F7 Edit > Cut of "Particle": 8 letters spawned
 PASS F8 undo of typed text does not rain letters (skipped undo deletes: 1)
 PASS F9 deleting off-screen lines spawns nothing
-PASS F10 Select All + Delete of 3000 lines: 2205 visible letters grouped into 175 falling pieces (cap 200); total time incl. 200 ms wait 2157 ms
-SHOT 7 falling-letters-huge-delete
+PASS F10 Select All + Delete of 3000 lines: 2205 visible letters grouped into 175 falling pieces (cap 200); total time incl. 200 ms wait 1878 ms
+SHOT 8 falling-letters-huge-delete
 PASS F11 Replace All (text replaced) spawned 0 letters; NPPN_GLOBALMODIFIED seen 1 time(s)
 PASS F12 Windows animation effects off: no letters (respected by default)
 PASS F13a c.txt cloned into the second view
 PASS F13 second view: 10 letters spawned from "second line"
-SHOT 8 falling-letters-second-view
+SHOT 9 falling-letters-second-view
 PASS C1 Scintilla's caret hidden only in the view the smooth caret is drawn in (view1 original=0x1 now=0x1; view2 original=0x1 now=0x0; )
-INFO caret glide from (68.0,30.0) to (143.0,120.0): 42ms:(120.8,94.2) 55ms:(129.4,104.7) 68ms:(138.4,115.6) 81ms:(141.6,119.5) 97ms:(142.0,120.0) 110ms:(142.0,120.0) 124ms:(142.0,120.0) 137ms:(142.0,120.0) 150ms:(142.0,120.0) 163ms:(142.0,120.0) 
+INFO caret glide from (68.0,30.0) to (143.0,120.0): 38ms:(116.1,88.5) 51ms:(128.4,103.4) 64ms:(138.0,115.1) 81ms:(141.7,119.6) 97ms:(142.0,120.0) 111ms:(142.0,120.0) 125ms:(142.0,120.0) 138ms:(142.0,120.0) 151ms:(142.0,120.0) 165ms:(142.0,120.0) 
 PASS C2 caret glides through 3 intermediate positions and lands on the target (142.0,120.0)
-SHOT 9 caret-glide-frozen-midway
+SHOT 10 caret-glide-frozen-midway
 PASS C3 custom caret visible, overlay (110,267)-(114,284)
-SHOT 10 caret-normal
+SHOT 11 caret-normal
 PASS C4 rectangular selection over 5 lines: 5 carets drawn
-SHOT 11 caret-rectangular-selection
+SHOT 12 caret-rectangular-selection
 PASS C5 overtype mode: block caret
-SHOT 12 caret-overtype-block
+SHOT 13 caret-overtype-block
 PASS C6 zoom +5: caret height 22 = line height 22
 PASS C7 scroll by 3 lines: caret moved 45 px at once (3 lines = 45 px)
 PASS C8 caret hides on focus loss and comes back on focus
@@ -77,7 +83,7 @@ PASS C9 second view focused: caret drawn in view 2
 PASS C10 external caret style change adopted (0x2) and hidden again
   [kex] Smooth caret: disabled
 PASS C11 caret off from Preferences: style restored exactly (view1 0x1, view2 0x1), overlay destroyed
-SHOT 13 caret-disabled-scintilla-caret-back
+SHOT 14 caret-disabled-scintilla-caret-back
   [kex] Smooth caret: enabled
 PASS C12 caret back on from Preferences
 PASS D1 started on fake desktop A {4B455844-534B-5450-8000-0000000000A0}: 1 registered desktop
@@ -87,10 +93,10 @@ INFO started a second notepad++.exe (pid 992): 1
   [kex] per-desktop: second notepad++.exe launch: {4B455844-534B-5450-8000-0000000000A0} -> {4B455844-534B-5450-8000-0000000000A1}
   [kex] per-desktop: window arrived on the current desktop after 62 ms
 PASS D3 second notepad++.exe on B: it exited (code 0), B registered (2 desktops), the single window moved to B (summoned (second notepad++.exe launch) on {4B455844-534B-5450-8000-0000000000A1})
-SHOT 14 desktop-B-state
+SHOT 15 desktop-B-state
   [kex] per-desktop: desktop switch: {4B455844-534B-5450-8000-0000000000A1} -> {4B455844-534B-5450-8000-0000000000A0}
 PASS D4 back on A: window followed, A's tab (a.cpp), caret (line 5) and placement (20,16)-(980,676) restored
-SHOT 15 desktop-A-state
+SHOT 16 desktop-A-state
   [kex] per-desktop: desktop switch: {4B455844-534B-5450-8000-0000000000A0} -> {4B455844-534B-5450-8000-0000000000A1}
 PASS D5 back on B: B's tab (c.txt), caret and placement (120,90)-(940,610) restored
 PASS D6 lazy restore on activation: a.cpp on B is at line 25 (B's own position; A keeps line 5)
@@ -108,33 +114,33 @@ PASS H1 global hotkey Ctrl+Alt+M registered
 INFO started notepad.exe as 'another program': 1
 INFO Notepad++ minimized=1, foreground is the other program: 1
   [kex] WM_HOTKEY received
-  [kex] quick note: opened at 320,190 640x420, previous window 0000000000010762
+  [kex] quick note: opened at 320,190 640x420, previous window 0000000000010784
 INFO SendInput Ctrl+Alt+M -> WM_HOTKEY delivered: yes
 PASS Q1 hotkey from another program while Notepad++ is minimized: quick note (320,190)-(960,610) centred on the screen (off by 0,0; WM_HOTKEY from real key events: yes)
 PASS Q2 the note is in front with the typing focus; Notepad++ stays minimized
-SHOT 16 quick-note
+SHOT 17 quick-note
 PASS Q3 typing goes into the note: "note"
   [kex] WM_HOTKEY received
-  [kex] quick note: closed, focus back to 0000000000010762
+  [kex] quick note: closed, focus back to 0000000000010784
 PASS Q4 hotkey again: note gone, focus back to the other program, text saved to Z:\root\ci-out\test\npp\kex-quicknote.txt ("note"; WM_HOTKEY: yes)
   [kex] WM_HOTKEY received
-  [kex] quick note: opened at 320,190 640x420, previous window 0000000000010762
+  [kex] quick note: opened at 320,190 640x420, previous window 0000000000010784
 PASS Q5 reopened with the text kept, caret at the end: "note"
-  [kex] quick note: closed, focus back to 0000000000010762
+  [kex] quick note: closed, focus back to 0000000000010784
 PASS Q6 Esc hides the note and gives the focus back
   [kex] WM_HOTKEY received
-  [kex] quick note: opened at 320,190 640x420, previous window 0000000000010762
+  [kex] quick note: opened at 320,190 640x420, previous window 0000000000010784
   [kex] WM_HOTKEY received
 PASS Q7 hotkey while the note is open but not in front: brought to front, not hidden
   [kex] WM_HOTKEY received
-  [kex] quick note: closed, focus back to 0000000000010762
+  [kex] quick note: closed, focus back to 0000000000010784
 PASS Q8 and the next press hides it
 PASS T0 in F12 post-it mode
   [kex] hover tabs: shown (4 tabs, view 0)
 PASS T1 hovering the top edge shows the floating strip (20,16)-(496,48): 4 tabs (view has 4), active tab 3
 PASS T2 unsaved marker shown on 3 tab(s)
 PASS T3 strip floats over the text; the editor is not pushed down (editor top 16, strip 16..48)
-SHOT 17 f12-hover-tabs
+SHOT 18 f12-hover-tabs
   [kex] hover tabs: activated tab 0 in view 0
 PASS T4 click on tab 0 switched the document to d.txt (real mouse click)
   [kex] hover tabs: hidden
@@ -162,17 +168,69 @@ PASS E1 Same Notepad++ on every desktop off from Preferences: unticked and remem
   [kex] per-desktop: provider 'fake desktops (self-test)', Notepad++ is on {4B455844-534B-5450-8000-0000000000A0}, 2 registered desktop(s)
   [kex] Same Notepad++ on every desktop: enabled
 PASS E2 Same Notepad++ on every desktop back on from Preferences
+  [kex] Tab snapping: disabled
+PASS E1 Tab snapping off from Preferences: unticked and remembered, preview window destroyed, the core is back to the drop menu
+  [kex] Tab snapping: enabled
+PASS E2 Tab snapping back on from Preferences
+  [kex] JetBrains shortcuts: disabled
+PASS E1 JetBrains shortcuts off from Preferences: unticked and remembered, 
+  [kex] JetBrains shortcuts: enabled
+PASS E2 JetBrains shortcuts back on from Preferences
 PASS E3 Notepad++ still responsive
-INFO final summary: KEX: 5/5 features OK
+INFO final summary: KEX: 7/7 features OK
 PASS K1 c.txt cloned into view 3 (bottom left)
 PASS K2 view 3: deleting a line spawned 15 letters (expected 15)
 PASS K3 view 3 focused: smooth caret drawn there (target 0000000000010152, view 3 0000000000010152, visible 1, focus 0000000000010152, carets 1, main 54,0)
-SHOT 18 kex-view3-letters
+SHOT 19 kex-view3-letters
   [kex] hover tabs: shown (1 tabs, view 2)
 PASS K5 F12: hovering the top of view 3 shows view 3's tabs over view 3 (strip (20,350)-(496,382), view 3 (20,350)-(496,676), view 3)
-SHOT 19 kex-view3-hover-tabs
+SHOT 20 kex-view3-hover-tabs
   [kex] hover tabs: hidden
 PASS K4 view 3 snapped out: caret drawn in its own window, overlay (139,484)-(142,501) inside (64,412)-(552,766)
-SHOT 20 kex-view3-snapped-out-caret
-RESULT 87 passed, 0 failed
+SHOT 21 kex-view3-snapped-out-caret
+PASS J1 Alt+J from the caret selects the word, then each next occurrence: "value", 3 selections
+PASS J2 Shift+Alt+J drops the last one (2 left); releasing Alt does not open the menu bar
+PASS J3 Ctrl+Shift+Alt+J selects all 3 occurrences
+PASS J4 Ctrl+W extends the selection word > string > quotes > brackets > call > line (stopped at "call(alpha, "a string here", beta);")
+PASS J5 Ctrl+Shift+W shrinks it back: "call(alpha, "a string here", beta)"
+PASS J6 Ctrl+W no longer closes the tab while JetBrains keys are on
+PASS J7 Ctrl+Y deletes the line (Ctrl+Z brings it back)
+PASS J8 Ctrl+/ comments the line and uncomments it: "// int value = 1;"
+PASS J9 Shift+Alt+Down / Up move the line
+PASS J10 Shift+Enter starts a new line below without splitting this one
+PASS J11 Alt+Right / Alt+Left switch tabs (j.cpp > c.txt > j.cpp)
+  [kex] JetBrains shortcuts: disabled
+  [kex] JetBrains shortcuts: enabled
+PASS J12 "Also the keys Notepad++ uses" off: Ctrl+Y left to Notepad++, Alt+J still works
+  [kex] JetBrains shortcuts: disabled
+  [kex] JetBrains shortcuts: enabled
+PASS J13 switched off, Alt+J does nothing; back on afterwards (22 keys handled in all)
+PASS N0 one view with 5 tabs to drag from
+INFO drag b.py from view 1: tab 2 at (213,103), cursor (213,103) over SysTabControl32, capture SysTabControl32, current view 1
+PASS N1 dragging b.py to the right edge previews the right half: (504,90)-(976,646) (view (24,90)-(976,646), preview window (508,94)-(971,641))
+PASS N2 the preview is a click-through layered window that never takes focus
+SHOT 22 tab-snap-preview-right
+INFO after drop: b.py in view 2; view1:4 view2:1 view3:hidden/0 view4:hidden/0
+PASS N3 dropped there: b.py opened in a new view on the right, preview gone
+PASS N4 the new view sits where the preview was: (504,90)-(976,646) vs preview (504,90)-(976,646)
+INFO drag c.txt from view 1: tab 1 at (127,103), cursor (127,103) over SysTabControl32, capture SysTabControl32, current view 1
+PASS N5 the bottom edge of the left view previews its bottom half: (24,372)-(496,646) (view (24,90)-(496,646))
+SHOT 23 tab-snap-preview-quarter
+INFO after drop: c.txt in view 3; view1:3 view2:1 view3:1 view4:hidden/0
+PASS N6 dropped: c.txt opened bottom left at (24,372)-(496,646) (preview (24,372)-(496,646))
+INFO drag d.txt from view 1: tab 0 at (40,103), cursor (40,103) over SysTabControl32, capture SysTabControl32, current view 1
+PASS N7 over the middle of the right view the preview covers it: (504,90)-(976,646) (view (504,90)-(976,646))
+INFO after drop: d.txt in view 2; view1:2 view2:2 view3:1 view4:hidden/0
+PASS N8 dropped: d.txt moved into the right view
+INFO drag a.cpp from view 1: tab 0 at (40,103), cursor (40,103) over SysTabControl32, capture SysTabControl32, current view 1
+  [kex] tab snapping: drag cancelled with Esc
+INFO after drop: a.cpp in view 1; view1:2 view2:2 view3:1 view4:hidden/0
+PASS N9 Esc during a drag hides the preview and drops nothing (a.cpp still in view 1)
+  [kex] Tab snapping: disabled
+INFO drag a.cpp from view 1: tab 0 at (40,103), cursor (40,103) over SysTabControl32, capture SysTabControl32, current view 1
+INFO after drop: a.cpp in view 2; view1:1 view2:3 view3:1 view4:hidden/0
+PASS N10 tab snapping off: no preview, dropping on another view still moves the tab (view 2)
+  [kex] Tab snapping: enabled
+PASS N11 tab snapping back on
+RESULT 119 passed, 0 failed
 DONE

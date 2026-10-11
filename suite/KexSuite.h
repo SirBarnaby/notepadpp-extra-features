@@ -125,8 +125,10 @@ Module* createSmoothCaret();
 Module* createHotkeyDrop();
 Module* createHoverTabs();
 Module* createDesktopSync();
+Module* createTabSnap();
+Module* createJetBrainsKeys();
 
-enum ModuleId { M_LETTERS = 0, M_CARET, M_HOTKEY, M_TABS, M_DESKTOP, M_COUNT };
+enum ModuleId { M_LETTERS = 0, M_CARET, M_HOTKEY, M_TABS, M_DESKTOP, M_SNAP, M_KEYS, M_COUNT };
 extern Module* modules[M_COUNT];
 
 // Core services used across modules.
@@ -134,7 +136,9 @@ bool setModuleEnabled(int id, bool on, bool interactive);
 void refreshPrefPages();           // after a feature was switched on/off or failed
 void showNote(const std::wstring& text, int ms);   // non-modal note in the corner of Notepad++
 bool isPostItMode();
-HWND prefPage(int i);              // the Preferences pages (0 "KEX Editing", 1 "KEX Windows"), once created
+enum PrefPageId { PAGE_EDITING = 0, PAGE_TABS, PAGE_WINDOWS, PAGE_COUNT };
+HWND prefPage(int i);              // a KEX Preferences page (PrefPageId), once created
+int pageOfModule(int module);      // the page a feature's settings are on
 void openPreferences();            // Settings > KEX Features...
 
 // Main-window subclass hooks (owned by the core, consulted by modules).
@@ -182,6 +186,11 @@ std::wstring quickNoteFile();
 struct TabsStats { bool stripVisible = false; RECT strip{}; int tabCount = 0; int activeIndex = -1; int view = 0; std::vector<RECT> tabRects; std::vector<int> dirty; };
 TabsStats tabsStats();
 void tabsTestClick(int index);
+struct SnapStats { bool visible = false; RECT target{}; RECT window{}; int alpha = 0; int shows = 0; int moves = 0; int cancels = 0; };
+SnapStats snapStats();
+struct JetBrainsStats { int handled = 0; int grows = 0; std::wstring last; };
+JetBrainsStats jetBrainsStats();
+std::wstring jetBrainsKeyList();   // the table, one "keys<TAB>action" line each
 
 // Desktop provider (real IVirtualDesktopManager or the fake used by the self-test)
 class DesktopProvider {

@@ -1,10 +1,10 @@
-// KexSuite.rc - the two KEX pages of Settings > Preferences (same size and style as Notepad++'s own pages)
+// KexSuite.rc - the KEX pages of Settings > Preferences (same size and style as Notepad++'s own pages)
 #include <windows.h>
 #include <commctrl.h>
 #include "KexSuiteHost.h"
 #include "KexSuiteRes.h"
 
-IDD_KEX_PREF_EDITING DIALOGEX 115, 10, 460, 205
+IDD_KEX_PAGE_EDITING DIALOGEX 115, 10, 460, 205
 STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD
 FONT 8, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
@@ -32,10 +32,38 @@ BEGIN
     AUTOCHECKBOX    "Fade the blink", IDC_C_FADE, 240, 104, 70, 10
     AUTOCHECKBOX    "Block caret in overtype", IDC_C_OVB, 316, 104, 110, 10
 
+    GROUPBOX        "JetBrains shortcuts", -1, 4, 130, 452, 58
+    AUTOCHECKBOX    "IntelliJ editor keys: Alt+J next occurrence, Ctrl+W extend selection, Ctrl+/ comment...", IDC_J_EN, 12, 143, 300, 10
+    LTEXT           "", IDC_J_STATUS, 318, 144, 130, 9
+    AUTOCHECKBOX    "Also the keys Notepad++ uses for something else (Ctrl+Y, Ctrl+W, Ctrl+R, F11, Ctrl+Num +/-...)", IDC_J_ALL, 12, 157, 340, 10
+    PUSHBUTTON      "All shortcuts...", IDC_J_LIST, 12, 171, 70, 13
+    LTEXT           "Only in the editing views; every other key stays as Notepad++ has it.", -1, 90, 173, 300, 9
+
     LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
 END
 
-IDD_KEX_PREF_WINDOWS DIALOGEX 115, 10, 460, 205
+IDD_KEX_PAGE_TABS DIALOGEX 115, 10, 460, 205
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD
+FONT 8, "MS Shell Dlg", 0, 0, 0x1
+BEGIN
+    GROUPBOX        "Tab snapping", -1, 4, 2, 452, 64
+    AUTOCHECKBOX    "Drag a tab to the edge of a view to open it beside that view", IDC_S_EN, 12, 15, 214, 10
+    LTEXT           "", IDC_S_STATUS, 232, 16, 216, 9
+    AUTOCHECKBOX    "Animate the preview", IDC_S_ANIM, 12, 31, 100, 10
+    LTEXT           "A preview shows where the tab will land. Drop it on another view to move it there; hold Ctrl to clone it instead. Esc cancels. Off: dropping a tab on its own view shows the Move/Clone menu.", -1, 12, 45, 436, 18
+
+    GROUPBOX        "F12 hover tabs", -1, 4, 72, 452, 46
+    AUTOCHECKBOX    "In F12 mode, the top edge of a view shows its tabs", IDC_T_EN, 12, 85, 204, 10
+    LTEXT           "", IDC_T_STATUS, 222, 86, 226, 9
+    LTEXT           "Hot zone (px):", -1, 12, 103, 50, 8
+    EDITTEXT        IDC_T_ZONE, 64, 101, 26, 12, ES_NUMBER
+    LTEXT           "Hide after (ms):", -1, 102, 103, 56, 8
+    EDITTEXT        IDC_T_DELAY, 160, 101, 30, 12, ES_NUMBER
+
+    LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
+END
+
+IDD_KEX_PAGE_WINDOWS DIALOGEX 115, 10, 460, 205
 STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD
 FONT 8, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
@@ -49,21 +77,13 @@ BEGIN
     AUTOCHECKBOX    "Keep the text between uses", IDC_H_KEEP, 286, 32, 104, 10
     AUTOCHECKBOX    "Fade in and out", IDC_H_FADE, 392, 32, 62, 10
 
-    GROUPBOX        "F12 hover tabs", -1, 4, 58, 452, 46
-    AUTOCHECKBOX    "In F12 mode, the top edge of a view shows its tabs", IDC_T_EN, 12, 71, 204, 10
-    LTEXT           "", IDC_T_STATUS, 222, 72, 226, 9
-    LTEXT           "Hot zone (px):", -1, 12, 89, 50, 8
-    EDITTEXT        IDC_T_ZONE, 64, 87, 26, 12, ES_NUMBER
-    LTEXT           "Hide after (ms):", -1, 102, 89, 56, 8
-    EDITTEXT        IDC_T_DELAY, 160, 87, 30, 12, ES_NUMBER
-
-    GROUPBOX        "Same Notepad++ on every desktop", -1, 4, 110, 452, 62
-    AUTOCHECKBOX    "The window follows you to every desktop you opened it on", IDC_D_EN, 12, 123, 214, 10
-    LTEXT           "", IDC_D_STATUS, 232, 124, 216, 9
-    LTEXT           "Check every (ms):", -1, 12, 141, 72, 8
-    EDITTEXT        IDC_D_POLL, 86, 139, 30, 12, ES_NUMBER
-    AUTOCHECKBOX    "The title-bar X closes it only on this desktop (when it is on 2 or more)", IDC_D_CLOSE, 128, 140, 270, 10
-    LTEXT           "", IDC_D_INFO, 12, 157, 436, 9
+    GROUPBOX        "Same Notepad++ on every desktop", -1, 4, 58, 452, 62
+    AUTOCHECKBOX    "The window follows you to every desktop you opened it on", IDC_D_EN, 12, 71, 214, 10
+    LTEXT           "", IDC_D_STATUS, 232, 72, 216, 9
+    LTEXT           "Check every (ms):", -1, 12, 89, 72, 8
+    EDITTEXT        IDC_D_POLL, 86, 87, 30, 12, ES_NUMBER
+    AUTOCHECKBOX    "The title-bar X closes it only on this desktop (when it is on 2 or more)", IDC_D_CLOSE, 128, 88, 270, 10
+    LTEXT           "", IDC_D_INFO, 12, 105, 436, 9
 
     LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
 END

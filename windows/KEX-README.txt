@@ -39,12 +39,24 @@ Four views
 
 KEX features (Settings > KEX Features)
 --------------------------------------
-Settings > KEX Features opens Preferences on the "KEX Editing" page; "KEX Windows" is just below
-it. Each feature has an on/off tick there and its settings next to it; changes apply at once.
+Settings > KEX Features opens Preferences on the "KEX Editing" page; "KEX Tabs" and
+"KEX Windows" are just below it. Each feature has an on/off tick there and its settings next to
+it; changes apply at once.
+  * Tab snapping (KEX Tabs): drag a tab towards the edge of a view and a preview shows where a
+    new view will open (half of that view, so a quarter of the window once there are two side by
+    side); drop it there. Drop it on another view to move it into that view. Hold Ctrl to clone
+    instead of move, Esc cancels. Switched off, dropping a tab on its own view shows the old
+    Move/Clone menu.
   * Same Notepad++ on every desktop: opening Notepad++ on another virtual desktop shows the same
     window with the same tabs; each desktop keeps its own active tab, caret and scroll.
   * Falling letters: deleted text falls off the screen, CS2D style.
   * Smooth caret: the caret glides to its new position.
+  * JetBrains shortcuts (KEX Editing): the IntelliJ editor keys in the editing views, e.g.
+    Alt+J / Shift+Alt+J / Ctrl+Shift+Alt+J next / unselect / all occurrences, Ctrl+W and
+    Ctrl+Shift+W extend / shrink the selection, Ctrl+/ comment, Ctrl+D duplicate, Ctrl+Y delete
+    line, Shift+Alt+Up/Down move line, Alt+Left/Right switch tabs, Shift+Enter new line below.
+    "All shortcuts..." on the page lists them. Untick "Also the keys Notepad++ uses" to keep
+    Notepad++'s own Ctrl+Y (redo), Ctrl+W (close), Ctrl+R, F11 and Ctrl+Num +/- (zoom).
   * Quick note (Ctrl+Alt+M by default, changeable on KEX Windows): a small note window fades in at
     the centre of the screen over whatever you're doing, even with Notepad++ minimised. Press it
     again (or Esc) to fade it out and go back to what you were doing. What you type is saved as
