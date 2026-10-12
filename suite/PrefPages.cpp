@@ -27,6 +27,7 @@ const IntField kInts[] = {
     { IDC_T_ZONE, M_TABS, L"HotZonePx", 6 },
     { IDC_T_DELAY, M_TABS, L"HideDelayMs", 350 },
     { IDC_D_POLL, M_DESKTOP, L"PollMs", 150 },
+    { IDC_G_TINT, M_GLASS, L"TintPercent", 65 },
 };
 struct BoolField { int id; int module; const wchar_t* key; int def; };
 const BoolField kBools[] = {
@@ -39,9 +40,10 @@ const BoolField kBools[] = {
     { IDC_D_CLOSE, M_DESKTOP, L"CloseOnlyThisDesktop", 1 },
     { IDC_S_ANIM, M_SNAP, L"Animate", 1 },
     { IDC_J_ALL, M_KEYS, L"AlsoNotepadKeys", 1 },
+    { IDC_G_MARGINS, M_GLASS, L"Margins", 1 },
 };
-const int kEnable[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN };
-const int kStatus[M_COUNT] = { IDC_L_STATUS, IDC_C_STATUS, IDC_H_STATUS, IDC_T_STATUS, IDC_D_STATUS, IDC_S_STATUS, IDC_J_STATUS };
+const int kEnable[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN, IDC_G_EN };
+const int kStatus[M_COUNT] = { IDC_L_STATUS, IDC_C_STATUS, IDC_H_STATUS, IDC_T_STATUS, IDC_D_STATUS, IDC_S_STATUS, IDC_J_STATUS, IDC_G_STATUS };
 
 bool has(HWND d, int id) { return ::GetDlgItem(d, id) != nullptr; }
 
@@ -86,6 +88,7 @@ void fillStatus(HWND d)
                  + L"Open it on another desktop to add that one.";
         ::SetDlgItemTextW(d, IDC_D_INFO, info.c_str());
     }
+    if (has(d, IDC_G_INFO)) ::SetDlgItemTextW(d, IDC_G_INFO, glassInfo().c_str());
 }
 
 void fill(HWND d)
@@ -193,6 +196,7 @@ int pageOfModule(int module)
     {
     case M_LETTERS: case M_CARET: case M_KEYS: return PAGE_EDITING;
     case M_TABS: case M_SNAP: return PAGE_TABS;
+    case M_GLASS: return PAGE_WINDOWS;
     default: return PAGE_WINDOWS;
     }
 }

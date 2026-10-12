@@ -43,3 +43,8 @@
 #define IDC_J_STATUS       1701
 #define IDC_J_ALL          1702
 #define IDC_J_LIST         1703
+#define IDC_G_EN           1800
+#define IDC_G_STATUS       1801
+#define IDC_G_TINT         1802
+#define IDC_G_MARGINS      1803
+#define IDC_G_INFO         1804

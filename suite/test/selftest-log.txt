@@ -8,22 +8,24 @@ INFO self-check F12 hover tabs: OK
 INFO self-check Same Notepad++ on every desktop: OK
 INFO self-check Tab snapping: OK
 INFO self-check JetBrains shortcuts: OK
-PASS S2 startup self-check: KEX Suite: 7/7 features OK (the desktop feature uses fake desktops in self-test mode)
+INFO self-check Glass text area: OK
+PASS S2 startup self-check: KEX Suite: 8/8 features OK (the desktop feature uses fake desktops in self-test mode)
 INFO real IVirtualDesktopManager here: Windows virtual desktop API unavailable (CoCreateInstance(CLSID_VirtualDesktopManager) = 0x80040154)
 PASS S3 real virtual-desktop provider degrades without crashing (available=0)
-PASS S4 Falling letters enabled at startup
-PASS S4 Smooth caret enabled at startup
-PASS S4 Quick note (global hotkey) enabled at startup
-PASS S4 F12 hover tabs enabled at startup
-PASS S4 Same Notepad++ on every desktop enabled at startup
-PASS S4 Tab snapping enabled at startup
-PASS S4 JetBrains shortcuts enabled at startup
+PASS S4 Falling letters on at startup, its default
+PASS S4 Smooth caret on at startup, its default
+PASS S4 Quick note (global hotkey) on at startup, its default
+PASS S4 F12 hover tabs on at startup, its default
+PASS S4 Same Notepad++ on every desktop on at startup, its default
+PASS S4 Tab snapping on at startup, its default
+PASS S4 JetBrains shortcuts on at startup, its default
+PASS S4 Glass text area off at startup, its default
 PASS M1 Settings menu has "KEX Features..."
 PASS M2 nothing KEX left in the Plugins menu (the suite is built in)
 SHOT 1 menu-settings-kex
 PASS P1 Settings > KEX Features opens Preferences on the "KEX Editing" page
 PASS P2 the on/off ticks on both pages match the running features
-INFO page summary: "7 of 7 KEX features passed their start-up self-check."
+INFO page summary: "8 of 8 KEX features passed their start-up self-check."
 SHOT 2 preferences-kex-editing
 PASS P3 "KEX Windows" page shows when picked in the list
 PASS P4 the page reports the quick note hotkey: "works from any program"
@@ -53,13 +55,13 @@ PASS F2 overlay alive with 50 letters, bounding box (98,265)-(457,334) (Notepad+
 PASS F3 overlay is layered, click-through, non-activating, topmost (exstyle 0x80800a8)
 PASS F4 focus stays in the editor while letters fall
 SHOT 6 falling-letters-selection
-PASS F5 all letters fell off the screen and the overlay hid itself (frames rendered so far: 192)
+PASS F5 all letters fell off the screen and the overlay hid itself (frames rendered so far: 175)
 PASS F6 Backspace x3: 3 letters spawned
 SHOT 7 falling-letters-backspace
 PASS F7 Edit > Cut of "Particle": 8 letters spawned
 PASS F8 undo of typed text does not rain letters (skipped undo deletes: 1)
 PASS F9 deleting off-screen lines spawns nothing
-PASS F10 Select All + Delete of 3000 lines: 2205 visible letters grouped into 175 falling pieces (cap 200); total time incl. 200 ms wait 1878 ms
+PASS F10 Select All + Delete of 3000 lines: 2205 visible letters grouped into 175 falling pieces (cap 200); total time incl. 200 ms wait 2122 ms
 SHOT 8 falling-letters-huge-delete
 PASS F11 Replace All (text replaced) spawned 0 letters; NPPN_GLOBALMODIFIED seen 1 time(s)
 PASS F12 Windows animation effects off: no letters (respected by default)
@@ -67,8 +69,8 @@ PASS F13a c.txt cloned into the second view
 PASS F13 second view: 10 letters spawned from "second line"
 SHOT 9 falling-letters-second-view
 PASS C1 Scintilla's caret hidden only in the view the smooth caret is drawn in (view1 original=0x1 now=0x1; view2 original=0x1 now=0x0; )
-INFO caret glide from (68.0,30.0) to (143.0,120.0): 38ms:(116.1,88.5) 51ms:(128.4,103.4) 64ms:(138.0,115.1) 81ms:(141.7,119.6) 97ms:(142.0,120.0) 111ms:(142.0,120.0) 125ms:(142.0,120.0) 138ms:(142.0,120.0) 151ms:(142.0,120.0) 165ms:(142.0,120.0) 
-PASS C2 caret glides through 3 intermediate positions and lands on the target (142.0,120.0)
+INFO caret glide from (68.0,30.0) to (143.0,120.0): 42ms:(122.2,95.9) 57ms:(130.2,105.6) 69ms:(138.4,115.6) 83ms:(141.6,119.5) 96ms:(142.0,120.0) 110ms:(142.0,120.0) 124ms:(142.0,120.0) 137ms:(142.0,120.0) 151ms:(142.0,120.0) 165ms:(142.0,120.0) 
+PASS C2 caret glides through 4 intermediate positions and lands on the target (142.0,120.0)
 SHOT 10 caret-glide-frozen-midway
 PASS C3 custom caret visible, overlay (110,267)-(114,284)
 SHOT 11 caret-normal
@@ -114,26 +116,26 @@ PASS H1 global hotkey Ctrl+Alt+M registered
 INFO started notepad.exe as 'another program': 1
 INFO Notepad++ minimized=1, foreground is the other program: 1
   [kex] WM_HOTKEY received
-  [kex] quick note: opened at 320,190 640x420, previous window 0000000000010784
+  [kex] quick note: opened at 320,190 640x420, previous window 0000000000010792
 INFO SendInput Ctrl+Alt+M -> WM_HOTKEY delivered: yes
 PASS Q1 hotkey from another program while Notepad++ is minimized: quick note (320,190)-(960,610) centred on the screen (off by 0,0; WM_HOTKEY from real key events: yes)
 PASS Q2 the note is in front with the typing focus; Notepad++ stays minimized
 SHOT 17 quick-note
 PASS Q3 typing goes into the note: "note"
   [kex] WM_HOTKEY received
-  [kex] quick note: closed, focus back to 0000000000010784
+  [kex] quick note: closed, focus back to 0000000000010792
 PASS Q4 hotkey again: note gone, focus back to the other program, text saved to Z:\root\ci-out\test\npp\kex-quicknote.txt ("note"; WM_HOTKEY: yes)
   [kex] WM_HOTKEY received
-  [kex] quick note: opened at 320,190 640x420, previous window 0000000000010784
+  [kex] quick note: opened at 320,190 640x420, previous window 0000000000010792
 PASS Q5 reopened with the text kept, caret at the end: "note"
-  [kex] quick note: closed, focus back to 0000000000010784
+  [kex] quick note: closed, focus back to 0000000000010792
 PASS Q6 Esc hides the note and gives the focus back
   [kex] WM_HOTKEY received
-  [kex] quick note: opened at 320,190 640x420, previous window 0000000000010784
+  [kex] quick note: opened at 320,190 640x420, previous window 0000000000010792
   [kex] WM_HOTKEY received
 PASS Q7 hotkey while the note is open but not in front: brought to front, not hidden
   [kex] WM_HOTKEY received
-  [kex] quick note: closed, focus back to 0000000000010784
+  [kex] quick note: closed, focus back to 0000000000010792
 PASS Q8 and the next press hides it
 PASS T0 in F12 post-it mode
   [kex] hover tabs: shown (4 tabs, view 0)
@@ -177,7 +179,7 @@ PASS E1 JetBrains shortcuts off from Preferences: unticked and remembered,
   [kex] JetBrains shortcuts: enabled
 PASS E2 JetBrains shortcuts back on from Preferences
 PASS E3 Notepad++ still responsive
-INFO final summary: KEX: 7/7 features OK
+INFO final summary: KEX: 8/8 features OK
 PASS K1 c.txt cloned into view 3 (bottom left)
 PASS K2 view 3: deleting a line spawned 15 letters (expected 15)
 PASS K3 view 3 focused: smooth caret drawn there (target 0000000000010152, view 3 0000000000010152, visible 1, focus 0000000000010152, carets 1, main 54,0)
@@ -232,5 +234,27 @@ INFO after drop: a.cpp in view 2; view1:1 view2:3 view3:1 view4:hidden/0
 PASS N10 tab snapping off: no preview, dropping on another view still moves the tab (view 2)
   [kex] Tab snapping: enabled
 PASS N11 tab snapping back on
-RESULT 119 passed, 0 failed
+INFO glass: g.txt in view 1, theme background ffffff, renderers 0 1 0 0
+  [kex] glass: on (colour key only (test mode), key fefffe, tint 65%)
+  [kex] Glass text area: enabled
+PASS G1 glass on from Preferences: the main window is colour-keyed with fefffe (theme background ffffff)
+PASS G2 all four views' backgrounds and the line-number margin are the key (0 styles left on the old background)
+PASS G3 Direct2D window renderers drawn through a DC while the glass is on (view renderers 0>0 1>3 0>0 0>0 )
+PASS G4 a click catcher (24,65)-(976,672) sits directly behind the window, over its client area (24,65)-(976,672)
+SHOT 24 glass-on
+PASS G5 a click on the glass right of line 4 goes to the view under it: caret 54, line end 54
+PASS G6 the core's windowFromPoint finds the view there (plain WindowFromPoint gives Scintilla)
+PASS G7 the mouse wheel on the glass scrolls the view under it (first line 10)
+PASS G8 a right-click on the glass opens the editor's context menu
+PASS G9 Notepad++ re-applying the theme (Style Configurator) keeps the glass (0 styles left on the old background)
+PASS G10 switching g.txt to Python and back keeps the glass (0 styles left)
+PASS G11 dragging something over the glass turns it solid, so the view's own drop handling gets the drop
+PASS G12 the glass comes back once the mouse button is up
+PASS G13 after another program was in front and the window moved, the catcher is still right behind it at (64,89)-(956,676)
+PASS G14 KEX Windows page: "Running", "On: colour key only (test mode). Clicks on the glass go to the text under them.", tint 65%
+SHOT 25 preferences-kex-windows-glass
+  [kex] glass: off
+  [kex] Glass text area: disabled
+PASS G15 glass off: the window is not layered, the theme's backgrounds and renderers are back, the catcher is gone
+RESULT 135 passed, 0 failed
 DONE

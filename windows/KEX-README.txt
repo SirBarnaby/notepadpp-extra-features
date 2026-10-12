@@ -63,6 +63,13 @@ it; changes apply at once.
     you go (kex-quicknote.txt in Notepad++'s settings folder) and is there next time.
   * F12 hover tabs: in F12 (post-it) mode, touching the top edge of any view shows a floating
     strip with that view's tabs.
+  * Glass text area (KEX Windows, off by default): Windows' own blur shows through the
+    background of the text, live, so it follows the window as you move it. Menus, toolbar, tabs
+    and title bar stay solid. Tint (%) sets how much of the theme colour stays on top of the blur;
+    "Margins too" puts the line numbers and folding margin on glass as well. Clicks on the glass
+    go to the text under them. Needs Windows' "Transparency effects" switched on (Settings >
+    Personalization > Colors). If it misbehaves on your PC, kex.ini [Glass] takes Engine=self
+    (blur on the window itself), Acrylic=0 (plain blur) and KeepRenderer=1.
 
 New Notepad++ versions
 ----------------------

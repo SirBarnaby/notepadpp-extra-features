@@ -110,6 +110,7 @@ public:
     virtual bool enable() = 0;                    // install hooks; false = could not
     virtual void disable() = 0;                   // remove hooks, restore Notepad++ state exactly
     virtual void loadOptions() {}
+    virtual bool defaultOn() const { return true; }   // on until the user switches it off
     virtual void onNotify(SCNotification*) {}
     bool isEnabled() const { return _enabled; }
 
@@ -127,8 +128,9 @@ Module* createHoverTabs();
 Module* createDesktopSync();
 Module* createTabSnap();
 Module* createJetBrainsKeys();
+Module* createGlassText();
 
-enum ModuleId { M_LETTERS = 0, M_CARET, M_HOTKEY, M_TABS, M_DESKTOP, M_SNAP, M_KEYS, M_COUNT };
+enum ModuleId { M_LETTERS = 0, M_CARET, M_HOTKEY, M_TABS, M_DESKTOP, M_SNAP, M_KEYS, M_GLASS, M_COUNT };
 extern Module* modules[M_COUNT];
 
 // Core services used across modules.
@@ -191,6 +193,12 @@ SnapStats snapStats();
 struct JetBrainsStats { int handled = 0; int grows = 0; std::wstring last; };
 JetBrainsStats jetBrainsStats();
 std::wstring jetBrainsKeyList();   // the table, one "keys<TAB>action" line each
+struct GlassStats { bool active = false; COLORREF key = 0; int hosts = 0; int remaps = 0; int placements = 0; int clicks = 0; int wheels = 0;
+                    int dragSolids = 0; bool dragSolidNow = false; int accent = 0; int accentFailures = 0; int rendererSwitches = 0;
+                    HWND lastTarget = nullptr; std::wstring state; };
+GlassStats glassStats();
+std::wstring glassInfo();          // the line under the glass settings
+void glassTestDragEnter();         // what a drag entering the glass does
 
 // Desktop provider (real IVirtualDesktopManager or the fake used by the self-test)
 class DesktopProvider {

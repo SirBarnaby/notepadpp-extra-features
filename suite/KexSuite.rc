@@ -85,5 +85,13 @@ BEGIN
     AUTOCHECKBOX    "The title-bar X closes it only on this desktop (when it is on 2 or more)", IDC_D_CLOSE, 128, 88, 270, 10
     LTEXT           "", IDC_D_INFO, 12, 105, 436, 9
 
+    GROUPBOX        "Glass text area", -1, 4, 126, 452, 62
+    AUTOCHECKBOX    "Windows' blur shows through the background of the text", IDC_G_EN, 12, 139, 214, 10
+    LTEXT           "", IDC_G_STATUS, 232, 140, 216, 9
+    LTEXT           "Tint (%):", -1, 12, 157, 32, 8
+    EDITTEXT        IDC_G_TINT, 46, 155, 26, 12, ES_NUMBER
+    AUTOCHECKBOX    "Margins too (line numbers, bookmarks, folding)", IDC_G_MARGINS, 84, 156, 180, 10
+    LTEXT           "", IDC_G_INFO, 12, 173, 436, 9
+
     LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
 END

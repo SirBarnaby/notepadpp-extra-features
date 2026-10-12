@@ -247,7 +247,7 @@ int pressHotkey()
 }
 
 // The on/off tick of a feature on its Preferences page, clicked the way the user does it.
-const int kEnableBox[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN };
+const int kEnableBox[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN, IDC_G_EN };
 HWND enableBox(int module)
 {
     if (!prefPage(pageOfModule(module))) { openPreferences(); pump(300); }
@@ -357,6 +357,68 @@ void dragEnd()
     tlog(L"INFO after drop: %ls in view %d;%ls", g_dragFile.c_str(), viewOfFile(g_dragFile) + 1, where.c_str());
 }
 
+// ---- glass text area -----------------------------------------------------------------------------
+COLORREF g_glassBack[4] = {};
+int g_glassTech[4] = {};
+const UINT WM_UPDATESCINTILLAS_ = WM_USER + 5000 + 1;   // WordStyleDlg.h: Style Configurator's "apply"
+HWND glassCatcherOf(HWND host)
+{
+    HWND h = nullptr;
+    while ((h = ::FindWindowExW(nullptr, h, L"KexGlassCatcher", nullptr)) != nullptr)
+        if (reinterpret_cast<HWND>(::GetWindowLongPtrW(h, GWLP_USERDATA)) == host) return h;
+    return nullptr;
+}
+bool keyedWith(HWND w, COLORREF* key)
+{
+    if (!(::GetWindowLongPtrW(w, GWL_EXSTYLE) & WS_EX_LAYERED)) return false;
+    COLORREF k = 0; BYTE a = 0; DWORD f = 0;
+    if (!::GetLayeredWindowAttributes(w, &k, &a, &f)) return false;
+    if (key) *key = k;
+    return (f & LWA_COLORKEY) != 0;
+}
+int stylesWithBack(HWND s, COLORREF c)
+{
+    int n = 0;
+    for (int st = 0; st < 256; ++st)
+        if (st != STYLE_CALLTIP && static_cast<COLORREF>(sci(s, SCI_STYLEGETBACK, st)) == c) ++n;
+    return n;
+}
+RECT clientOnScreen(HWND h)
+{
+    RECT r{}; ::GetClientRect(h, &r);
+    ::MapWindowPoints(h, nullptr, reinterpret_cast<POINT*>(&r), 2);
+    return r;
+}
+HWND nextVisible(HWND h)
+{
+    HWND n = ::GetWindow(h, GW_HWNDNEXT);
+    while (n && !::IsWindowVisible(n)) n = ::GetWindow(n, GW_HWNDNEXT);
+    return n;
+}
+bool viewsKeyed(COLORREF key)
+{
+    for (int v = 0; v < views.count(); ++v)
+        if (HWND s = views.sci(v))
+            if (static_cast<COLORREF>(sci(s, SCI_STYLEGETBACK, STYLE_DEFAULT)) != key) return false;
+    return true;
+}
+// a screen point on the glass: well right of the end of a short line of view 0
+POINT glassPoint(int line)
+{
+    HWND s = views.sci(0);
+    intptr_t end = sci(s, SCI_GETLINEENDPOSITION, line);
+    POINT pt{ static_cast<int>(sci(s, SCI_POINTXFROMPOSITION, 0, end)) + 80,
+              static_cast<int>(sci(s, SCI_POINTYFROMPOSITION, 0, end)) + static_cast<int>(sci(s, SCI_TEXTHEIGHT, line)) / 2 };
+    ::ClientToScreen(s, &pt);
+    return pt;
+}
+LPARAM glassLParam(HWND catcher, POINT screenPt)
+{
+    ::ScreenToClient(catcher, &screenPt);
+    return MAKELPARAM(screenPt.x, screenPt.y);
+}
+std::wstring classOf(HWND h) { wchar_t c[64] = {}; if (h) ::GetClassNameW(h, c, 63); return c; }
+
 void buildSteps()
 {
     auto add = [](std::function<int()> f) { g_steps.push_back(f); };
@@ -389,7 +451,7 @@ void buildSteps()
         tlog(L"INFO real IVirtualDesktopManager here: %ls", real->ok() ? L"available" : real->error().c_str());
         check(true, L"S3", L"real virtual-desktop provider degrades without crashing (available=%d)", real->ok() ? 1 : 0);
         for (int i = 0; i < M_COUNT; ++i)
-            check(modules[i]->isEnabled(), L"S4", L"%ls enabled at startup", modules[i]->title());
+            check(modules[i]->isEnabled() == modules[i]->defaultOn(), L"S4", L"%ls %ls at startup, its default", modules[i]->title(), modules[i]->defaultOn() ? L"on" : L"off");
         open(L"d.txt"); open(L"c.txt"); open(L"b.py"); open(L"a.cpp");
         g_origCaretWidth = static_cast<int>(sci(views.sci(0), SCI_GETCARETWIDTH));
         return 600;
@@ -1031,6 +1093,7 @@ void buildSteps()
     add([] {
         for (int i = 0; i < M_COUNT; ++i)
         {
+            if (!modules[i]->defaultOn()) continue;   // off by default: its own tests switch it on and off
             int origStyle0 = caretOriginalStyle(views.sci(0));
             clickEnable(i);
             pump(100);
@@ -1383,6 +1446,155 @@ void buildSteps()
         check(noPreview && viewOfFile(L"a.cpp") == to, L"N10", L"tab snapping off: no preview, dropping on another view still moves the tab (view %d)", viewOfFile(L"a.cpp") + 1);
         setModuleEnabled(M_SNAP, true, false);
         check(kexsuite::tabSnapOn(), L"N11", L"tab snapping back on");
+        return 200;
+    });
+    // ---- glass text area: colour key, click catcher, theme changes, off again ---------------------
+    add([] {
+        // Wine has no DWM blur, so the test engine keys the views and places the catcher without it
+        settings.setStr(L"Glass", L"Engine", L"keyonly");
+        std::string text;
+        for (int i = 1; i <= 300; ++i) text += "glass line " + std::to_string(i) + "\r\n";
+        writeFile(path(L"g.txt"), text);
+        ::ShowWindow(npp._nppHandle, SW_RESTORE);
+        ::MoveWindow(npp._nppHandle, 20, 16, 960, 660, TRUE);
+        views.activate(0, 0);
+        pump(100);
+        open(L"g.txt");
+        focusEditor();
+        if (views.sci(1)) sci(views.sci(1), SCI_SETTECHNOLOGY, SC_TECHNOLOGY_DIRECTWRITE);   // a Direct2D view, if this Wine has Direct2D
+        pump(200);
+        for (int v = 0; v < views.count(); ++v)
+        {
+            HWND s = views.sci(v);
+            g_glassBack[v] = s ? static_cast<COLORREF>(sci(s, SCI_STYLEGETBACK, STYLE_DEFAULT)) : 0;
+            g_glassTech[v] = s ? static_cast<int>(sci(s, SCI_GETTECHNOLOGY)) : -1;
+        }
+        tlog(L"INFO glass: g.txt in view %d, theme background %06lx, renderers %d %d %d %d", viewOfFile(L"g.txt") + 1,
+             static_cast<unsigned long>(g_glassBack[0]), g_glassTech[0], g_glassTech[1], g_glassTech[2], g_glassTech[3]);
+        clickEnable(M_GLASS);
+        pump(400);
+        ::SendMessageW(prefDialog(), WM_COMMAND, IDCANCEL, 0);
+        pump(200);
+        GlassStats g = glassStats();
+        COLORREF key = 0;
+        const bool keyed = keyedWith(npp._nppHandle, &key);
+        check(modules[M_GLASS]->isEnabled() && g.active && keyed && key == (g_glassBack[0] ^ 0x010001) && settings.getInt(L"Glass", L"Enabled", 0) == 1, L"G1",
+              L"glass on from Preferences: the main window is colour-keyed with %06lx (theme background %06lx)", static_cast<unsigned long>(key), static_cast<unsigned long>(g_glassBack[0]));
+        int left = 0;
+        for (int v = 0; v < views.count(); ++v) if (HWND s = views.sci(v)) left += stylesWithBack(s, g_glassBack[v]);
+        HWND s0 = views.sci(0);
+        check(viewsKeyed(key) && left == 0 && static_cast<COLORREF>(sci(s0, SCI_STYLEGETBACK, STYLE_LINENUMBER)) == key, L"G2",
+              L"all four views' backgrounds and the line-number margin are the key (%d styles left on the old background)", left);
+        bool tech = true;
+        std::wstring ts;
+        for (int v = 0; v < views.count(); ++v)
+        {
+            HWND s = views.sci(v);
+            if (!s) continue;
+            const int o = g_glassTech[v], now = static_cast<int>(sci(s, SCI_GETTECHNOLOGY));
+            const int want = (o == SC_TECHNOLOGY_DIRECTWRITE || o == SC_TECHNOLOGY_DIRECTWRITERETAIN || o == SC_TECHNOLOGY_DIRECT_WRITE_1) ? SC_TECHNOLOGY_DIRECTWRITEDC : o;
+            if (now != want) tech = false;
+            ts += std::to_wstring(o) + L">" + std::to_wstring(now) + L" ";
+        }
+        check(tech, L"G3", L"Direct2D window renderers drawn through a DC while the glass is on (view renderers %ls)", ts.c_str());
+        HWND c = glassCatcherOf(npp._nppHandle);
+        RECT cr = clientOnScreen(npp._nppHandle), kr = screenRectOf(c);
+        check(c && ::IsWindowVisible(c) && ::EqualRect(&cr, &kr) && nextVisible(npp._nppHandle) == c && g.hosts >= 1, L"G4",
+              L"a click catcher %ls sits directly behind the window, over its client area %ls", rectStr(kr).c_str(), rectStr(cr).c_str());
+        return 200;
+    });
+    add([] { return shot(L"glass-on"); });
+    add([] {
+        HWND s = views.sci(0);
+        HWND c = glassCatcherOf(npp._nppHandle);
+        sci(s, SCI_SETFIRSTVISIBLELINE, 0);
+        sci(s, SCI_GOTOPOS, 0);
+        const int line = 3;
+        POINT pt = glassPoint(line);
+        const int clicks = glassStats().clicks;
+        ::SendMessageW(c, WM_LBUTTONDOWN, MK_LBUTTON, glassLParam(c, pt));
+        ::SendMessageW(c, WM_LBUTTONUP, 0, glassLParam(c, pt));
+        pump(150);
+        const intptr_t caret = sci(s, SCI_GETCURRENTPOS), end = sci(s, SCI_GETLINEENDPOSITION, line);
+        check(caret == end && glassStats().clicks == clicks + 1 && glassStats().lastTarget == s && ::GetFocus() == s, L"G5",
+              L"a click on the glass right of line %d goes to the view under it: caret %d, line end %d", line + 1, static_cast<int>(caret), static_cast<int>(end));
+        HWND real = ::WindowFromPoint(pt);
+        check(kexsuite::windowFromPoint(pt) == s, L"G6", L"the core's windowFromPoint finds the view there (plain WindowFromPoint gives %ls)", classOf(real).c_str());
+        const int wheels = glassStats().wheels;
+        ::SendMessageW(c, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-3 * WHEEL_DELTA)), MAKELPARAM(pt.x, pt.y));
+        pump(150);
+        const intptr_t first = sci(s, SCI_GETFIRSTVISIBLELINE);
+        check(first > 0 && glassStats().wheels == wheels + 1, L"G7", L"the mouse wheel on the glass scrolls the view under it (first line %d)", static_cast<int>(first) + 1);
+        sci(s, SCI_SETFIRSTVISIBLELINE, 0);
+        pt = glassPoint(line);
+        ::PostMessageW(c, WM_RBUTTONDOWN, MK_RBUTTON, glassLParam(c, pt));
+        ::PostMessageW(c, WM_RBUTTONUP, 0, glassLParam(c, pt));
+        return 500;
+    });
+    add([] {
+        HWND menu = ::FindWindowW(L"#32768", nullptr);
+        const bool shown = menu && ::IsWindowVisible(menu);
+        ::EndMenu();
+        check(shown, L"G8", L"a right-click on the glass opens the editor's context menu");
+        return 300;
+    });
+    add([] {
+        COLORREF key = glassStats().key;
+        int remaps = glassStats().remaps;
+        ::SendMessageW(npp._nppHandle, WM_UPDATESCINTILLAS_, FALSE, 0);
+        int left = stylesWithBack(views.sci(0), g_glassBack[0]);
+        check(viewsKeyed(key) && left == 0 && glassStats().remaps > remaps, L"G9",
+              L"Notepad++ re-applying the theme (Style Configurator) keeps the glass (%d styles left on the old background)", left);
+        focusEditor();
+        nppMsg(NPPM_SETCURRENTLANGTYPE, 0, L_PYTHON);
+        pump(100);
+        left = stylesWithBack(views.sci(0), g_glassBack[0]);
+        bool lang = viewsKeyed(key) && left == 0;
+        nppMsg(NPPM_SETCURRENTLANGTYPE, 0, L_TEXT);
+        pump(100);
+        check(lang && viewsKeyed(key), L"G10", L"switching g.txt to Python and back keeps the glass (%d styles left)", left);
+        glassTestDragEnter();
+        const bool solid = !keyedWith(npp._nppHandle, nullptr) && glassStats().dragSolidNow;
+        check(solid, L"G11", L"dragging something over the glass turns it solid, so the view's own drop handling gets the drop");
+        return 400;
+    });
+    add([] {
+        check(keyedWith(npp._nppHandle, nullptr) && !glassStats().dragSolidNow, L"G12", L"the glass comes back once the mouse button is up");
+        HWND c = glassCatcherOf(npp._nppHandle);
+        if (g_otherWnd && ::IsWindow(g_otherWnd)) { ::SetForegroundWindow(g_otherWnd); pump(250); }
+        ::SetForegroundWindow(npp._nppHandle);
+        pump(250);
+        ::MoveWindow(npp._nppHandle, 60, 40, 900, 640, TRUE);
+        pump(400);
+        RECT cr = clientOnScreen(npp._nppHandle), kr = screenRectOf(c);
+        check(nextVisible(npp._nppHandle) == c && ::EqualRect(&cr, &kr), L"G13",
+              L"after another program was in front and the window moved, the catcher is still right behind it at %ls", rectStr(kr).c_str());
+        openPreferences();
+        pump(300);
+        showPrefPage(L"KEX Windows");
+        pump(200);
+        HWND p = prefPage(PAGE_WINDOWS);
+        std::wstring st = itemText(p, IDC_G_STATUS), info = itemText(p, IDC_G_INFO), tint = itemText(p, IDC_G_TINT);
+        check(st == L"Running" && info.rfind(L"On:", 0) == 0 && tint == L"65", L"G14", L"KEX Windows page: \"%ls\", \"%ls\", tint %ls%%", st.c_str(), info.c_str(), tint.c_str());
+        return 200;
+    });
+    add([] { return shot(L"preferences-kex-windows-glass"); });
+    add([] {
+        clickEnable(M_GLASS);
+        pump(300);
+        ::SendMessageW(prefDialog(), WM_COMMAND, IDCANCEL, 0);
+        pump(200);
+        const bool layered = (::GetWindowLongPtrW(npp._nppHandle, GWL_EXSTYLE) & WS_EX_LAYERED) != 0;
+        bool back = true, tech = true;
+        for (int v = 0; v < views.count(); ++v)
+            if (HWND s = views.sci(v))
+            {
+                if (static_cast<COLORREF>(sci(s, SCI_STYLEGETBACK, STYLE_DEFAULT)) != g_glassBack[v]) back = false;
+                if (static_cast<int>(sci(s, SCI_GETTECHNOLOGY)) != g_glassTech[v]) tech = false;
+            }
+        check(!modules[M_GLASS]->isEnabled() && !layered && back && tech && !glassCatcherOf(npp._nppHandle) && settings.getInt(L"Glass", L"Enabled", 1) == 0, L"G15",
+              L"glass off: the window is not layered, the theme's backgrounds and renderers are back, the catcher is gone");
+        if (views.sci(1)) sci(views.sci(1), SCI_SETTECHNOLOGY, SC_TECHNOLOGY_DEFAULT);
         return 200;
     });
     add([] {

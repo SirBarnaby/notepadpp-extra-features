@@ -12,6 +12,7 @@ An unofficial build of [Notepad++](https://github.com/notepad-plus-plus/notepad-
   - a smooth, gliding caret
   - a quick note on a global hotkey (Ctrl+Alt+M): a small note fades in over any app and fades out on the next press
   - a tab strip that appears when you hover the top of a view in F12 mode
+  - a glass text area (off until you tick it): Windows' live blur shows through the background of the text, while menus, toolbar and tabs stay solid
 
 Not affiliated with the Notepad++ project. Built from the official source of each release.
 

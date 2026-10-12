@@ -1,4 +1,4 @@
-From 4c15b1000505afc9edd0f802032d72cb1ba8db98 Mon Sep 17 00:00:00 2001
+From 61a4bb49434d792c31ef4e94745fbceed277bb8d Mon Sep 17 00:00:00 2001
 From: KEX patch <noreply@anthropic.com>
 Date: Sun, 11 Oct 2026 15:07:35 +0000
 Subject: [PATCH] KEX: four views in a 2x2 grid, snap-out windows, built-in KEX
@@ -21,7 +21,7 @@ Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
  PowerEditor/gcc/makefile                      |    1 +
  PowerEditor/src/KexViews.cpp                  | 1078 +++++++++++++++++
  PowerEditor/src/MISC/PluginsManager/KexApi.h  |   42 +
- .../src/MISC/PluginsManager/KexSuiteHost.h    |   30 +
+ .../src/MISC/PluginsManager/KexSuiteHost.h    |   34 +
  .../MISC/PluginsManager/PluginsManager.cpp    |   52 +-
  .../src/MISC/PluginsManager/PluginsManager.h  |    6 +
  PowerEditor/src/Notepad_plus.cpp              |  501 ++++----
@@ -30,19 +30,21 @@ Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
  PowerEditor/src/NppBigSwitch.cpp              |  164 ++-
  PowerEditor/src/NppCommands.cpp               |  116 +-
  PowerEditor/src/NppIO.cpp                     |  311 ++---
- PowerEditor/src/NppNotification.cpp           |  135 ++-
+ PowerEditor/src/NppNotification.cpp           |  137 ++-
  PowerEditor/src/Parameters.cpp                |   55 +-
  PowerEditor/src/Parameters.h                  |   15 +
+ .../ScintillaComponent/ScintillaEditView.cpp  |    3 +-
+ .../src/WinControls/DockingWnd/Gripper.cpp    |    3 +-
  .../WinControls/Preference/preferenceDlg.cpp  |   42 +
  .../WinControls/Preference/preferenceDlg.h    |   12 +
  .../SplitterContainer/SplitterContainer.cpp   |    2 +
  .../SplitterContainer/SplitterContainer.h     |   14 +
- PowerEditor/src/WinControls/TabBar/TabBar.cpp |    2 +
+ PowerEditor/src/WinControls/TabBar/TabBar.cpp |    6 +-
  PowerEditor/src/WinControls/TabBar/TabBar.h   |    7 +
  .../VerticalFileSwitcher.cpp                  |   15 +-
  .../VerticalFileSwitcherListView.cpp          |   12 +-
  PowerEditor/src/menuCmdID.h                   |   21 +
- 24 files changed, 2209 insertions(+), 489 deletions(-)
+ 26 files changed, 2221 insertions(+), 493 deletions(-)
  create mode 100644 PowerEditor/src/KexViews.cpp
  create mode 100644 PowerEditor/src/MISC/PluginsManager/KexApi.h
  create mode 100644 PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
@@ -61,7 +63,7 @@ index 3f38aa9..849daf5 100644
  
 diff --git a/PowerEditor/src/KexViews.cpp b/PowerEditor/src/KexViews.cpp
 new file mode 100644
-index 0000000..a6c695a
+index 0000000..e8b4f6a
 --- /dev/null
 +++ b/PowerEditor/src/KexViews.cpp
 @@ -0,0 +1,1078 @@
@@ -882,7 +884,7 @@ index 0000000..a6c695a
 +	KexSnapTarget none;
 +	const int source = currentView();
 +	HWND hNpp = _pPublicInterface->getHSelf();
-+	HWND hit = ::WindowFromPoint(screenPoint);
++	HWND hit = kexsuite::windowFromPoint(screenPoint);
 +	if (!hit)
 +		return none;
 +
@@ -987,7 +989,7 @@ index 0000000..a6c695a
 +	}
 +
 +	// anywhere else in Notepad++ (its own view, the toolbar...) the drop does nothing, with no menu
-+	HWND hit = ::WindowFromPoint(screenPoint);
++	HWND hit = kexsuite::windowFromPoint(screenPoint);
 +	return hit && (::GetAncestor(hit, GA_ROOT) == _pPublicInterface->getHSelf() || kexViewFromHwnd(hit) != -1);
 +}
 +
@@ -1193,12 +1195,12 @@ index 0000000..a60b9c2
 +#define NPPM_KEX_GETVIEWHOSTWINDOW    (KEX_USER + 11)
 diff --git a/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h b/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
 new file mode 100644
-index 0000000..ed25948
+index 0000000..6faed0f
 --- /dev/null
 +++ b/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,34 @@
 +// KexSuiteHost.h - the KEX suite (falling letters, smooth caret, quick note, F12 hover tabs, tab
-+// snapping, the same Notepad++ on every virtual desktop) is built into notepad++.exe. Its sources
++// snapping, the same Notepad++ on every virtual desktop, the glass text area) is built into notepad++.exe. Its sources
 +// live in PowerEditor/src/KexSuite (kex-patch.sh copies them in from the KEX repository's suite/
 +// folder). It drives Notepad++ through the documented plugin messages, so the core only hands it the
 +// plugin data, every notification, the window procedure of its Preferences pages and tab drags.
@@ -1225,6 +1227,10 @@ index 0000000..ed25948
 +// draws the preview. tabSnapOn() false = the classic drop menu.
 +bool tabSnapOn();
 +void tabSnapPreview(const RECT* screenRect);                                   // nullptr hides it
++
++// ::WindowFromPoint for the core: the glass text area puts a click catcher behind the window, and
++// this sees through it to the view the user actually points at.
++HWND windowFromPoint(POINT screenPoint);
 +}
 +#endif
 diff --git a/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp b/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp
@@ -1385,7 +1391,7 @@ index 5255325..673ace4 100644
  	bool relayPluginMessages(UINT Message, WPARAM wParam, LPARAM lParam);
  
 diff --git a/PowerEditor/src/Notepad_plus.cpp b/PowerEditor/src/Notepad_plus.cpp
-index 4bf5a90..01a88ba 100644
+index 4bf5a90..309bbcc 100644
 --- a/PowerEditor/src/Notepad_plus.cpp
 +++ b/PowerEditor/src/Notepad_plus.cpp
 @@ -136,6 +136,8 @@ static constexpr ToolBarButtonUnit toolBarIcons[]{
@@ -1605,7 +1611,7 @@ index 4bf5a90..01a88ba 100644
 +		// KEX: find the view under the cursor, which also works for torn-out view windows
 +		POINT screenPt{};
 +		::GetCursorPos(&screenPt);
-+		int dropView = kexViewFromHwnd(::WindowFromPoint(screenPt));
++		int dropView = kexViewFromHwnd(kexsuite::windowFromPoint(screenPt));
  		HWND hWin = ::ChildWindowFromPointEx(_pPublicInterface->getHSelf(), p, CWP_SKIPINVISIBLE);
 -		if (!hWin) return;
 +		if (!hWin && dropView == -1) return;
@@ -3760,7 +3766,7 @@ index 71fb3b3..2a0cc6c 100644
  		if (!isEmptyNpp && (nppGUI._multiInstSetting == multiInstOnSession || nppGUI._multiInstSetting == multiInst))
  		{
 diff --git a/PowerEditor/src/NppNotification.cpp b/PowerEditor/src/NppNotification.cpp
-index 8b85774..e9439a0 100644
+index 8b85774..bdbcefb 100644
 --- a/PowerEditor/src/NppNotification.cpp
 +++ b/PowerEditor/src/NppNotification.cpp
 @@ -34,14 +34,19 @@ BOOL Notepad_plus::notify(SCNotification *notification)
@@ -3966,7 +3972,8 @@ index 8b85774..e9439a0 100644
 +
  				//It's the coordinate of screen, so we can call
  				//"WindowFromPoint" function without converting the point
- 				HWND hWin = ::WindowFromPoint(p);
+-				HWND hWin = ::WindowFromPoint(p);
++				HWND hWin = kexsuite::windowFromPoint(p); // KEX: sees through the glass text area
 +				int kexDropView = kexViewFromHwnd(hWin); // KEX: any view, docked or torn out
  				if (hWin == _pEditView->getHSelf()) // In the same view group
  				{
@@ -4107,12 +4114,12 @@ index 8b85774..e9439a0 100644
  					BufferID idd = BUFFER_INVALID;
 +					POINT kexScreenPt{};
 +					::GetCursorPos(&kexScreenPt);
-+					int kexTipView = kexViewOfControl(::WindowFromPoint(kexScreenPt)); // KEX: views 3 and 4, also torn out
++					int kexTipView = kexViewOfControl(kexsuite::windowFromPoint(kexScreenPt)); // KEX: views 3 and 4, also torn out
  					if (hWin == _mainDocTab.getHSelf())
  						idd = _mainDocTab.getBufferByIndex(id);
  					else if (hWin == _subDocTab.getHSelf())
  						idd = _subDocTab.getBufferByIndex(id);
-+					else if (kexTipView != -1 && kexDocTab(kexTipView)->getHSelf() == ::WindowFromPoint(kexScreenPt))
++					else if (kexTipView != -1 && kexDocTab(kexTipView)->getHSelf() == kexsuite::windowFromPoint(kexScreenPt))
 +						idd = kexDocTab(kexTipView)->getBufferByIndex(id);
  					else
  						return FALSE;
@@ -4246,6 +4253,48 @@ index 5db0df6..86a9482 100644
  };
  
  
+diff --git a/PowerEditor/src/ScintillaComponent/ScintillaEditView.cpp b/PowerEditor/src/ScintillaComponent/ScintillaEditView.cpp
+index 2462620..1264227 100644
+--- a/PowerEditor/src/ScintillaComponent/ScintillaEditView.cpp
++++ b/PowerEditor/src/ScintillaComponent/ScintillaEditView.cpp
+@@ -46,6 +46,7 @@
+ 
+ #include "Buffer.h"
+ #include "Common.h"
++#include "KexSuiteHost.h"
+ #include "NppConstants.h"
+ #include "NppDarkMode.h"
+ #include "Parameters.h"
+@@ -561,7 +562,7 @@ LRESULT CALLBACK ScintillaEditView::ScintillaProc(
+ 			POINT pt{};
+ 			POINTS pts = MAKEPOINTS(lParam);
+ 			POINTSTOPOINT(pt, pts);
+-			HWND hwndOnMouse = ::WindowFromPoint(pt);
++			HWND hwndOnMouse = kexsuite::windowFromPoint(pt); // KEX: sees through the glass text area
+ 
+ 			// Hack for Synaptics TouchPad Driver
+ 			auto className = std::string(26, '\0');
+diff --git a/PowerEditor/src/WinControls/DockingWnd/Gripper.cpp b/PowerEditor/src/WinControls/DockingWnd/Gripper.cpp
+index c9789c6..cc8ce09 100644
+--- a/PowerEditor/src/WinControls/DockingWnd/Gripper.cpp
++++ b/PowerEditor/src/WinControls/DockingWnd/Gripper.cpp
+@@ -23,6 +23,7 @@
+ #include <vector>
+ 
+ #include "Common.h"
++#include "KexSuiteHost.h"
+ #include "Docking.h"
+ #include "DockingCont.h"
+ #include "DockingManager.h"
+@@ -780,7 +781,7 @@ void Gripper::getMovingRect(POINT pt, RECT *rc)
+ DockingCont* Gripper::contHitTest(POINT pt)
+ {
+ 	vector<DockingCont*>	vCont	= _pDockMgr->getContainerInfo();
+-	HWND					hWnd	= ::WindowFromPoint(pt);
++	HWND					hWnd	= kexsuite::windowFromPoint(pt); // KEX: sees through the glass text area
+ 
+ 	for (size_t iCont = 0, len = vCont.size(); iCont < len; ++iCont)
+ 	{
 diff --git a/PowerEditor/src/WinControls/Preference/preferenceDlg.cpp b/PowerEditor/src/WinControls/Preference/preferenceDlg.cpp
 index 8dbc75c..c028e18 100644
 --- a/PowerEditor/src/WinControls/Preference/preferenceDlg.cpp
@@ -4408,7 +4457,7 @@ index ddcf11c..e1f0dbd 100644
  	Window* _pWin0 = nullptr; // left or top window
  	Window* _pWin1 = nullptr; // right or bottom window
 diff --git a/PowerEditor/src/WinControls/TabBar/TabBar.cpp b/PowerEditor/src/WinControls/TabBar/TabBar.cpp
-index 57b5251..03201e6 100644
+index 57b5251..409dd77 100644
 --- a/PowerEditor/src/WinControls/TabBar/TabBar.cpp
 +++ b/PowerEditor/src/WinControls/TabBar/TabBar.cpp
 @@ -948,6 +948,7 @@ LRESULT TabBarPlus::runProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lPara
@@ -4427,6 +4476,20 @@ index 57b5251..03201e6 100644
  				return 0;
  			}
  			break;
+@@ -1831,10 +1833,12 @@ void TabBarPlus::drawItem(DRAWITEMSTRUCT* pDrawItemStruct, bool isDarkMode)
+ 	::RestoreDC(hDC, nSavedDC);
+ }
+ 
++// KEX: from KexSuiteHost.h, declared here to keep the include list untouched
++namespace kexsuite { HWND windowFromPoint(POINT screenPoint); }
+ 
+ void TabBarPlus::draggingCursor(POINT screenPoint)
+ {
+-	HWND hWin = ::WindowFromPoint(screenPoint);
++	HWND hWin = kexsuite::windowFromPoint(screenPoint); // KEX: sees through the glass text area
+ 	if (_hSelf == hWin)
+ 		::SetCursor(::LoadCursor(NULL, IDC_ARROW));
+ 	else
 diff --git a/PowerEditor/src/WinControls/TabBar/TabBar.h b/PowerEditor/src/WinControls/TabBar/TabBar.h
 index a2c3e1f..4a41b06 100644
 --- a/PowerEditor/src/WinControls/TabBar/TabBar.h

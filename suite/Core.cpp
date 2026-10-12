@@ -243,7 +243,7 @@ static void onReady()
     for (int i = 0; i < M_COUNT; ++i)
     {
         Module* m = modules[i];
-        if (settings.getInt(m->key(), L"Enabled", 1) && m->_checkOk)
+        if (settings.getInt(m->key(), L"Enabled", m->defaultOn() ? 1 : 0) && m->_checkOk)
             setModuleEnabled(i, true, false);
     }
     refreshPrefPages();
@@ -290,6 +290,7 @@ void setInfo(HINSTANCE inst, const NppData& d)
         modules[M_DESKTOP] = createDesktopSync();
         modules[M_SNAP] = createTabSnap();
         modules[M_KEYS] = createJetBrainsKeys();
+        modules[M_GLASS] = createGlassText();
     }
     catch (...) { for (Module*& m : modules) m = nullptr; }
 }

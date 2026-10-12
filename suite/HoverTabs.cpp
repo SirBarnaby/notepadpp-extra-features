@@ -117,7 +117,7 @@ private:
         bool inZone = zv >= 0;
         if (inZone)
         {
-            HWND under = ::WindowFromPoint(pt);
+            HWND under = kexsuite::windowFromPoint(pt);   // sees through the glass text area
             HWND root = under ? ::GetAncestor(under, GA_ROOT) : nullptr;
             if (root != n && under != _strip) inZone = false;   // another window covers the edge
         }
