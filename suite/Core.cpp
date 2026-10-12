@@ -2,6 +2,7 @@
 // the shared main-window subclass and the non-modal note window.
 #include "KexSuite.h"
 #include <cwchar>
+#include <shlobj.h>
 
 namespace kex {
 
@@ -143,6 +144,17 @@ static LRESULT CALLBACK mainSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PT
 {
     switch (m)
     {
+    case WM_COMMAND:
+        // the KEX group in the Settings menu (SettingsMenu.cpp)
+        if (l == 0 && HIWORD(w) <= 1)
+        {
+            try { if (settingsMenuCommand(LOWORD(w))) return 0; }
+            catch (...) { log(L"exception in a KEX Settings menu command"); return 0; }
+        }
+        break;
+    case WM_INITMENUPOPUP:
+        try { settingsMenuPopup(reinterpret_cast<HMENU>(w)); } catch (...) {}
+        break;
     case WM_COPYDATA:
     {
         // a new Notepad++ on another desktop asks for a copy of the tabs (DesktopSync.cpp)
@@ -197,6 +209,23 @@ protected:
 };
 static CoreWindow g_core;
 
+// After an update Windows can keep showing the old app icon (Start menu, taskbar pins) from its icon
+// cache. The first time a new notepad++.exe runs, it tells the shell its icon may have changed.
+static void refreshShellIconOnce()
+{
+    wchar_t exe[MAX_PATH] = {};
+    ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    WIN32_FILE_ATTRIBUTE_DATA fa{};
+    if (!::GetFileAttributesExW(exe, GetFileExInfoStandard, &fa)) return;
+    wchar_t stamp[24];
+    swprintf(stamp, 24, L"%08lx%08lx", fa.ftLastWriteTime.dwHighDateTime, fa.ftLastWriteTime.dwLowDateTime);
+    if (settings.getStr(L"General", L"IconRefreshedFor") == stamp) return;
+    settings.setStr(L"General", L"IconRefreshedFor", stamp);
+    ::SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, exe, nullptr);
+    ::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
+    log(L"new notepad++.exe: asked the shell to refresh its icon");
+}
+
 static void onReady()
 {
     g_ready = true;
@@ -207,6 +236,8 @@ static void onReady()
     g_core.createMsgWindow(L"KexSuiteCore");
     if (::SetWindowSubclass(npp._nppHandle, mainSubclass, kSubclassId, 0)) g_subclassed = true;
     else log(L"could not subclass the Notepad++ main window");
+    buildSettingsMenu();
+    refreshShellIconOnce();
 
     if (selfTestMode) useFakeDesktops(true);
     try { desktopLoadPendingCopy(); }   // a new window on its own desktop: the first window's tabs, before the features start

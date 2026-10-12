@@ -196,6 +196,42 @@ std::wstring windowTitle(HWND w)
     return t;
 }
 
+// ---- the app's name and icon -----------------------------------------------------------------
+std::wstring exeVersionString(const wchar_t* name)
+{
+    wchar_t exe[MAX_PATH] = {};
+    ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    DWORD unused = 0, size = ::GetFileVersionInfoSizeW(exe, &unused);
+    std::vector<BYTE> buf(size);
+    if (!size || !::GetFileVersionInfoW(exe, 0, size, buf.data())) return L"";
+    wchar_t* value = nullptr; UINT len = 0;
+    std::wstring key = std::wstring(L"\\StringFileInfo\\040904b0\\") + name;
+    if (!::VerQueryValueW(buf.data(), key.c_str(), reinterpret_cast<void**>(&value), &len) || !value) return L"";
+    return value;
+}
+
+// the colour of the class icon at 32 px, at (x, y), drawn on white
+COLORREF iconPixel(HICON icon, int x, int y)
+{
+    HDC screen = ::GetDC(nullptr), dc = ::CreateCompatibleDC(screen);
+    HBITMAP bmp = ::CreateCompatibleBitmap(screen, 32, 32);
+    HGDIOBJ old = ::SelectObject(dc, bmp);
+    RECT r{ 0, 0, 32, 32 };
+    ::FillRect(dc, &r, static_cast<HBRUSH>(::GetStockObject(WHITE_BRUSH)));
+    ::DrawIconEx(dc, 0, 0, icon, 32, 32, 0, nullptr, DI_NORMAL);
+    COLORREF c = ::GetPixel(dc, x, y);
+    ::SelectObject(dc, old); ::DeleteObject(bmp); ::DeleteDC(dc); ::ReleaseDC(nullptr, screen);
+    return c;
+}
+
+const int kAboutBitnessId = 1707;   // IDC_VERSION_BIT in Notepad++'s resource.h: the About box's bitness label
+HWND g_about = nullptr;
+BOOL CALLBACK findAbout(HWND w, LPARAM)
+{
+    if (::IsWindowVisible(w) && ::GetDlgItem(w, kAboutBitnessId)) { g_about = w; return FALSE; }
+    return TRUE;
+}
+
 // The tabs a copy holds: every tab except empty untitled ones (Notepad++'s own sessions leave those out).
 void recordDeskLayout()
 {
@@ -828,12 +864,34 @@ void buildSteps()
         return 600;
     });
 
-    // ---- Settings > KEX Features... and the two Preferences pages ------------------------------
+    // ---- the KEX group in the Settings menu, and the Preferences pages ------------------------
     add([] {
         HMENU mm = reinterpret_cast<HMENU>(nppMsg(NPPM_GETMENUHANDLE, NPPMAINMENU, 0));
-        wchar_t t[64] = {};
-        ::GetMenuStringW(mm, IDM_SETTING_KEX, t, 63, MF_BYCOMMAND);
-        check(::GetMenuState(mm, IDM_SETTING_KEX, MF_BYCOMMAND) != static_cast<UINT>(-1), L"M1", L"Settings menu has \"%ls\"", t);
+        HMENU sm = subWith(mm, IDM_SETTING_PREFERENCE);
+        const int n = sm ? ::GetMenuItemCount(sm) : 0;
+        static const wchar_t* const kNames[PAGE_COUNT] = { L"KEX Editing", L"KEX Tabs", L"KEX Windows", L"KEX Highlighting", L"KEX Quick Note" };
+        bool group = n > PAGE_COUNT && (::GetMenuState(sm, n - PAGE_COUNT - 1, MF_BYPOSITION) & MF_SEPARATOR);
+        std::wstring names, items;
+        for (int p = 0; p < PAGE_COUNT && group; ++p)
+        {
+            wchar_t t[64] = {};
+            ::GetMenuStringW(sm, n - PAGE_COUNT + p, t, 63, MF_BYPOSITION);
+            HMENU sub = ::GetSubMenu(sm, n - PAGE_COUNT + p);
+            int switches = 0, onPage = 0;
+            for (int i = 0; i < M_COUNT; ++i)
+                if (pageOfModule(i) == p) { ++onPage; if (menuHasId(sub, settingsSwitchId(i))) ++switches; }
+            const int last = sub ? ::GetMenuItemCount(sub) - 1 : -1;
+            if (!sub || sub != settingsSubmenu(p) || wcscmp(t, kNames[p]) || switches != onPage
+                || ::GetMenuItemID(sub, last) != settingsPreferencesId(p)) group = false;
+            names += (p ? L", " : L"") + std::wstring(t);
+            items += (p ? L" / " : L"") + std::to_wstring(switches) + L"+1";
+        }
+        check(group, L"M1", L"the Settings menu ends with the KEX group: %ls (feature switches + Preferences...: %ls)", names.c_str(), items.c_str());
+        int import = -1;
+        for (int i = 0; i < n; ++i)
+            if (HMENU sub = ::GetSubMenu(sm, i)) if (menuHasId(sub, IDM_SETTING_IMPORTPLUGIN)) import = i;
+        check(import == 4 && !menuHasId(mm, IDM_SETTING_KEX), L"M1b",
+              L"Notepad++'s own Settings items keep their places (Import is item %d, as upstream) and the old KEX Features item is gone", import + 1);
         HMENU pm = reinterpret_cast<HMENU>(nppMsg(NPPM_GETMENUHANDLE, NPPPLUGINMENU, 0));
         bool inPlugins = false;
         for (int i = 0, n = ::GetMenuItemCount(pm); i < n; ++i)
@@ -846,15 +904,93 @@ void buildSteps()
         ::PostMessageW(npp._nppHandle, WM_SYSCOMMAND, SC_KEYMENU, 't');   // open Settings from the menu bar
         return 500;
     });
+    add([] { tap(VK_UP); tap(VK_UP); tap(VK_UP); tap(VK_RIGHT); return 500; });   // up to KEX Windows, and open it
     add([] { return shot(L"menu-settings-kex"); });
     add([] { ::EndMenu(); return 300; });
     add([] {
-        openPreferences();
+        // the switches show what runs; picking one switches the feature and stores it, as the Preferences tick does
+        bool marks = true;
+        for (int p = 0; p < PAGE_COUNT; ++p)
+        {
+            HMENU sub = settingsSubmenu(p);
+            ::SendMessageW(npp._nppHandle, WM_INITMENUPOPUP, reinterpret_cast<WPARAM>(sub), MAKELPARAM(0, FALSE));
+            for (int i = 0; i < M_COUNT; ++i)
+                if (pageOfModule(i) == p && ((::GetMenuState(sub, settingsSwitchId(i), MF_BYCOMMAND) & MF_CHECKED) != 0) != modules[i]->isEnabled())
+                    marks = false;
+        }
+        check(marks, L"M3", L"each feature's switch in the KEX submenus is ticked exactly when the feature runs");
+        const bool was = modules[M_CARET]->isEnabled();
+        ::SendMessageW(npp._nppHandle, WM_COMMAND, settingsSwitchId(M_CARET), 0);
+        const bool flipped = modules[M_CARET]->isEnabled() != was;
+        const int stored = settings.getInt(modules[M_CARET]->key(), L"Enabled", -1);
+        ::SendMessageW(npp._nppHandle, WM_COMMAND, settingsSwitchId(M_CARET), 0);
+        const int back = settings.getInt(modules[M_CARET]->key(), L"Enabled", -1);
+        check(flipped && stored == (was ? 0 : 1) && modules[M_CARET]->isEnabled() == was && back == (was ? 1 : 0), L"M4",
+              L"Settings > KEX Editing > Smooth caret switches it %ls and back, and remembers it (stored %d, then %d)", was ? L"off" : L"on", stored, back);
+        ::SendMessageW(npp._nppHandle, WM_COMMAND, settingsPreferencesId(PAGE_TABS), 0);
+        pump(300);
+        HWND d = prefDialog(), p = prefPage(PAGE_TABS);
+        check(d && ::IsWindowVisible(d) && p && ::IsWindowVisible(p), L"M5", L"Settings > KEX Tabs > Preferences... opens Preferences on the \"KEX Tabs\" page");
+        focusEditor();
+        return 300;
+    });
+    // ---- the name "Notepad++ KEX" and the badged icon ----------------------------------------
+    add([] {
+        wchar_t cls[32] = {};
+        ::GetClassNameW(npp._nppHandle, cls, 31);
+        const std::wstring title = windowTitle(npp._nppHandle);
+        check(title.find(L" - Notepad++ KEX") != std::wstring::npos && !wcscmp(cls, L"Notepad++"), L"B1",
+              L"the title bar says \"%ls\"; the window class stays \"%ls\" for tools that look for Notepad++", title.c_str(), cls);
+        const std::wstring desc = exeVersionString(L"FileDescription"), product = exeVersionString(L"ProductName");
+        check(desc == L"Notepad++ KEX" && product == L"Notepad++ KEX", L"B2",
+              L"notepad++.exe describes itself as \"%ls\" (product \"%ls\"), the name the taskbar and Task Manager show", desc.c_str(), product.c_str());
+        // the badge: a violet-blue disc in the bottom-right corner, here outside its white sparkle
+        HICON icon = reinterpret_cast<HICON>(::GetClassLongPtrW(npp._nppHandle, GCLP_HICON));
+        COLORREF c = icon ? iconPixel(icon, 21, 27) : 0;
+        const int r = GetRValue(c), g = GetGValue(c), b = GetBValue(c);
+        check(icon && b > 180 && b - g > 70 && r > g, L"B3", L"the app icon carries the KEX badge (32 px icon at 21,27: rgb %d,%d,%d)", r, g, b);
+        nppMsg(NPPM_MENUCOMMAND, 0, IDM_ABOUT);
+        return 600;
+    });
+    add([] {
+        g_about = nullptr;
+        ::EnumThreadWindows(::GetCurrentThreadId(), findAbout, 0);
+        std::wstring text;
+        RECT vr{}, br{};
+        int width = 0;
+        for (HWND c = g_about ? ::GetWindow(g_about, GW_CHILD) : nullptr; c; c = ::GetWindow(c, GW_HWNDNEXT))
+        {
+            wchar_t t[64] = {};
+            ::GetWindowTextW(c, t, 63);
+            if (wcsncmp(t, L"Notepad++", 9)) continue;
+            text = t;
+            ::GetWindowRect(c, &vr);
+            HDC dc = ::GetDC(c);
+            HGDIOBJ of = ::SelectObject(dc, reinterpret_cast<HFONT>(::SendMessageW(c, WM_GETFONT, 0, 0)));
+            SIZE sz{}; ::GetTextExtentPoint32W(dc, t, static_cast<int>(wcslen(t)), &sz);
+            ::SelectObject(dc, of); ::ReleaseDC(c, dc);
+            width = sz.cx;
+            break;
+        }
+        if (g_about) ::GetWindowRect(::GetDlgItem(g_about, kAboutBitnessId), &br);
+        check(text.compare(0, 15, L"Notepad++ KEX v") == 0 && br.left >= vr.left + width, L"B4",
+              L"the About box says \"%ls\", with the bitness after it (text ends at %ld, bitness starts at %ld)", text.c_str(), vr.left + width, br.left);
+        return 300;
+    });
+    add([] { return shot(L"about-kex"); });
+    add([] {
+        if (g_about) ::SendMessageW(g_about, WM_COMMAND, IDCANCEL, 0);
+        focusEditor();
+        return 300;
+    });
+    add([] {
+        ::SendMessageW(npp._nppHandle, WM_COMMAND, settingsPreferencesId(PAGE_EDITING), 0);
         pump(300);
         HWND p = prefPage(0), d = prefDialog();
         bool ticks = true;
         for (int i = 0; i < M_COUNT; ++i) if (enableTicked(i) != modules[i]->isEnabled()) ticks = false;
-        check(d && ::IsWindowVisible(d) && p && ::IsWindowVisible(p), L"P1", L"Settings > KEX Features opens Preferences on the \"KEX Editing\" page");
+        check(d && ::IsWindowVisible(d) && p && ::IsWindowVisible(p) && !::IsWindowVisible(prefPage(PAGE_TABS)), L"P1",
+              L"Settings > KEX Editing > Preferences... opens Preferences on the \"KEX Editing\" page");
         check(ticks, L"P2", L"the on/off ticks on both pages match the running features");
         tlog(L"INFO page summary: \"%ls\"", itemText(p, IDC_SUMMARY).c_str());
         return 300;

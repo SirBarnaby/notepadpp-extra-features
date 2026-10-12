@@ -142,7 +142,15 @@ bool isPostItMode();
 enum PrefPageId { PAGE_EDITING = 0, PAGE_TABS, PAGE_WINDOWS, PAGE_HIGHLIGHT, PAGE_NOTE, PAGE_COUNT };
 HWND prefPage(int i);              // a KEX Preferences page (PrefPageId), once created
 int pageOfModule(int module);      // the page a feature's settings are on
-void openPreferences();            // Settings > KEX Features...
+void openPreferences();            // Preferences on the "KEX Editing" page
+// The KEX group in the Settings menu (SettingsMenu.cpp): a submenu per Preferences page, with a switch
+// for each feature on it and "Preferences..." to open the page.
+bool buildSettingsMenu();
+void settingsMenuPopup(HMENU m);   // WM_INITMENUPOPUP
+bool settingsMenuCommand(UINT id); // WM_COMMAND; true when it was one of the group's
+HMENU settingsSubmenu(int page);
+UINT settingsSwitchId(int module);
+UINT settingsPreferencesId(int page);
 
 // Main-window subclass hooks (owned by the core, consulted by modules).
 struct MainHooks {

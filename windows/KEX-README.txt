@@ -3,7 +3,8 @@ Notepad++ KEX
 
 This is the official Notepad++ portable package of the same version, except that notepad++.exe
 is built from Notepad++'s source with the KEX patch: four views, snap-out windows and the KEX
-features below, built in. (plugins\KexSuite is an empty leftover for older update scripts; Notepad++
+features below, built in. It calls itself "Notepad++ KEX" in the title bar, the taskbar and the
+About box, and its icon is Notepad++'s own with a small sparkle badge in the corner. (plugins\KexSuite is an empty leftover for older update scripts; Notepad++
 KEX ignores it and Install-KEX.cmd removes it.)
 The updater folder is removed and disableNppAutoUpdate.xml is present, so an official update
 can't silently replace the KEX build. (The official notepad++.exe would drop the four views.)
@@ -37,11 +38,12 @@ Four views
   * Older plugins only know two views. Their commands are blocked (with a message) while view 3
     or 4 has focus, so they can't edit the wrong file.
 
-KEX features (Settings > KEX Features)
---------------------------------------
-Settings > KEX Features opens Preferences on the "KEX Editing" page; "KEX Tabs", "KEX Windows",
-"KEX Highlighting" and "KEX Quick Note" are just below it. Each feature has an on/off tick there
-and its settings next to it; changes apply at once.
+KEX features (the KEX group in the Settings menu)
+-------------------------------------------------
+The bottom of the Settings menu holds the KEX group: KEX Editing, KEX Tabs, KEX Windows,
+KEX Highlighting and KEX Quick Note. Each submenu has an on/off switch for every feature on that
+page and "Preferences...", which opens Preferences on the page of the same name. There each
+feature has its on/off tick and its settings next to it; changes apply at once.
   * Tab snapping (KEX Tabs): press a tab anywhere (its name too) and pull; the tab lifts off the
     bar and follows the mouse. Towards the edge of a view a preview shows where a new view will
     open (half of that view, so a quarter of the window once there are two side by side); drop it

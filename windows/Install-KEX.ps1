@@ -147,6 +147,13 @@ function Remove-OldPlugin($npp) {
     if (-not (Test-Path $old)) { Log 'Removed the old KEX Suite plugin folder; its features are built into Notepad++ now.' }
 }
 
+# Windows keeps showing an exe's old icon (Start menu, taskbar pins) from its icon cache; refresh it
+# so the KEX badge, or the plain icon after an uninstall, shows at once.
+function Update-IconCache {
+    $tool = Join-Path $env:SystemRoot 'System32\ie4uinit.exe'
+    if (Test-Path $tool) { Start-Process $tool -ArgumentList '-show' -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue }
+}
+
 function Install-Package($pkg, $npp) {
     $exe = Join-Path $npp 'notepad++.exe'
     $backup = Join-Path $npp 'notepad++.exe.kex-original'
@@ -171,7 +178,7 @@ function Install-Package($pkg, $npp) {
         }
     }
 
-    Wait-NppClosed "Notepad++ $want with four views is ready. It installs when you close Notepad++."
+    Wait-NppClosed "Notepad++ KEX $want is ready. It installs when you close Notepad++."
     if ($installer) {
         Log "Running the official Notepad++ $want installer..."
         $p = Start-Process $installer -ArgumentList '/S' -Wait -PassThru
@@ -182,6 +189,7 @@ function Install-Package($pkg, $npp) {
     elseif (-not (Test-Kex $exe)) { Copy-Item $exe $backup -Force }
 
     Copy-Item $newExe $exe -Force
+    Update-IconCache
     Remove-OldPlugin $npp
     $noUpdate = Join-Path $npp 'disableNppAutoUpdate.xml'
     if (-not (Test-Path $noUpdate)) {
@@ -248,7 +256,7 @@ function Do-Check {
     Copy-Item (Join-Path $pkg 'Install-KEX.ps1') (Join-Path $State 'Install-KEX.ps1') -Force   # newer copy of this script
     Remove-Item $zip, $unpacked -Recurse -Force -ErrorAction SilentlyContinue
     $st.installed = $stamp; $st.warned = ''; Save-State $st
-    Notify "Updated to Notepad++ $want with four views."
+    Notify "Updated to Notepad++ KEX $want."
 }
 
 function Do-Uninstall {
@@ -262,6 +270,7 @@ function Do-Uninstall {
         else { Remove-Item $backup }
     }
     if (Test-Kex $exe) { Write-Host 'The official notepad++.exe could not be restored; reinstall Notepad++ from notepad-plus-plus.org.' -ForegroundColor Yellow }
+    Update-IconCache
     foreach ($m in (Join-Path $npp 'kex-created-disableNppAutoUpdate'), (Join-Path $pluginDir 'kex-created-disableNppAutoUpdate')) {
         if (Test-Path $m) { Remove-Item (Join-Path $npp 'disableNppAutoUpdate.xml') -ErrorAction SilentlyContinue; Remove-Item $m }
     }

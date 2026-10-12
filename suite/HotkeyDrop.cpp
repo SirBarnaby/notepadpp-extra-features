@@ -88,7 +88,7 @@ public:
         if (!s_stats.registered && s_stats.byOtherNpp)
             ::SetTimer(hwnd(), TIMER_TAKEOVER, 3000, nullptr);   // take the hotkey over once that window closes
         else if (!s_stats.registered && !selfTestMode)
-            showNote(L"KEX: the quick note hotkey " + s_stats.text + L" is already taken by another program. Pick another one in Settings > KEX Features.", 8000);
+            showNote(L"KEX: the quick note hotkey " + s_stats.text + L" is already taken by another program. Pick another one in Settings > KEX Quick Note > Preferences.", 8000);
         return true;
     }
 

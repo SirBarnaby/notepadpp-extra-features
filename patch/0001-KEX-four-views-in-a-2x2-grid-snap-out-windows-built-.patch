@@ -1,4 +1,4 @@
-From 7a183a81b49cc4425a386e89a29f419e7c996545 Mon Sep 17 00:00:00 2001
+From bf626c85927800ff46718a3a666d670fccdcd5c4 Mon Sep 17 00:00:00 2001
 From: KEX patch <noreply@anthropic.com>
 Date: Sun, 11 Oct 2026 15:07:35 +0000
 Subject: [PATCH] KEX: four views in a 2x2 grid, snap-out windows, built-in KEX
@@ -24,18 +24,27 @@ move between desktops.
 A tab drag starts from anywhere on the tab once the mouse has moved the
 system drag distance, and tells the suite so it can lift the tab.
 
+The app calls itself "Notepad++ KEX" in the title bar, the About box,
+the debug info and the version resource (the taskbar and Task Manager
+name); the window class stays "Notepad++". Settings > KEX Features gives
+way to the suite's KEX group at the end of the Settings menu, so
+Notepad++'s own Settings items keep their upstream positions;
+NPPM_KEX_SHOWPREFPAGE opens Preferences on a given KEX page.
+
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
 ---
  PowerEditor/gcc/makefile                      |    1 +
- PowerEditor/src/KexViews.cpp                  | 1253 +++++++++++++++++
- PowerEditor/src/MISC/PluginsManager/KexApi.h  |   48 +
+ PowerEditor/src/KexViews.cpp                  | 1259 +++++++++++++++++
+ PowerEditor/src/MISC/PluginsManager/KexApi.h  |   51 +
  .../src/MISC/PluginsManager/KexSuiteHost.h    |   54 +
  .../MISC/PluginsManager/PluginsManager.cpp    |   52 +-
  .../src/MISC/PluginsManager/PluginsManager.h  |    6 +
- PowerEditor/src/Notepad_plus.cpp              |  501 ++++---
+ PowerEditor/src/Notepad_plus.cpp              |  503 ++++---
  PowerEditor/src/Notepad_plus.h                |   66 +-
- PowerEditor/src/Notepad_plus.rc               |    1 +
+ PowerEditor/src/Notepad_plus.rc               |    4 +-
+ PowerEditor/src/Notepad_plus_Window.cpp       |    2 +-
+ PowerEditor/src/Notepad_plus_Window.h         |    4 +
  PowerEditor/src/NppBigSwitch.cpp              |  164 ++-
  PowerEditor/src/NppCommands.cpp               |  116 +-
  PowerEditor/src/NppIO.cpp                     |  311 ++--
@@ -43,6 +52,7 @@ Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
  PowerEditor/src/Parameters.cpp                |   55 +-
  PowerEditor/src/Parameters.h                  |   15 +
  .../ScintillaComponent/ScintillaEditView.cpp  |    7 +-
+ .../src/WinControls/AboutDlg/AboutDlg.cpp     |   43 +-
  .../src/WinControls/DockingWnd/Gripper.cpp    |    3 +-
  .../WinControls/Preference/preferenceDlg.cpp  |   42 +
  .../WinControls/Preference/preferenceDlg.h    |   12 +
@@ -54,7 +64,7 @@ Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
  .../VerticalFileSwitcherListView.cpp          |   12 +-
  PowerEditor/src/menuCmdID.h                   |   21 +
  PowerEditor/src/winmain.cpp                   |    9 +
- 27 files changed, 2446 insertions(+), 496 deletions(-)
+ 30 files changed, 2504 insertions(+), 501 deletions(-)
  create mode 100644 PowerEditor/src/KexViews.cpp
  create mode 100644 PowerEditor/src/MISC/PluginsManager/KexApi.h
  create mode 100644 PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
@@ -73,10 +83,10 @@ index 3f38aa9..849daf5 100644
  
 diff --git a/PowerEditor/src/KexViews.cpp b/PowerEditor/src/KexViews.cpp
 new file mode 100644
-index 0000000..7d944f7
+index 0000000..11a82af
 --- /dev/null
 +++ b/PowerEditor/src/KexViews.cpp
-@@ -0,0 +1,1253 @@
+@@ -0,0 +1,1259 @@
 +// This file is part of the KEX four-view patch for Notepad++.
 +//
 +// This program is free software: you can redistribute it and/or modify
@@ -1290,6 +1300,12 @@ index 0000000..7d944f7
 +		case NPPM_KEX_LOADDESKTOPCOPY:
 +			return kexLoadDesktopCopy(reinterpret_cast<const wchar_t*>(lParam));
 +
++		case NPPM_KEX_SHOWPREFPAGE:
++			command(IDM_SETTING_KEX); // opens Preferences (on the first KEX page)
++			if (wParam > 0)
++				_preference.showDialogByName(kexsuite::prefPageName(static_cast<int>(wParam)));
++			return TRUE;
++
 +		case NPPM_INTERNAL_KEX_TABDRAG:
 +		{
 +			kexOnTabDrag(static_cast<int>(wParam), reinterpret_cast<HWND>(lParam));
@@ -1332,10 +1348,10 @@ index 0000000..7d944f7
 +}
 diff --git a/PowerEditor/src/MISC/PluginsManager/KexApi.h b/PowerEditor/src/MISC/PluginsManager/KexApi.h
 new file mode 100644
-index 0000000..29d0a36
+index 0000000..c1e14fd
 --- /dev/null
 +++ b/PowerEditor/src/MISC/PluginsManager/KexApi.h
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,51 @@
 +// KexApi.h - messages added to Notepad++ by the KEX four-view patch.
 +//
 +// The patch gives Notepad++ four editing views (0 = main, 1 = second, 2 = third, 3 = fourth)
@@ -1384,6 +1400,9 @@ index 0000000..29d0a36
 +// lParam: a folder written by NPPM_KEX_SAVEDESKTOPCOPY. Opens those tabs here; files already open from
 +// the command line stay last and active. LRESULT: tabs opened, -1 on failure.
 +#define NPPM_KEX_LOADDESKTOPCOPY      (KEX_USER + 13)
++// wParam: a KEX Preferences page (0 "KEX Editing", 1 "KEX Tabs", 2 "KEX Windows", 3 "KEX Highlighting",
++// 4 "KEX Quick Note"). Opens Settings > Preferences on that page. LRESULT: TRUE.
++#define NPPM_KEX_SHOWPREFPAGE         (KEX_USER + 14)
 diff --git a/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h b/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
 new file mode 100644
 index 0000000..17f1a7a
@@ -1602,7 +1621,7 @@ index 5255325..673ace4 100644
  	bool relayPluginMessages(UINT Message, WPARAM wParam, LPARAM lParam);
  
 diff --git a/PowerEditor/src/Notepad_plus.cpp b/PowerEditor/src/Notepad_plus.cpp
-index 4bf5a90..309bbcc 100644
+index 4bf5a90..8250250 100644
 --- a/PowerEditor/src/Notepad_plus.cpp
 +++ b/PowerEditor/src/Notepad_plus.cpp
 @@ -136,6 +136,8 @@ static constexpr ToolBarButtonUnit toolBarIcons[]{
@@ -1792,6 +1811,15 @@ index 4bf5a90..309bbcc 100644
  	}
  
  
+@@ -4366,7 +4405,7 @@ void Notepad_plus::setTitle()
+ 		result += buf->getFullPathName();
+ 	}
+ 	result += L" - ";
+-	result += _pPublicInterface->getClassName();
++	result += _pPublicInterface->getAppName(); // KEX
+ 
+ 	if (_isAdministrator)
+ 		result += L" [Administrator]";
 @@ -4390,15 +4429,18 @@ void Notepad_plus::activateNextDoc(bool direction)
  
  	if (curIndex >= nbDoc)
@@ -2700,17 +2728,52 @@ index fefc2bd..725529e 100644
  
  	void loadBufferIntoView(BufferID id, int whichOne, bool dontClose = false);		//Doesn't _activate_ the buffer
 diff --git a/PowerEditor/src/Notepad_plus.rc b/PowerEditor/src/Notepad_plus.rc
-index 66486af..99bbdda 100644
+index 66486af..196c034 100644
 --- a/PowerEditor/src/Notepad_plus.rc
 +++ b/PowerEditor/src/Notepad_plus.rc
-@@ -1266,6 +1266,7 @@ BEGIN
-     POPUP "Se&ttings"
-     BEGIN
-         MENUITEM "Preferences...",          IDM_SETTING_PREFERENCE
-+        MENUITEM "KEX Features...",         IDM_SETTING_KEX
-         MENUITEM "Style Configurator...",   IDM_LANGSTYLE_CONFIG_DLG
-         MENUITEM "Shortcut Mapper...",      IDM_SETTING_SHORTCUT_MAPPER
-         MENUITEM SEPARATOR
+@@ -43,12 +43,12 @@ BEGIN
+         BLOCK "040904b0"
+         BEGIN
+             VALUE    "CompanyName",        "Don HO don.h@free.fr\0"
+-            VALUE    "FileDescription",    "Notepad++\0"
++            VALUE    "FileDescription",    "Notepad++ KEX\0"
+             VALUE    "FileVersion",        VERSION_PRODUCT_VALUE
+             VALUE    "InternalName",       "notepad++.exe\0"
+             VALUE    "LegalCopyright",     "Copyleft 1998-2023 by Don HO\0"
+             VALUE    "OriginalFilename",   "notepad++.exe\0"
+-            VALUE    "ProductName",        "Notepad++\0"
++            VALUE    "ProductName",        "Notepad++ KEX\0"
+             VALUE    "ProductVersion",     VERSION_PRODUCT_VALUE
+         END
+     END
+diff --git a/PowerEditor/src/Notepad_plus_Window.cpp b/PowerEditor/src/Notepad_plus_Window.cpp
+index 7ee5abf..a179326 100644
+--- a/PowerEditor/src/Notepad_plus_Window.cpp
++++ b/PowerEditor/src/Notepad_plus_Window.cpp
+@@ -99,7 +99,7 @@ void Notepad_plus_Window::init(HINSTANCE hInst, HWND parent, const wchar_t *cmdL
+ 	_hSelf = ::CreateWindowEx(
+ 		WS_EX_ACCEPTFILES | (_notepad_plus_plus_core._nativeLangSpeaker.isRTL() ? WS_EX_LAYOUTRTL : 0),
+ 		_className,
+-		L"Notepad++",
++		getAppName(), // KEX
+ 		(WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN),
+ 		// CreateWindowEx bug : set all 0 to walk around the problem
+ 		0, 0, 0, 0,
+diff --git a/PowerEditor/src/Notepad_plus_Window.h b/PowerEditor/src/Notepad_plus_Window.h
+index 928e949..97b57c1 100644
+--- a/PowerEditor/src/Notepad_plus_Window.h
++++ b/PowerEditor/src/Notepad_plus_Window.h
+@@ -56,6 +56,10 @@ public:
+ 		return _className;
+ 	}
+ 
++	static const wchar_t * getAppName() { // KEX: the name in the title bar; the window class stays "Notepad++"
++		return L"Notepad++ KEX";
++	}
++
+ 	HICON getAbsentIcoHandle() {
+ 		return _hIconAbsent;
+ 	}
 diff --git a/PowerEditor/src/NppBigSwitch.cpp b/PowerEditor/src/NppBigSwitch.cpp
 index 3a8dad0..889c1f8 100644
 --- a/PowerEditor/src/NppBigSwitch.cpp
@@ -3979,7 +4042,7 @@ index 71fb3b3..2a0cc6c 100644
  		if (!isEmptyNpp && (nppGUI._multiInstSetting == multiInstOnSession || nppGUI._multiInstSetting == multiInst))
  		{
 diff --git a/PowerEditor/src/NppNotification.cpp b/PowerEditor/src/NppNotification.cpp
-index 8b85774..bdbcefb 100644
+index 8b85774..d475355 100644
 --- a/PowerEditor/src/NppNotification.cpp
 +++ b/PowerEditor/src/NppNotification.cpp
 @@ -34,14 +34,19 @@ BOOL Notepad_plus::notify(SCNotification *notification)
@@ -4176,7 +4239,7 @@ index 8b85774..bdbcefb 100644
  			{
  				POINT p = sender->getDraggingPoint();
  
-+				// KEX: tab snapping (Settings > KEX Features) replaces the drop menu
++				// KEX: tab snapping (Settings > KEX Tabs) replaces the drop menu
 +				if (kexsuite::tabSnapOn() && kexSnapDrop(p, isInCtrlStat))
 +				{
 +					sender->resetDraggingPoint();
@@ -4504,6 +4567,74 @@ index 2462620..d60086f 100644
 +	execute(SCI_SETILEXER, 0, reinterpret_cast<LPARAM>(kexsuite::wrapLexer(CreateLexer(lexerNameID), _hSelf))); // KEX: live token styles
  	return true;
  }
+ 
+diff --git a/PowerEditor/src/WinControls/AboutDlg/AboutDlg.cpp b/PowerEditor/src/WinControls/AboutDlg/AboutDlg.cpp
+index 1b798b4..b5a5f38 100644
+--- a/PowerEditor/src/WinControls/AboutDlg/AboutDlg.cpp
++++ b/PowerEditor/src/WinControls/AboutDlg/AboutDlg.cpp
+@@ -48,6 +48,46 @@ using namespace std;
+ #endif
+ 
+ 
++// KEX: "Notepad++ KEX v8.x" instead of "Notepad++ v8.x"
++static wstring kexBrandedVersion()
++{
++	wstring version = NOTEPAD_PLUS_VERSION;
++	const wstring name = L"Notepad++";
++	if (version.compare(0, name.size(), name) == 0)
++		version.insert(name.size(), L" KEX");
++	return version;
++}
++
++// KEX: the About box shows the branded version; the bitness label after it moves along
++static void kexBrandAboutVersion(HWND dlg)
++{
++	const wstring version = NOTEPAD_PLUS_VERSION;
++	const wstring branded = kexBrandedVersion();
++	for (HWND child = ::GetWindow(dlg, GW_CHILD); child; child = ::GetWindow(child, GW_HWNDNEXT))
++	{
++		wchar_t text[64]{};
++		::GetWindowText(child, text, 64);
++		if (version != text)
++			continue;
++		HDC hdc = ::GetDC(child);
++		HGDIOBJ oldFont = ::SelectObject(hdc, reinterpret_cast<HFONT>(::SendMessage(child, WM_GETFONT, 0, 0)));
++		SIZE before{}, after{};
++		::GetTextExtentPoint32(hdc, version.c_str(), static_cast<int>(version.size()), &before);
++		::GetTextExtentPoint32(hdc, branded.c_str(), static_cast<int>(branded.size()), &after);
++		::SelectObject(hdc, oldFont);
++		::ReleaseDC(child, hdc);
++		::SetWindowText(child, branded.c_str());
++		if (HWND bit = ::GetDlgItem(dlg, IDC_VERSION_BIT))
++		{
++			RECT rc{};
++			::GetWindowRect(bit, &rc);
++			::MapWindowPoints(nullptr, dlg, reinterpret_cast<POINT*>(&rc), 2);
++			::SetWindowPos(bit, nullptr, rc.left + after.cx - before.cx, rc.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
++		}
++		break;
++	}
++}
++
+ // local DebugInfo helper
+ void AppendDisplayAdaptersInfo(wstring& strOut, const unsigned int maxAdaptersIn)
+ {
+@@ -137,6 +177,7 @@ intptr_t CALLBACK AboutDlg::run_dlgProc(UINT message, WPARAM wParam, LPARAM lPar
+ 			NppParameters& nppParam = NppParameters::getInstance();
+ 			LPCTSTR bitness = nppParam.archType() == IMAGE_FILE_MACHINE_I386 ? L"(32-bit)" : nppParam.archType() == IMAGE_FILE_MACHINE_AMD64 ? L"(64-bit)" : L"(ARM 64-bit)";
+ 			::SetDlgItemText(_hSelf, IDC_VERSION_BIT, bitness);
++			kexBrandAboutVersion(_hSelf); // KEX
+ 
+ 			::SendMessage(compileDateHandle, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(buildTime.c_str()));
+ 			::EnableWindow(compileDateHandle, FALSE);
+@@ -269,7 +310,7 @@ intptr_t CALLBACK DebugInfoDlg::run_dlgProc(UINT message, WPARAM wParam, LPARAM
+ 			NppDarkMode::autoSubclassAndThemeChildControls(_hSelf);
+ 
+ 			// Notepad++ version
+-			_debugInfoStr = NOTEPAD_PLUS_VERSION;
++			_debugInfoStr = kexBrandedVersion(); // KEX
+ 			_debugInfoStr += nppParam.archType() == IMAGE_FILE_MACHINE_I386 ? L"   (32-bit)" : nppParam.archType() == IMAGE_FILE_MACHINE_AMD64 ? L"   (64-bit)" : L"   (ARM 64-bit)";
+ 			_debugInfoStr += L"\r\n";
  
 diff --git a/PowerEditor/src/WinControls/DockingWnd/Gripper.cpp b/PowerEditor/src/WinControls/DockingWnd/Gripper.cpp
 index c9789c6..cc8ce09 100644
