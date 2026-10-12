@@ -4,7 +4,7 @@ An unofficial build of [Notepad++](https://github.com/notepad-plus-plus/notepad-
 
 - **Four editing views** in a 2×2 grid instead of two. Move or clone a document to any view, rotate the grid with the splitter, and give every new command a shortcut.
 - **Snap-out views.** Drag a tab outside Notepad++ (or use *Move to New Window*) and that view becomes its own window; close it or drop it on the tab bar to snap it back.
-- **Built-in KEX features**, each switchable in *Settings > KEX Features* (three pages in Preferences):
+- **Built-in KEX features**, each switchable in *Settings > KEX Features* (four pages in Preferences):
   - tab snapping: drag a tab to the edge of a view and a preview shows the new view it will open in; drop it on another view to move it there
   - JetBrains (IntelliJ) editor shortcuts: Alt+J next occurrence, Ctrl+W extend selection, Ctrl+/ comment, Ctrl+Y delete line, Shift+Alt+Up/Down move line and more
   - the same Notepad++ on every virtual desktop, with each desktop keeping its own active tab and position
@@ -13,6 +13,7 @@ An unofficial build of [Notepad++](https://github.com/notepad-plus-plus/notepad-
   - a quick note on a global hotkey (Ctrl+Alt+M): a small note fades in over any app and fades out on the next press
   - a tab strip that appears when you hover the top of a view in F12 mode
   - a glass text area (off until you tick it): Windows' live blur shows through the background of the text, while menus, toolbar and tabs stay solid
+  - live token styles: *Style All Occurrences of Token* also styles the occurrences you type later, can make a token bold or italic, and remembers the styled tokens of each file; it is in the right-click menu and on a menu key (Ctrl+Shift+H)
 
 Not affiliated with the Notepad++ project. Built from the official source of each release.
 

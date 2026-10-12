@@ -18,7 +18,7 @@ LOG=$TESTDIR/selftest-log.txt
 
 mkdir -p "$SHOTS"
 rm -rf "$NPP/plugins/KexSuite"   # the old plugin form of the suite (Notepad++ KEX skips it anyway)
-rm -f "$NPP/kex.ini" "$NPP/kex.log" "$NPP/kex-quicknote.txt" "$NPP/plugins/Config/KexSuite.ini" "$NPP/plugins/Config/KexQuickNote.txt"
+rm -f "$NPP/kex.ini" "$NPP/kex.log" "$NPP/kex-quicknote.txt" "$NPP/kex-tokens.txt" "$NPP/plugins/Config/KexSuite.ini" "$NPP/plugins/Config/KexQuickNote.txt"
 rm -rf "$TESTDIR"; mkdir -p "$TESTDIR"
 rm -f "$SHOTS"/*.png
 

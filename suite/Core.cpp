@@ -291,6 +291,7 @@ void setInfo(HINSTANCE inst, const NppData& d)
         modules[M_SNAP] = createTabSnap();
         modules[M_KEYS] = createJetBrainsKeys();
         modules[M_GLASS] = createGlassText();
+        modules[M_TOKENS] = createTokenStyles();
     }
     catch (...) { for (Module*& m : modules) m = nullptr; }
 }

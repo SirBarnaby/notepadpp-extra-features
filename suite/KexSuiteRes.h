@@ -4,6 +4,7 @@
 #define IDD_KEX_PAGE_EDITING 30500
 #define IDD_KEX_PAGE_TABS    30501
 #define IDD_KEX_PAGE_WINDOWS 30502
+#define IDD_KEX_PAGE_HIGHLIGHT 30503
 
 #define IDC_SUMMARY        1001
 #define IDC_L_EN           1100
@@ -48,3 +49,9 @@
 #define IDC_G_TINT         1802
 #define IDC_G_MARGINS      1803
 #define IDC_G_INFO         1804
+#define IDC_K_EN           1900
+#define IDC_K_STATUS       1901
+#define IDC_K_KEY          1902
+#define IDC_K_KEYSTATUS    1903
+#define IDC_K_REMEMBER     1904
+#define IDC_K_INFO         1905

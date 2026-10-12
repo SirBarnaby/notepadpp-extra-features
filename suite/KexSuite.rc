@@ -95,3 +95,20 @@ BEGIN
 
     LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
 END
+
+IDD_KEX_PAGE_HIGHLIGHT DIALOGEX 115, 10, 460, 205
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD
+FONT 8, "MS Shell Dlg", 0, 0, 0x1
+BEGIN
+    GROUPBOX        "Live token styles", -1, 4, 2, 452, 104
+    AUTOCHECKBOX    "Style All Occurrences of Token also styles the ones you type later, and can make them bold or italic", IDC_K_EN, 12, 15, 352, 10
+    LTEXT           "", IDC_K_STATUS, 370, 16, 78, 9
+    LTEXT           "Menu key:", -1, 12, 33, 36, 8
+    CONTROL         "", IDC_K_KEY, "msctls_hotkey32", WS_BORDER | WS_TABSTOP, 50, 31, 84, 12
+    LTEXT           "", IDC_K_KEYSTATUS, 140, 33, 150, 9
+    AUTOCHECKBOX    "Remember the styled tokens of each file", IDC_K_REMEMBER, 296, 32, 152, 10
+    LTEXT           "Right-click a word > Style All Occurrences of Token, or press the menu key, to give it one of the five styles, bold or italic. Text you type or paste later is styled too. Match case and whole word follow the Highlighting page; the colours are Mark Style 1-5 in the Style Configurator.", -1, 12, 50, 436, 28
+    LTEXT           "", IDC_K_INFO, 12, 86, 436, 9
+
+    LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
+END

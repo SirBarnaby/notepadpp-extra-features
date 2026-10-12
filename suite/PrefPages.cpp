@@ -1,4 +1,4 @@
-// PrefPages.cpp - Settings > Preferences > "KEX Editing", "KEX Tabs" and "KEX Windows" (the core
+// PrefPages.cpp - Settings > Preferences > "KEX Editing", "KEX Tabs", "KEX Windows" and "KEX Highlighting" (the core
 // creates the pages inside Notepad++'s Preferences dialog and hands their messages to prefPageProc).
 // Like the other Preferences pages, every change takes effect at once; numbers apply half a second
 // after the last keystroke.
@@ -12,8 +12,8 @@ namespace {
 
 const UINT_PTR TIMER_APPLY = 1;
 HWND g_pages[PAGE_COUNT] = {};
-const wchar_t* const kPageTitle[PAGE_COUNT] = { L"KEX Editing", L"KEX Tabs", L"KEX Windows" };
-const wchar_t* const kPageName[PAGE_COUNT] = { L"KexEditing", L"KexTabs", L"KexWindows" };
+const wchar_t* const kPageTitle[PAGE_COUNT] = { L"KEX Editing", L"KEX Tabs", L"KEX Windows", L"KEX Highlighting" };
+const wchar_t* const kPageName[PAGE_COUNT] = { L"KexEditing", L"KexTabs", L"KexWindows", L"KexHighlighting" };
 bool g_filling = false;
 
 struct IntField { int id; int module; const wchar_t* key; int def; };
@@ -41,9 +41,10 @@ const BoolField kBools[] = {
     { IDC_S_ANIM, M_SNAP, L"Animate", 1 },
     { IDC_J_ALL, M_KEYS, L"AlsoNotepadKeys", 1 },
     { IDC_G_MARGINS, M_GLASS, L"Margins", 1 },
+    { IDC_K_REMEMBER, M_TOKENS, L"Remember", 1 },
 };
-const int kEnable[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN, IDC_G_EN };
-const int kStatus[M_COUNT] = { IDC_L_STATUS, IDC_C_STATUS, IDC_H_STATUS, IDC_T_STATUS, IDC_D_STATUS, IDC_S_STATUS, IDC_J_STATUS, IDC_G_STATUS };
+const int kEnable[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN, IDC_G_EN, IDC_K_EN };
+const int kStatus[M_COUNT] = { IDC_L_STATUS, IDC_C_STATUS, IDC_H_STATUS, IDC_T_STATUS, IDC_D_STATUS, IDC_S_STATUS, IDC_J_STATUS, IDC_G_STATUS, IDC_K_STATUS };
 
 bool has(HWND d, int id) { return ::GetDlgItem(d, id) != nullptr; }
 
@@ -89,6 +90,11 @@ void fillStatus(HWND d)
         ::SetDlgItemTextW(d, IDC_D_INFO, info.c_str());
     }
     if (has(d, IDC_G_INFO)) ::SetDlgItemTextW(d, IDC_G_INFO, glassInfo().c_str());
+    if (has(d, IDC_K_INFO))
+    {
+        ::SetDlgItemTextW(d, IDC_K_INFO, modules[M_TOKENS]->isEnabled() ? tokenInfo().c_str() : L"");
+        ::SetDlgItemTextW(d, IDC_K_KEYSTATUS, modules[M_TOKENS]->isEnabled() ? L"pops the menu up at the caret" : L"");
+    }
 }
 
 void fill(HWND d)
@@ -110,6 +116,16 @@ void fill(HWND d)
         if (mods & MOD_SHIFT) hk |= HOTKEYF_SHIFT;
         ::SendDlgItemMessageW(d, IDC_H_KEY, HKM_SETHOTKEY, MAKEWORD(vk, hk), 0);
         ::CheckDlgButton(d, IDC_H_WIN, (mods & MOD_WIN) ? BST_CHECKED : BST_UNCHECKED);
+    }
+    if (has(d, IDC_K_KEY))
+    {
+        UINT mods = static_cast<UINT>(settings.getInt(modules[M_TOKENS]->key(), L"MenuModifiers", MOD_CONTROL | MOD_SHIFT));
+        UINT vk = static_cast<UINT>(settings.getInt(modules[M_TOKENS]->key(), L"MenuKey", 'H'));
+        BYTE hk = 0;
+        if (mods & MOD_CONTROL) hk |= HOTKEYF_CONTROL;
+        if (mods & MOD_ALT) hk |= HOTKEYF_ALT;
+        if (mods & MOD_SHIFT) hk |= HOTKEYF_SHIFT;
+        ::SendDlgItemMessageW(d, IDC_K_KEY, HKM_SETHOTKEY, MAKEWORD(vk, hk), 0);
     }
     fillStatus(d);
     g_filling = false;
@@ -149,6 +165,16 @@ void applyHotkey(HWND d)
     if (vk && mods) hotkeyApply(mods, vk);
 }
 
+void applyTokenKey(HWND d)
+{
+    WORD hk = static_cast<WORD>(::SendDlgItemMessageW(d, IDC_K_KEY, HKM_GETHOTKEY, 0, 0));
+    UINT vk = LOBYTE(hk), flags = HIBYTE(hk), mods = 0;
+    if (flags & HOTKEYF_CONTROL) mods |= MOD_CONTROL;
+    if (flags & HOTKEYF_ALT) mods |= MOD_ALT;
+    if (flags & HOTKEYF_SHIFT) mods |= MOD_SHIFT;
+    if (vk && mods) tokenMenuKeyApply(mods, vk);
+}
+
 void onCommand(HWND d, int id, int code)
 {
     if (g_filling) return;
@@ -167,7 +193,8 @@ void onCommand(HWND d, int id, int code)
             if (id == f.id)
             {
                 settings.setInt(modules[f.module]->key(), f.key, ::IsDlgButtonChecked(d, id) == BST_CHECKED ? 1 : 0);
-                restart(f.module);
+                if (f.module == M_TOKENS) modules[f.module]->loadOptions();   // a restart would take the styles away
+                else restart(f.module);
                 refreshPrefPages();
                 return;
             }
@@ -179,12 +206,13 @@ void onCommand(HWND d, int id, int code)
     if (code == EN_CHANGE)
     {
         if (id == IDC_H_KEY) { applyHotkey(d); fillStatus(d); return; }
+        if (id == IDC_K_KEY) { applyTokenKey(d); fillStatus(d); return; }
         for (const IntField& f : kInts)
             if (id == f.id) { ::SetTimer(d, TIMER_APPLY, 500, nullptr); return; }
     }
 }
 
-int pageIndex(HWND d) { return has(d, IDC_L_EN) ? PAGE_EDITING : (has(d, IDC_S_EN) ? PAGE_TABS : PAGE_WINDOWS); }
+int pageIndex(HWND d) { return has(d, IDC_L_EN) ? PAGE_EDITING : has(d, IDC_S_EN) ? PAGE_TABS : has(d, IDC_K_EN) ? PAGE_HIGHLIGHT : PAGE_WINDOWS; }
 
 } // namespace
 
@@ -197,6 +225,7 @@ int pageOfModule(int module)
     case M_LETTERS: case M_CARET: case M_KEYS: return PAGE_EDITING;
     case M_TABS: case M_SNAP: return PAGE_TABS;
     case M_GLASS: return PAGE_WINDOWS;
+    case M_TOKENS: return PAGE_HIGHLIGHT;
     default: return PAGE_WINDOWS;
     }
 }

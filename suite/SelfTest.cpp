@@ -7,6 +7,7 @@
 #include "KexSuite.h"
 #include "KexSuiteRes.h"
 #include "preference_rc.h"
+#include "SciLexer.h"
 #include <functional>
 #include <cstdio>
 #include <cstdarg>
@@ -247,7 +248,7 @@ int pressHotkey()
 }
 
 // The on/off tick of a feature on its Preferences page, clicked the way the user does it.
-const int kEnableBox[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN, IDC_G_EN };
+const int kEnableBox[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN, IDC_G_EN, IDC_K_EN };
 HWND enableBox(int module)
 {
     if (!prefPage(pageOfModule(module))) { openPreferences(); pump(300); }
@@ -418,6 +419,109 @@ LPARAM glassLParam(HWND catcher, POINT screenPt)
     return MAKELPARAM(screenPt.x, screenPt.y);
 }
 std::wstring classOf(HWND h) { wchar_t c[64] = {}; if (h) ::GetClassNameW(h, c, 63); return c; }
+
+// ---- live token styles ------------------------------------------------------------------------------
+const int kTokValue = 0x4B54;    // TokenStyles.cpp: the indicator value of its runs
+const char* kTokCpp =
+    "// token test\r\n"
+    "int alpha = 1;\r\n"
+    "int beta = alpha + 2; // alpha in a comment\r\n"
+    "/* block alpha */\r\n"
+    "void gamma() { return; }\r\n"
+    "int alphabet = 3; // not a whole word\r\n";
+
+std::string docText(HWND s)
+{
+    const char* p = reinterpret_cast<const char*>(sci(s, SCI_GETCHARACTERPOINTER));
+    return p ? std::string(p, static_cast<size_t>(sci(s, SCI_GETLENGTH))) : std::string();
+}
+// whole-word occurrences, found independently of Scintilla
+std::vector<intptr_t> wordsIn(HWND s, const std::string& w)
+{
+    std::vector<intptr_t> out;
+    const std::string t = docText(s);
+    auto wordc = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; };
+    for (size_t p = t.find(w); p != std::string::npos; p = t.find(w, p + 1))
+        if ((p == 0 || !wordc(t[p - 1])) && (p + w.size() >= t.size() || !wordc(t[p + w.size()]))) out.push_back(static_cast<intptr_t>(p));
+    return out;
+}
+bool tokOurs(HWND s, int ind, intptr_t a, intptr_t n)
+{
+    return sci(s, SCI_INDICATORVALUEAT, ind, a) == kTokValue && sci(s, SCI_INDICATOREND, ind, a) >= a + n;
+}
+int tokRuns(HWND s, int ind)
+{
+    int n = 0;
+    const intptr_t len = sci(s, SCI_GETLENGTH);
+    for (intptr_t p = 0; p < len;)
+    {
+        intptr_t e = sci(s, SCI_INDICATOREND, ind, p);
+        if (e <= p) break;
+        if (sci(s, SCI_INDICATORVALUEAT, ind, p) == kTokValue) ++n;
+        p = e;
+    }
+    return n;
+}
+int allOurs(HWND s, int ind, const std::vector<intptr_t>& at, intptr_t n)
+{
+    int k = 0;
+    for (intptr_t a : at) if (tokOurs(s, ind, a, n)) ++k;
+    return k;
+}
+// SCI_GETSTYLEAT hands styles above 127 back negative (a signed char)
+int styleAt(HWND s, intptr_t pos) { return static_cast<int>(sci(s, SCI_GETSTYLEAT, pos)) & 0xFF; }
+// every character of the occurrences drawn with a bold/italic variant of `base` (-1: any base)
+bool styledAs(HWND s, const std::vector<intptr_t>& at, intptr_t n, int flags, int base, std::wstring* why)
+{
+    for (intptr_t a : at)
+        for (intptr_t i = a; i < a + n; ++i)
+        {
+            const int st = styleAt(s, i);
+            int f = 0;
+            const int b = tokenVariantBase(s, st, &f);
+            const bool ok = flags ? (b >= 0 && f == flags && (base < 0 || b == base)) : b < 0;
+            if (!ok)
+            {
+                if (why) { wchar_t w[160]; swprintf(w, 160, L"position %d: style %d (base %d, flags %d)", static_cast<int>(i), st, b, f); *why = w; }
+                return false;
+            }
+        }
+    return true;
+}
+// what a failed restore step saw
+std::wstring tokDiag(HWND s)
+{
+    const std::vector<intptr_t> be = wordsIn(s, "beta"), ga = wordsIn(s, "gamma");
+    int f = 0;
+    const int gs = ga.empty() ? -1 : styleAt(s, ga[0]);
+    const int gb = ga.empty() ? -1 : tokenVariantBase(s, gs, &f);
+    wchar_t w[400];
+    swprintf(w, 400, L"[%ls, %d rules, wrapped %d, beta x%d value %d, gamma x%d style %d base %d flags %d, lexed to %d of %d]", curName().c_str(), tokenRuleCount(s),
+             tokenDocWrapped(s) ? 1 : 0, static_cast<int>(be.size()), be.empty() ? -1 : static_cast<int>(sci(s, SCI_INDICATORVALUEAT, 24, be[0])),
+             static_cast<int>(ga.size()), gs, gb, f, static_cast<int>(sci(s, SCI_GETENDSTYLED)), static_cast<int>(sci(s, SCI_GETLENGTH)));
+    return w;
+}
+void caretOn(HWND s, intptr_t pos) { sci(s, SCI_SETEMPTYSELECTION, pos + 1); }
+void tokCommand(UINT id) { ::SendMessageW(npp._nppHandle, WM_COMMAND, id, 0); }
+// let the views paint (that is when Scintilla lexes) and the posted work run
+void settle(int ms = 250) { for (int v = 0; v < views.count(); ++v) if (HWND s = views.sci(v)) ::UpdateWindow(s); pump(ms); }
+bool menuHasId(HMENU m, UINT id) { return m && ::GetMenuState(m, id, MF_BYCOMMAND) != static_cast<UINT>(-1); }
+HMENU subWith(HMENU m, UINT id)
+{
+    if (!m) return nullptr;
+    for (int i = 0, n = ::GetMenuItemCount(m); i < n; ++i)
+        if (::GetMenuItemID(m, i) == id) return m;
+    for (int i = 0, n = ::GetMenuItemCount(m); i < n; ++i)
+        if (HMENU r = subWith(::GetSubMenu(m, i), id)) return r;
+    return nullptr;
+}
+std::vector<int> g_tokBase;    // the lexer's styles of k.cpp before any bold/italic
+std::vector<int> stylesOf(HWND s)
+{
+    std::vector<int> v;
+    for (intptr_t i = 0, n = sci(s, SCI_GETLENGTH); i < n; ++i) v.push_back(styleAt(s, i));
+    return v;
+}
 
 void buildSteps()
 {
@@ -1595,6 +1699,221 @@ void buildSteps()
         check(!modules[M_GLASS]->isEnabled() && !layered && back && tech && !glassCatcherOf(npp._nppHandle) && settings.getInt(L"Glass", L"Enabled", 1) == 0, L"G15",
               L"glass off: the window is not layered, the theme's backgrounds and renderers are back, the catcher is gone");
         if (views.sci(1)) sci(views.sci(1), SCI_SETTECHNOLOGY, SC_TECHNOLOGY_DEFAULT);
+        return 200;
+    });
+    // ---- live token styles: Style All Occurrences of Token that follows the text, bold/italic, menus -----
+    add([] {
+        writeFile(path(L"k.cpp"), kTokCpp);
+        ::DeleteFileW(tokenStoreFile().c_str());
+        views.activate(0, 0);
+        pump(100);
+        open(L"k.cpp");
+        focusEditor();
+        pump(300);
+        HWND s = curSci();
+        TokenStats ts = tokenStats();
+        check(modules[M_TOKENS]->isEnabled() && ts.hooked && tokenDocWrapped(s) && ts.wrapperCalls > 0, L"L1",
+              L"live token styles on by default; k.cpp's lexer goes through the suite (%d lexers wrapped, %d alive)", ts.wrapperCalls, ts.liveWrappers);
+        std::vector<intptr_t> al = wordsIn(s, "alpha");
+        caretOn(s, al[0]);
+        tokCommand(IDM_SEARCH_MARKALLEXT1);   // Search > Style All Occurrences of Token > Using 1st Style
+        settle();
+        check(al.size() == 4 && allOurs(s, 25, al, 5) == 4 && tokRuns(s, 25) == 4 && tokenRuleCount(s) == 1, L"L2",
+              L"Style All Occurrences > 1st style on \"alpha\": %d of %d whole-word occurrences styled live (not \"alphabet\"), %d runs",
+              allOurs(s, 25, al, 5), static_cast<int>(al.size()), tokRuns(s, 25));
+        return 200;
+    });
+    add([] {
+        HWND s = curSci();
+        sci(s, SCI_DOCUMENTEND);
+        sci(s, SCI_REPLACESEL, 0, reinterpret_cast<LPARAM>("int delta = alpha * 2;\r\n"));
+        pump(300);   // painting lexes the new line
+        std::vector<intptr_t> al = wordsIn(s, "alpha");
+        check(al.size() == 5 && tokOurs(s, 25, al.back(), 5), L"L3", L"an \"alpha\" typed later is styled too (%d of %d)",
+              allOurs(s, 25, al, 5), static_cast<int>(al.size()));
+        // edit the first one into "alphx": it loses the style
+        intptr_t a = al[0];
+        sci(s, SCI_SETTARGETRANGE, a + 4, a + 5);
+        sci(s, SCI_REPLACETARGET, 1, reinterpret_cast<LPARAM>("x"));
+        settle();
+        check(!tokOurs(s, 25, a, 4) && sci(s, SCI_INDICATORVALUEAT, 25, a) == 0 && tokRuns(s, 25) == 4, L"L4",
+              L"an occurrence edited into \"alphx\" loses the style; the other %d keep it", tokRuns(s, 25));
+        sci(s, SCI_SETTARGETRANGE, a + 4, a + 5);
+        sci(s, SCI_REPLACETARGET, 1, reinterpret_cast<LPARAM>("a"));
+        settle();
+        g_tokBase = stylesOf(s);
+        return 100;
+    });
+    add([] {
+        HWND s = curSci();
+        std::vector<intptr_t> al = wordsIn(s, "alpha");
+        caretOn(s, al[1]);
+        tokCommand(static_cast<UINT>(tokenCommandId(0)));   // Bold
+        settle(400);
+        const intptr_t code = al[1];
+        const int st = styleAt(s, code);
+        int f = 0;
+        const int base = tokenVariantBase(s, st, &f);
+        check(base == SCE_C_IDENTIFIER && f == 1 && sci(s, SCI_STYLEGETWEIGHT, st) >= SC_WEIGHT_BOLD &&
+              sci(s, SCI_STYLEGETFORE, st) == sci(s, SCI_STYLEGETFORE, SCE_C_IDENTIFIER) && sci(s, SCI_STYLEGETSIZEFRACTIONAL, st) == sci(s, SCI_STYLEGETSIZEFRACTIONAL, SCE_C_IDENTIFIER),
+              L"L5", L"Bold: \"alpha\" in code is drawn with style %d, a bold copy of the identifier style %d (weight %d)", st, base, static_cast<int>(sci(s, SCI_STYLEGETWEIGHT, st)));
+        std::wstring why;
+        const bool all = styledAs(s, al, 5, 1, -1, &why);
+        int fc = 0, fb = 0;
+        const int bc = tokenVariantBase(s, styleAt(s, al[2]), &fc);
+        const int bb = tokenVariantBase(s, styleAt(s, al[3]), &fb);
+        // apart from the swapped styles, the lexer's output is exactly what it was
+        std::vector<int> now = stylesOf(s);
+        int diff = -1;
+        for (size_t i = 0; i < now.size() && i < g_tokBase.size(); ++i)
+        {
+            const int b = tokenVariantBase(s, now[i], nullptr);
+            if ((b >= 0 ? b : now[i]) != g_tokBase[i]) { diff = static_cast<int>(i); break; }
+        }
+        check(all && bc == SCE_C_COMMENTLINE && bb == SCE_C_COMMENT && now.size() == g_tokBase.size() && diff < 0,
+              L"L6", L"all 5 are bold, each on its own lexer style (comment line %d, block comment %d); every other character keeps the lexer's style (first difference: %d) %ls", bc, bb, diff, why.c_str());
+        return 200;
+    });
+    add([] { return shot(L"tokens-live"); });
+    add([] {
+        HWND s = curSci();
+        sci(s, SCI_DOCUMENTEND);
+        sci(s, SCI_REPLACESEL, 0, reinterpret_cast<LPARAM>("// more alpha here\r\n"));
+        settle(400);
+        std::vector<intptr_t> al = wordsIn(s, "alpha");
+        std::wstring why;
+        check(al.size() == 6 && styledAs(s, std::vector<intptr_t>{ al.back() }, 5, 1, SCE_C_COMMENTLINE, &why) && tokOurs(s, 25, al.back(), 5), L"L7",
+              L"a new \"alpha\" typed in a comment comes out bold and coloured straight away (%d found) %ls", static_cast<int>(al.size()), why.c_str());
+        caretOn(s, al[1]);
+        tokCommand(static_cast<UINT>(tokenCommandId(1)));   // Italic
+        settle(400);
+        const int st = styleAt(s, al[1]);
+        check(styledAs(s, al, 5, 3, -1, &why) && sci(s, SCI_STYLEGETITALIC, st) && sci(s, SCI_STYLEGETWEIGHT, st) >= SC_WEIGHT_BOLD, L"L8",
+              L"Italic too: style %d is bold italic %ls", st, why.c_str());
+        ::SendMessageW(npp._nppHandle, WM_UPDATESCINTILLAS_, FALSE, 0);   // Style Configurator's apply
+        settle(400);
+        const int st2 = styleAt(s, al[1]);
+        check(sci(s, SCI_STYLEGETITALIC, st2) && sci(s, SCI_STYLEGETWEIGHT, st2) >= SC_WEIGHT_BOLD && tokOurs(s, 25, al[1], 5), L"L9",
+              L"after Notepad++ applies the theme again, the bold italic and the colour are still there (style %d)", st2);
+        nppMsg(NPPM_SETCURRENTLANGTYPE, 0, L_PYTHON);
+        settle(300);
+        nppMsg(NPPM_SETCURRENTLANGTYPE, 0, L_CPP);
+        settle(400);
+        al = wordsIn(s, "alpha");
+        const size_t vp = docText(s).find("void");
+        const int vs = styleAt(s, static_cast<intptr_t>(vp)), vb = vp < g_tokBase.size() ? g_tokBase[vp] : -1;
+        check(styledAs(s, al, 5, 3, -1, &why) && vs == vb && vs != 0, L"L10",
+              L"switching the language to Python and back keeps them bold italic, and C++ colouring is back (\"void\" style %d, was %d) %ls (%d variants made, %d lexer collisions)",
+              vs, vb, why.c_str(), tokenStats().variantsMade, tokenStats().collisions);
+        return 200;
+    });
+    add([] {
+        HWND s = curSci();
+        caretOn(s, wordsIn(s, "beta")[0]);
+        focusEditor();
+        pump(100);
+        chord({ VK_CONTROL, VK_SHIFT }, 'H');
+        return 600;
+    });
+    add([] {
+        HWND menu = ::FindWindowW(L"#32768", nullptr);
+        check(menu && ::IsWindowVisible(menu) && tokenStats().menus >= 1, L"L11", L"Ctrl+Shift+H in the editor pops the token menu up at the caret");
+        return shot(L"tokens-menu");
+    });
+    add([] {
+        tap('2');     // "&2nd style"
+        return 500;
+    });
+    add([] {
+        HWND s = curSci();
+        std::vector<intptr_t> be = wordsIn(s, "beta");
+        check(!::FindWindowW(L"#32768", nullptr) && be.size() == 1 && tokOurs(s, 24, be[0], 4) && tokenRuleCount(s) == 2, L"L12",
+              L"picking \"2nd style\" there styles \"beta\" with Mark Style 2 (%d tokens styled now)", tokenRuleCount(s));
+        caretOn(s, be[0]);
+        ::PostMessageW(npp._nppHandle, WM_CONTEXTMENU, reinterpret_cast<WPARAM>(s), MAKELPARAM(-1, -1));
+        return 500;
+    });
+    add([] {
+        HWND menu = ::FindWindowW(L"#32768", nullptr);
+        HMENU top = menu ? reinterpret_cast<HMENU>(::SendMessageW(menu, MN_GETHMENU, 0, 0)) : nullptr;
+        HMENU sub = subWith(top, IDM_SEARCH_MARKALLEXT1);
+        if (sub) ::SendMessageW(npp._nppHandle, WM_INITMENUPOPUP, reinterpret_cast<WPARAM>(sub), 0);   // as Windows does when it opens
+        const bool bold = menuHasId(sub, static_cast<UINT>(tokenCommandId(0))) && menuHasId(sub, static_cast<UINT>(tokenCommandId(1))) && menuHasId(sub, static_cast<UINT>(tokenCommandId(2)));
+        const bool checked = sub && (::GetMenuState(sub, IDM_SEARCH_MARKALLEXT2, MF_BYCOMMAND) & MF_CHECKED) && !(::GetMenuState(sub, IDM_SEARCH_MARKALLEXT1, MF_BYCOMMAND) & MF_CHECKED);
+        ::EndMenu();
+        check(menu && sub && bold && checked, L"L13", L"right-click > Style All Occurrences of Token has Bold, Italic and Clear This Token, with \"Using 2nd Style\" ticked for \"beta\"");
+        HMENU mm = reinterpret_cast<HMENU>(nppMsg(NPPM_GETMENUHANDLE, NPPMAINMENU, 0));
+        HMENU msub = subWith(mm, IDM_SEARCH_MARKALLEXT1);
+        if (msub) ::SendMessageW(npp._nppHandle, WM_INITMENUPOPUP, reinterpret_cast<WPARAM>(msub), 0);
+        check(menuHasId(msub, static_cast<UINT>(tokenCommandId(0))), L"L14", L"and so does Search > Style All Occurrences of Token");
+        return 300;
+    });
+    add([] {
+        HWND s = curSci();
+        std::vector<intptr_t> al = wordsIn(s, "alpha");
+        caretOn(s, al[2] + 2);
+        tokCommand(static_cast<UINT>(tokenCommandId(2)));   // Clear This Token
+        settle(400);
+        al = wordsIn(s, "alpha");
+        std::wstring why;
+        check(tokRuns(s, 25) == 0 && styledAs(s, al, 5, 0, -1, &why) && tokenRuleCount(s) == 1 && tokOurs(s, 24, wordsIn(s, "beta")[0], 4), L"L15",
+              L"Clear This Token takes the colour, bold and italic off every \"alpha\" and leaves \"beta\" %ls", why.c_str());
+        // remembered per file: close k.cpp and open it again
+        FILE* f = _wfopen(tokenStoreFile().c_str(), L"rb");
+        char buf[2048] = {}; size_t n = f ? fread(buf, 1, sizeof(buf) - 1, f) : 0; if (f) fclose(f);
+        std::string stored(buf, n);
+        check(stored.find("k.cpp") != std::string::npos && stored.find("\tbeta") != std::string::npos && stored.find("\talpha") == std::string::npos, L"L16",
+              L"kex-tokens.txt remembers \"beta\" for k.cpp (%d bytes)", static_cast<int>(n));
+        caretOn(s, wordsIn(s, "gamma")[0]);
+        tokCommand(static_cast<UINT>(tokenCommandId(0)));   // gamma: bold, no colour
+        settle(300);
+        nppMsg(NPPM_SAVECURRENTFILE);
+        nppMsg(NPPM_MENUCOMMAND, 0, IDM_FILE_CLOSE);
+        pump(300);
+        open(L"k.cpp");
+        settle(500);
+        return 200;
+    });
+    add([] {
+        HWND s = curSci();
+        std::wstring why;
+        const std::vector<intptr_t> ga = wordsIn(s, "gamma");
+        check(curName() == L"k.cpp" && tokenRuleCount(s) == 2 && tokOurs(s, 24, wordsIn(s, "beta")[0], 4) && styledAs(s, ga, 5, 1, -1, &why), L"L17",
+              L"closed and opened again, k.cpp has its styled tokens back: \"beta\" coloured, \"gamma\" bold %ls %ls", why.c_str(), tokDiag(s).c_str());
+        openPreferences();
+        pump(300);
+        showPrefPage(L"KEX Highlighting");
+        pump(200);
+        HWND p = prefPage(PAGE_HIGHLIGHT);
+        const WORD hk = static_cast<WORD>(::SendDlgItemMessageW(p, IDC_K_KEY, HKM_GETHOTKEY, 0, 0));
+        const std::wstring st = itemText(p, IDC_K_STATUS), info = itemText(p, IDC_K_INFO);
+        check(p && ::IsWindowVisible(p) && st == L"Running" && LOBYTE(hk) == 'H' && HIBYTE(hk) == (HOTKEYF_CONTROL | HOTKEYF_SHIFT) && info.find(L"2 tokens") != std::wstring::npos,
+              L"L18", L"KEX Highlighting page: \"%ls\", menu key Ctrl+Shift+H, \"%ls\"", st.c_str(), info.c_str());
+        return 200;
+    });
+    add([] { return shot(L"preferences-kex-highlighting"); });
+    add([] {
+        HWND s = curSci();
+        clickEnable(M_TOKENS);   // off
+        pump(300);
+        settle(400);
+        std::wstring why;
+        const bool plain = styledAs(s, wordsIn(s, "gamma"), 5, 0, -1, &why);
+        check(!modules[M_TOKENS]->isEnabled() && !tokenStats().hooked && tokRuns(s, 24) == 0 && plain && settings.getInt(L"TokenStyles", L"Enabled", 1) == 0, L"L19",
+              L"switched off: the colours and the bold are gone %ls", why.c_str());
+        clickEnable(M_TOKENS);   // on again: the file's tokens come back from kex-tokens.txt
+        pump(300);
+        ::SendMessageW(prefDialog(), WM_COMMAND, IDCANCEL, 0);
+        settle(400);
+        check(modules[M_TOKENS]->isEnabled() && tokOurs(s, 24, wordsIn(s, "beta")[0], 4) && styledAs(s, wordsIn(s, "gamma"), 5, 1, -1, &why), L"L20",
+              L"and on again: k.cpp's tokens are back %ls %ls", why.c_str(), tokDiag(s).c_str());
+        tokCommand(IDM_SEARCH_CLEARALLMARKS);   // Search > Clear Style > Clear all Styles
+        settle(400);
+        FILE* f = _wfopen(tokenStoreFile().c_str(), L"rb");
+        char buf[2048] = {}; size_t n = f ? fread(buf, 1, sizeof(buf) - 1, f) : 0; if (f) fclose(f);
+        check(tokenRuleCount(s) == 0 && tokRuns(s, 24) == 0 && styledAs(s, wordsIn(s, "gamma"), 5, 0, -1, &why) && std::string(buf, n).find("k.cpp") == std::string::npos,
+              L"L21", L"Clear all Styles clears the live tokens too, and k.cpp is forgotten %ls", why.c_str());
+        focusEditor();
         return 200;
     });
     add([] {

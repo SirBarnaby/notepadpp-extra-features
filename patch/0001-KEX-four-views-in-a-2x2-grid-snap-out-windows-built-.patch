@@ -1,4 +1,4 @@
-From 61a4bb49434d792c31ef4e94745fbceed277bb8d Mon Sep 17 00:00:00 2001
+From bf3bf90df9c46ae41cab1afae0d2e53513313f9d Mon Sep 17 00:00:00 2001
 From: KEX patch <noreply@anthropic.com>
 Date: Sun, 11 Oct 2026 15:07:35 +0000
 Subject: [PATCH] KEX: four views in a 2x2 grid, snap-out windows, built-in KEX
@@ -19,9 +19,9 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
 ---
  PowerEditor/gcc/makefile                      |    1 +
- PowerEditor/src/KexViews.cpp                  | 1078 +++++++++++++++++
+ PowerEditor/src/KexViews.cpp                  | 1089 +++++++++++++++++
  PowerEditor/src/MISC/PluginsManager/KexApi.h  |   42 +
- .../src/MISC/PluginsManager/KexSuiteHost.h    |   34 +
+ .../src/MISC/PluginsManager/KexSuiteHost.h    |   43 +
  .../MISC/PluginsManager/PluginsManager.cpp    |   52 +-
  .../src/MISC/PluginsManager/PluginsManager.h  |    6 +
  PowerEditor/src/Notepad_plus.cpp              |  501 ++++----
@@ -33,7 +33,7 @@ Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
  PowerEditor/src/NppNotification.cpp           |  137 ++-
  PowerEditor/src/Parameters.cpp                |   55 +-
  PowerEditor/src/Parameters.h                  |   15 +
- .../ScintillaComponent/ScintillaEditView.cpp  |    3 +-
+ .../ScintillaComponent/ScintillaEditView.cpp  |    7 +-
  .../src/WinControls/DockingWnd/Gripper.cpp    |    3 +-
  .../WinControls/Preference/preferenceDlg.cpp  |   42 +
  .../WinControls/Preference/preferenceDlg.h    |   12 +
@@ -44,7 +44,7 @@ Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
  .../VerticalFileSwitcher.cpp                  |   15 +-
  .../VerticalFileSwitcherListView.cpp          |   12 +-
  PowerEditor/src/menuCmdID.h                   |   21 +
- 26 files changed, 2221 insertions(+), 493 deletions(-)
+ 26 files changed, 2243 insertions(+), 495 deletions(-)
  create mode 100644 PowerEditor/src/KexViews.cpp
  create mode 100644 PowerEditor/src/MISC/PluginsManager/KexApi.h
  create mode 100644 PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
@@ -63,10 +63,10 @@ index 3f38aa9..849daf5 100644
  
 diff --git a/PowerEditor/src/KexViews.cpp b/PowerEditor/src/KexViews.cpp
 new file mode 100644
-index 0000000..e8b4f6a
+index 0000000..0405487
 --- /dev/null
 +++ b/PowerEditor/src/KexViews.cpp
-@@ -0,0 +1,1078 @@
+@@ -0,0 +1,1089 @@
 +// This file is part of the KEX four-view patch for Notepad++.
 +//
 +// This program is free software: you can redistribute it and/or modify
@@ -1145,6 +1145,17 @@ index 0000000..e8b4f6a
 +			return FALSE;
 +	}
 +}
++
++// The KEX suite's live token styles follow the "Style All Occurrences of Token" options of the
++// Highlighting page (KexSuiteHost.h).
++void kexsuite::styleTokenOptions(bool* matchCase, bool* wholeWord)
++{
++	const NppGUI& nppGUI = NppParameters::getInstance().getNppGUI();
++	if (matchCase)
++		*matchCase = nppGUI._markAllCaseSensitive;
++	if (wholeWord)
++		*wholeWord = nppGUI._markAllWordOnly;
++}
 diff --git a/PowerEditor/src/MISC/PluginsManager/KexApi.h b/PowerEditor/src/MISC/PluginsManager/KexApi.h
 new file mode 100644
 index 0000000..a60b9c2
@@ -1195,12 +1206,12 @@ index 0000000..a60b9c2
 +#define NPPM_KEX_GETVIEWHOSTWINDOW    (KEX_USER + 11)
 diff --git a/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h b/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
 new file mode 100644
-index 0000000..6faed0f
+index 0000000..f8ca881
 --- /dev/null
 +++ b/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,43 @@
 +// KexSuiteHost.h - the KEX suite (falling letters, smooth caret, quick note, F12 hover tabs, tab
-+// snapping, the same Notepad++ on every virtual desktop, the glass text area) is built into notepad++.exe. Its sources
++// snapping, the same Notepad++ on every virtual desktop, the glass text area, live token styles) is built into notepad++.exe. Its sources
 +// live in PowerEditor/src/KexSuite (kex-patch.sh copies them in from the KEX repository's suite/
 +// folder). It drives Notepad++ through the documented plugin messages, so the core only hands it the
 +// plugin data, every notification, the window procedure of its Preferences pages and tab drags.
@@ -1214,6 +1225,8 @@ index 0000000..6faed0f
 +#ifndef RC_INVOKED
 +#include <windows.h>
 +#include "PluginInterface.h"
++
++namespace Scintilla { class ILexer5; }
 +
 +namespace kexsuite {
 +void setInfo(HINSTANCE hInst, const NppData& data);                           // once the Scintilla views exist
@@ -1231,6 +1244,13 @@ index 0000000..6faed0f
 +// ::WindowFromPoint for the core: the glass text area puts a click catcher behind the window, and
 +// this sees through it to the view the user actually points at.
 +HWND windowFromPoint(POINT screenPoint);
++
++// Live token styles: the lexer an editing view gets is wrapped, so the bold and italic given to
++// styled tokens survive every re-lex. Returns the lexer to set (the same one for other Scintillas).
++Scintilla::ILexer5* wrapLexer(Scintilla::ILexer5* lexer, HWND view);
++
++// Implemented by the core: the "Style All Occurrences of Token" options on the Highlighting page.
++void styleTokenOptions(bool* matchCase, bool* wholeWord);
 +}
 +#endif
 diff --git a/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp b/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp
@@ -4254,7 +4274,7 @@ index 5db0df6..86a9482 100644
  
  
 diff --git a/PowerEditor/src/ScintillaComponent/ScintillaEditView.cpp b/PowerEditor/src/ScintillaComponent/ScintillaEditView.cpp
-index 2462620..1264227 100644
+index 2462620..d60086f 100644
 --- a/PowerEditor/src/ScintillaComponent/ScintillaEditView.cpp
 +++ b/PowerEditor/src/ScintillaComponent/ScintillaEditView.cpp
 @@ -46,6 +46,7 @@
@@ -4274,6 +4294,24 @@ index 2462620..1264227 100644
  
  			// Hack for Synaptics TouchPad Driver
  			auto className = std::string(26, '\0');
+@@ -1217,7 +1218,7 @@ void ScintillaEditView::setExternalLexer(LangType typeDoc) const
+ 	ILexer5* iLex5 = externalLexer->fnCL(externalLexer->_name.c_str());
+ 	if (!iLex5)
+ 		return;
+-	execute(SCI_SETILEXER, 0, reinterpret_cast<LPARAM>(iLex5));
++	execute(SCI_SETILEXER, 0, reinterpret_cast<LPARAM>(kexsuite::wrapLexer(iLex5, _hSelf))); // KEX: live token styles
+ 
+ 	::SendMessage(_hParent, NPPM_INTERNAL_EXTERNALLEXERBUFFER, 0, reinterpret_cast<LPARAM>(getCurrentBufferID()));
+ 
+@@ -2329,7 +2330,7 @@ bool ScintillaEditView::setLexerFromLangID(int langID) const // Internal lexer o
+ 		return false;
+ 
+ 	const char* lexerNameID = _langNameInfoArray[langID]._lexerID;
+-	execute(SCI_SETILEXER, 0, reinterpret_cast<LPARAM>(CreateLexer(lexerNameID)));
++	execute(SCI_SETILEXER, 0, reinterpret_cast<LPARAM>(kexsuite::wrapLexer(CreateLexer(lexerNameID), _hSelf))); // KEX: live token styles
+ 	return true;
+ }
+ 
 diff --git a/PowerEditor/src/WinControls/DockingWnd/Gripper.cpp b/PowerEditor/src/WinControls/DockingWnd/Gripper.cpp
 index c9789c6..cc8ce09 100644
 --- a/PowerEditor/src/WinControls/DockingWnd/Gripper.cpp

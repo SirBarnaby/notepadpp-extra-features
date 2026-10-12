@@ -129,8 +129,9 @@ Module* createDesktopSync();
 Module* createTabSnap();
 Module* createJetBrainsKeys();
 Module* createGlassText();
+Module* createTokenStyles();
 
-enum ModuleId { M_LETTERS = 0, M_CARET, M_HOTKEY, M_TABS, M_DESKTOP, M_SNAP, M_KEYS, M_GLASS, M_COUNT };
+enum ModuleId { M_LETTERS = 0, M_CARET, M_HOTKEY, M_TABS, M_DESKTOP, M_SNAP, M_KEYS, M_GLASS, M_TOKENS, M_COUNT };
 extern Module* modules[M_COUNT];
 
 // Core services used across modules.
@@ -138,7 +139,7 @@ bool setModuleEnabled(int id, bool on, bool interactive);
 void refreshPrefPages();           // after a feature was switched on/off or failed
 void showNote(const std::wstring& text, int ms);   // non-modal note in the corner of Notepad++
 bool isPostItMode();
-enum PrefPageId { PAGE_EDITING = 0, PAGE_TABS, PAGE_WINDOWS, PAGE_COUNT };
+enum PrefPageId { PAGE_EDITING = 0, PAGE_TABS, PAGE_WINDOWS, PAGE_HIGHLIGHT, PAGE_COUNT };
 HWND prefPage(int i);              // a KEX Preferences page (PrefPageId), once created
 int pageOfModule(int module);      // the page a feature's settings are on
 void openPreferences();            // Settings > KEX Features...
@@ -199,6 +200,16 @@ struct GlassStats { bool active = false; COLORREF key = 0; int hosts = 0; int re
 GlassStats glassStats();
 std::wstring glassInfo();          // the line under the glass settings
 void glassTestDragEnter();         // what a drag entering the glass does
+struct TokenStats { int wrapperCalls = 0; int liveWrappers = 0; int docs = 0; int lexCalls = 0; int variantsMade = 0; int collisions = 0;
+                    int fullPasses = 0; int menus = 0; int augmented = 0; bool hooked = false; std::wstring menuKey; std::wstring last; };
+TokenStats tokenStats();
+int tokenCommandId(int which);     // our menu commands: 0 Bold, 1 Italic, 2 Clear This Token
+std::wstring tokenStoreFile();     // kex-tokens.txt
+std::wstring tokenInfo();          // the line on the KEX Highlighting page
+int tokenRuleCount(HWND view);     // tokens styled in the document of that view
+int tokenVariantBase(HWND view, int style, int* flags);   // lexer style behind a bold/italic variant, -1 if not one
+bool tokenDocWrapped(HWND view);   // the document's lexer goes through the suite
+bool tokenMenuKeyApply(UINT mods, UINT vk);
 
 // Desktop provider (real IVirtualDesktopManager or the fake used by the self-test)
 class DesktopProvider {

@@ -39,9 +39,9 @@ Four views
 
 KEX features (Settings > KEX Features)
 --------------------------------------
-Settings > KEX Features opens Preferences on the "KEX Editing" page; "KEX Tabs" and
-"KEX Windows" are just below it. Each feature has an on/off tick there and its settings next to
-it; changes apply at once.
+Settings > KEX Features opens Preferences on the "KEX Editing" page; "KEX Tabs", "KEX Windows"
+and "KEX Highlighting" are just below it. Each feature has an on/off tick there and its settings
+next to it; changes apply at once.
   * Tab snapping (KEX Tabs): drag a tab towards the edge of a view and a preview shows where a
     new view will open (half of that view, so a quarter of the window once there are two side by
     side); drop it there. Drop it on another view to move it into that view. Hold Ctrl to clone
@@ -70,6 +70,13 @@ it; changes apply at once.
     go to the text under them. Needs Windows' "Transparency effects" switched on (Settings >
     Personalization > Colors). If it misbehaves on your PC, kex.ini [Glass] takes Engine=self
     (blur on the window itself), Acrylic=0 (plain blur) and KeepRenderer=1.
+  * Live token styles (KEX Highlighting): Search > Style All Occurrences of Token (also in the
+    right-click menu) keeps following the text: occurrences you type or paste later get the style
+    too, and one you edit into something else loses it. The same submenu has Bold, Italic and
+    Clear This Token. Ctrl+Shift+H (changeable) pops the same choices up at the caret. Clear Style
+    > Clear all Styles clears them. Match case and whole word follow Notepad++'s Highlighting page;
+    the colours are Mark Style 1-5 in the Style Configurator. The styled tokens of each file are
+    remembered (kex-tokens.txt in Notepad++'s settings folder) unless you untick that.
 
 New Notepad++ versions
 ----------------------
