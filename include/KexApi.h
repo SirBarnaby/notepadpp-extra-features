@@ -40,3 +40,9 @@
 // wParam: view. LRESULT: top-level HWND currently hosting the view
 // (the Notepad++ main window, or the view's own window when torn out).
 #define NPPM_KEX_GETVIEWHOSTWINDOW    (KEX_USER + 11)
+// "A Notepad++ for each desktop" (KEX suite). lParam: a folder (const wchar_t*). Writes this instance's
+// tabs there: a session file plus a copy of each untitled tab. LRESULT: tabs written, -1 on failure.
+#define NPPM_KEX_SAVEDESKTOPCOPY      (KEX_USER + 12)
+// lParam: a folder written by NPPM_KEX_SAVEDESKTOPCOPY. Opens those tabs here; files already open from
+// the command line stay last and active. LRESULT: tabs opened, -1 on failure.
+#define NPPM_KEX_LOADDESKTOPCOPY      (KEX_USER + 13)

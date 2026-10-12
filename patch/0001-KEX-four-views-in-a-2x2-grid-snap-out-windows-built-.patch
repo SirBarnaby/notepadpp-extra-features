@@ -1,4 +1,4 @@
-From bf3bf90df9c46ae41cab1afae0d2e53513313f9d Mon Sep 17 00:00:00 2001
+From 7a183a81b49cc4425a386e89a29f419e7c996545 Mon Sep 17 00:00:00 2001
 From: KEX patch <noreply@anthropic.com>
 Date: Sun, 11 Oct 2026 15:07:35 +0000
 Subject: [PATCH] KEX: four views in a 2x2 grid, snap-out windows, built-in KEX
@@ -15,22 +15,31 @@ land (the side of a view a hidden view would open on, or another view)
 and the suite draws the preview; with it on, a drop goes there instead
 of showing the Move/Clone menu.
 
+A Notepad++ for each virtual desktop: a second notepad++.exe started on
+a desktop that has no Notepad++ window becomes a new Notepad++ there,
+opening with a copy of the first window's tabs, carets and active tabs
+(NPPM_KEX_SAVEDESKTOPCOPY / NPPM_KEX_LOADDESKTOPCOPY). Windows never
+move between desktops.
+
+A tab drag starts from anywhere on the tab once the mouse has moved the
+system drag distance, and tells the suite so it can lift the tab.
+
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
 ---
  PowerEditor/gcc/makefile                      |    1 +
- PowerEditor/src/KexViews.cpp                  | 1089 +++++++++++++++++
- PowerEditor/src/MISC/PluginsManager/KexApi.h  |   42 +
- .../src/MISC/PluginsManager/KexSuiteHost.h    |   43 +
+ PowerEditor/src/KexViews.cpp                  | 1253 +++++++++++++++++
+ PowerEditor/src/MISC/PluginsManager/KexApi.h  |   48 +
+ .../src/MISC/PluginsManager/KexSuiteHost.h    |   54 +
  .../MISC/PluginsManager/PluginsManager.cpp    |   52 +-
  .../src/MISC/PluginsManager/PluginsManager.h  |    6 +
- PowerEditor/src/Notepad_plus.cpp              |  501 ++++----
- PowerEditor/src/Notepad_plus.h                |   64 +-
+ PowerEditor/src/Notepad_plus.cpp              |  501 ++++---
+ PowerEditor/src/Notepad_plus.h                |   66 +-
  PowerEditor/src/Notepad_plus.rc               |    1 +
  PowerEditor/src/NppBigSwitch.cpp              |  164 ++-
  PowerEditor/src/NppCommands.cpp               |  116 +-
- PowerEditor/src/NppIO.cpp                     |  311 ++---
- PowerEditor/src/NppNotification.cpp           |  137 ++-
+ PowerEditor/src/NppIO.cpp                     |  311 ++--
+ PowerEditor/src/NppNotification.cpp           |  137 +-
  PowerEditor/src/Parameters.cpp                |   55 +-
  PowerEditor/src/Parameters.h                  |   15 +
  .../ScintillaComponent/ScintillaEditView.cpp  |    7 +-
@@ -39,12 +48,13 @@ Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
  .../WinControls/Preference/preferenceDlg.h    |   12 +
  .../SplitterContainer/SplitterContainer.cpp   |    2 +
  .../SplitterContainer/SplitterContainer.h     |   14 +
- PowerEditor/src/WinControls/TabBar/TabBar.cpp |    6 +-
- PowerEditor/src/WinControls/TabBar/TabBar.h   |    7 +
+ PowerEditor/src/WinControls/TabBar/TabBar.cpp |   16 +-
+ PowerEditor/src/WinControls/TabBar/TabBar.h   |    9 +
  .../VerticalFileSwitcher.cpp                  |   15 +-
  .../VerticalFileSwitcherListView.cpp          |   12 +-
  PowerEditor/src/menuCmdID.h                   |   21 +
- 26 files changed, 2243 insertions(+), 495 deletions(-)
+ PowerEditor/src/winmain.cpp                   |    9 +
+ 27 files changed, 2446 insertions(+), 496 deletions(-)
  create mode 100644 PowerEditor/src/KexViews.cpp
  create mode 100644 PowerEditor/src/MISC/PluginsManager/KexApi.h
  create mode 100644 PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
@@ -63,10 +73,10 @@ index 3f38aa9..849daf5 100644
  
 diff --git a/PowerEditor/src/KexViews.cpp b/PowerEditor/src/KexViews.cpp
 new file mode 100644
-index 0000000..0405487
+index 0000000..7d944f7
 --- /dev/null
 +++ b/PowerEditor/src/KexViews.cpp
-@@ -0,0 +1,1089 @@
+@@ -0,0 +1,1253 @@
 +// This file is part of the KEX four-view patch for Notepad++.
 +//
 +// This program is free software: you can redistribute it and/or modify
@@ -993,8 +1003,11 @@ index 0000000..0405487
 +	return hit && (::GetAncestor(hit, GA_ROOT) == _pPublicInterface->getHSelf() || kexViewFromHwnd(hit) != -1);
 +}
 +
-+void Notepad_plus::kexOnTabDrag(int state)
++void Notepad_plus::kexOnTabDrag(int state, HWND tabBar)
 +{
++	kexsuite::tabDragged(tabBar, state);
++	if (state == KEX_TABDRAG_STARTED)
++		return;
 +	if (state == KEX_TABDRAG_MOVED && kexsuite::tabSnapOn())
 +	{
 +		POINT p{};
@@ -1065,6 +1078,148 @@ index 0000000..0405487
 +	}
 +}
 +
++// "A Notepad++ for each desktop" (KEX suite). When notepad++.exe starts on a virtual desktop that has no
++// Notepad++ window, the suite opens a new instance there instead of moving the running one, and the new
++// instance starts with a copy of the running one's tabs: this instance writes them into a folder (a
++// session file, plus a copy of every untitled tab's text), the new one opens them the way Notepad++
++// restores its own backups at startup.
++static const wchar_t kexCopySessionFile[] = L"\\session.xml";
++static const wchar_t kexCopyIndexFile[] = L"\\untitled.txt";   // UTF-8 lines "<copy file>\t<tab name>"
++
++int Notepad_plus::kexSaveDesktopCopy(const wchar_t* folder)
++{
++	if (!folder || !*folder)
++		return -1;
++	const wstring dir = folder;
++	Session session;
++	getCurrentOpenedFiles(session, true);
++
++	wstring index;
++	int nbCopies = 0;
++	for (int view = 0; view < NB_VIEWS; ++view)
++	{
++		DocTabView* docTab = kexDocTab(view);
++		vector<sessionFileInfo>& files = session.kexViewFiles(view);
++		const size_t activeTab = docTab->getCurrentTabIndex();
++		size_t activeEntry = files.size();
++		for (size_t i = 0, e = 0; i < docTab->nbItem() && e < files.size(); ++i)
++		{
++			Buffer* buf = MainFileManager.getBufferByID(docTab->getBufferByIndex(i));
++			if (buf->isUntitled() && buf->docLength() == 0)
++				continue; // getCurrentOpenedFiles leaves these out too
++			if (i == activeTab)
++				activeEntry = e;
++			sessionFileInfo& sfi = files[e++];
++			sfi._backupFilePath.clear(); // the new instance must never use this instance's own backups
++			if (buf->isUntitled() && index.find(L"\t" + sfi._fileName + L"\n") == wstring::npos) // a clone is copied once
++			{
++				const wstring copyName = L"untitled-" + std::to_wstring(++nbCopies) + L".txt";
++				if (MainFileManager.saveBuffer(buf, (dir + L"\\" + copyName).c_str(), true) == SavingStatus::SaveOK)
++					index += copyName + L"\t" + sfi._fileName + L"\n";
++			}
++		}
++		session.kexActiveIndex(view) = activeEntry; // an index into the saved entries, not into the tabs
++	}
++
++	FILE* f = nullptr;
++	if (_wfopen_s(&f, (dir + kexCopyIndexFile).c_str(), L"wb") != 0 || !f)
++		return -1;
++	const string utf8 = wstring2string(index, CP_UTF8);
++	fwrite(utf8.data(), 1, utf8.size(), f);
++	fclose(f);
++
++	NppParameters::getInstance().writeSession(session, (dir + kexCopySessionFile).c_str());
++	if (!doesFileExist((dir + kexCopySessionFile).c_str()))
++		return -1;
++	return static_cast<int>(session.kexNbFiles());
++}
++
++int Notepad_plus::kexLoadDesktopCopy(const wchar_t* folder)
++{
++	if (!folder || !*folder)
++		return -1;
++	const wstring dir = folder;
++	NppParameters& nppParam = NppParameters::getInstance();
++	Session session;
++	if (!nppParam.loadSession(session, (dir + kexCopySessionFile).c_str(), true))
++		return -1;
++
++	// untitled tabs come back from their copies
++	std::vector<std::pair<wstring, wstring>> copies; // tab name, copy path
++	FILE* f = nullptr;
++	if (_wfopen_s(&f, (dir + kexCopyIndexFile).c_str(), L"rb") == 0 && f)
++	{
++		string utf8;
++		char chunk[4096];
++		for (size_t n; (n = fread(chunk, 1, sizeof(chunk), f)) > 0; )
++			utf8.append(chunk, n);
++		fclose(f);
++		const wstring index = string2wstring(utf8, CP_UTF8);
++		for (size_t pos = 0, end; (end = index.find(L'\n', pos)) != wstring::npos; pos = end + 1)
++		{
++			const wstring line = index.substr(pos, end - pos);
++			const size_t tab = line.find(L'\t');
++			if (tab != wstring::npos)
++				copies.emplace_back(line.substr(tab + 1), dir + L"\\" + line.substr(0, tab));
++		}
++	}
++	for (int view = 0; view < NB_VIEWS; ++view)
++	{
++		for (sessionFileInfo& sfi : session.kexViewFiles(view))
++		{
++			sfi._backupFilePath.clear();
++			for (const auto& copy : copies)
++			{
++				if (copy.first == sfi._fileName)
++					sfi._backupFilePath = copy.second;
++			}
++		}
++	}
++
++	// files opened from the command line stay last and active, as if they were opened after the copied tabs
++	vector<BufferID> commandLineFiles;
++	for (size_t i = 0; i < _mainDocTab.nbItem(); ++i)
++	{
++		BufferID id = _mainDocTab.getBufferByIndex(i);
++		Buffer* buf = MainFileManager.getBufferByID(id);
++		if (!buf->isUntitled() || buf->docLength() != 0 || buf->isDirty())
++			commandLineFiles.push_back(id);
++	}
++	const BufferID activeCommandLineFile = commandLineFiles.empty() ? BUFFER_INVALID : _mainEditView.getCurrentBufferID();
++
++	const bool isSnapshotMode = true; // so that untitled tabs load from their copies
++	loadSession(session, isSnapshotMode);
++
++	// The copies start unmodified: closing this window does not ask to save what the other one still has.
++	for (size_t i = 0; i < MainFileManager.getNbBuffers(); ++i)
++	{
++		Buffer* buf = MainFileManager.getBufferByIndex(i);
++		const wstring backup = buf->getBackupFileName();
++		if (!backup.empty() && backup.compare(0, dir.size(), dir) == 0)
++		{
++			buf->setBackupFileName(wstring());
++			buf->setDirty(false);
++		}
++	}
++
++	for (BufferID id : commandLineFiles)
++	{
++		const int index = _mainDocTab.getIndexByBuffer(id);
++		if (index < 0)
++			continue;
++		switchEditViewTo(MAIN_VIEW);
++		activateBuffer(id, MAIN_VIEW);
++		for (int moves = static_cast<int>(_mainDocTab.nbItem()) - 1 - index; moves > 0; --moves)
++			command(IDM_VIEW_TAB_MOVEFORWARD);
++	}
++	if (activeCommandLineFile != BUFFER_INVALID && _mainDocTab.getIndexByBuffer(activeCommandLineFile) >= 0)
++	{
++		switchEditViewTo(MAIN_VIEW);
++		activateBuffer(activeCommandLineFile, MAIN_VIEW);
++	}
++	return static_cast<int>(session.kexNbFiles());
++}
++
 +LRESULT Notepad_plus::kexProcessMessage(UINT message, WPARAM wParam, LPARAM lParam)
 +{
 +	const int view = static_cast<int>(wParam);
@@ -1129,9 +1284,15 @@ index 0000000..0405487
 +			return reinterpret_cast<LRESULT>(kexIsTornOut(view) ? _kexViewWindow[view] : _pPublicInterface->getHSelf());
 +		}
 +
++		case NPPM_KEX_SAVEDESKTOPCOPY:
++			return kexSaveDesktopCopy(reinterpret_cast<const wchar_t*>(lParam));
++
++		case NPPM_KEX_LOADDESKTOPCOPY:
++			return kexLoadDesktopCopy(reinterpret_cast<const wchar_t*>(lParam));
++
 +		case NPPM_INTERNAL_KEX_TABDRAG:
 +		{
-+			kexOnTabDrag(static_cast<int>(wParam));
++			kexOnTabDrag(static_cast<int>(wParam), reinterpret_cast<HWND>(lParam));
 +			return TRUE;
 +		}
 +
@@ -1156,12 +1317,25 @@ index 0000000..0405487
 +	if (wholeWord)
 +		*wholeWord = nppGUI._markAllWordOnly;
 +}
++
++// The KEX suite's JetBrains Alt+J selects occurrences the way Smart Highlighting highlights them,
++// unless the KEX Editing page says otherwise (KexSuiteHost.h).
++void kexsuite::smartHighlightOptions(bool* matchCase, bool* wholeWord)
++{
++	NppParameters& nppParams = NppParameters::getInstance();
++	const NppGUI& nppGUI = nppParams.getNppGUI();
++	const bool useFind = nppGUI._smartHiliteUseFindSettings;
++	if (matchCase)
++		*matchCase = useFind ? nppParams.getFindHistory()._isMatchCase : nppGUI._smartHiliteCaseSensitive;
++	if (wholeWord)
++		*wholeWord = useFind ? nppParams.getFindHistory()._isMatchWord : nppGUI._smartHiliteWordOnly;
++}
 diff --git a/PowerEditor/src/MISC/PluginsManager/KexApi.h b/PowerEditor/src/MISC/PluginsManager/KexApi.h
 new file mode 100644
-index 0000000..a60b9c2
+index 0000000..29d0a36
 --- /dev/null
 +++ b/PowerEditor/src/MISC/PluginsManager/KexApi.h
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,48 @@
 +// KexApi.h - messages added to Notepad++ by the KEX four-view patch.
 +//
 +// The patch gives Notepad++ four editing views (0 = main, 1 = second, 2 = third, 3 = fourth)
@@ -1204,12 +1378,18 @@ index 0000000..a60b9c2
 +// wParam: view. LRESULT: top-level HWND currently hosting the view
 +// (the Notepad++ main window, or the view's own window when torn out).
 +#define NPPM_KEX_GETVIEWHOSTWINDOW    (KEX_USER + 11)
++// "A Notepad++ for each desktop" (KEX suite). lParam: a folder (const wchar_t*). Writes this instance's
++// tabs there: a session file plus a copy of each untitled tab. LRESULT: tabs written, -1 on failure.
++#define NPPM_KEX_SAVEDESKTOPCOPY      (KEX_USER + 12)
++// lParam: a folder written by NPPM_KEX_SAVEDESKTOPCOPY. Opens those tabs here; files already open from
++// the command line stay last and active. LRESULT: tabs opened, -1 on failure.
++#define NPPM_KEX_LOADDESKTOPCOPY      (KEX_USER + 13)
 diff --git a/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h b/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
 new file mode 100644
-index 0000000..f8ca881
+index 0000000..17f1a7a
 --- /dev/null
 +++ b/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,54 @@
 +// KexSuiteHost.h - the KEX suite (falling letters, smooth caret, quick note, F12 hover tabs, tab
 +// snapping, the same Notepad++ on every virtual desktop, the glass text area, live token styles) is built into notepad++.exe. Its sources
 +// live in PowerEditor/src/KexSuite (kex-patch.sh copies them in from the KEX repository's suite/
@@ -1220,7 +1400,7 @@ index 0000000..f8ca881
 +// Settings > Preferences gets the suite's pages: dialog templates IDD_KEX_PREF_FIRST,
 +// IDD_KEX_PREF_FIRST + 1, ... (KexSuite/KexSuite.rc), at most KEX_PREF_PAGES_MAX of them.
 +#define IDD_KEX_PREF_FIRST 30500
-+#define KEX_PREF_PAGES_MAX 4
++#define KEX_PREF_PAGES_MAX 8
 +
 +#ifndef RC_INVOKED
 +#include <windows.h>
@@ -1240,6 +1420,9 @@ index 0000000..f8ca881
 +// draws the preview. tabSnapOn() false = the classic drop menu.
 +bool tabSnapOn();
 +void tabSnapPreview(const RECT* screenRect);                                   // nullptr hides it
++// Every step of a tab drag (KEX_TABDRAG_STARTED, _MOVED, _OVERTABS, _ENDED in TabBar.h): the suite
++// lifts the dragged tab off the bar and lets it follow the mouse.
++void tabDragged(HWND tabBar, int state);
 +
 +// ::WindowFromPoint for the core: the glass text area puts a click catcher behind the window, and
 +// this sees through it to the view the user actually points at.
@@ -1251,6 +1434,14 @@ index 0000000..f8ca881
 +
 +// Implemented by the core: the "Style All Occurrences of Token" options on the Highlighting page.
 +void styleTokenOptions(bool* matchCase, bool* wholeWord);
++// Implemented by the core: what Smart Highlighting matches (its own options or the Find dialog's).
++void smartHighlightOptions(bool* matchCase, bool* wholeWord);
++
++// Called by a second notepad++.exe (winmain.cpp) before it hands its command line to the running one.
++// Returns the window to hand it to: one on the current virtual desktop. Returns nullptr when Notepad++ has
++// windows only on other desktops: this process then becomes a new Notepad++ that opens with a copy of
++// their tabs (called before the suite is set up; settingsDir holds kex.ini).
++HWND desktopHandOff(HWND running, const wchar_t* settingsDir);
 +}
 +#endif
 diff --git a/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp b/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp
@@ -2375,7 +2566,7 @@ index 4bf5a90..309bbcc 100644
  	{
  		for (size_t i = 0; i < pTabView->nbItem(); ++i)
 diff --git a/PowerEditor/src/Notepad_plus.h b/PowerEditor/src/Notepad_plus.h
-index fefc2bd..87aec87 100644
+index fefc2bd..725529e 100644
 --- a/PowerEditor/src/Notepad_plus.h
 +++ b/PowerEditor/src/Notepad_plus.h
 @@ -44,6 +44,7 @@
@@ -2440,7 +2631,7 @@ index fefc2bd..87aec87 100644
  
      ContextMenu _tabPopupMenu;
  	ContextMenu _tabPopupDropMenu;
-@@ -457,21 +474,62 @@ private:
+@@ -457,21 +474,64 @@ private:
  		return _activeView;
  	}
  
@@ -2476,6 +2667,8 @@ index fefc2bd..87aec87 100644
 +	bool kexIsLegacyView(int whichOne) const { return whichOne == MAIN_VIEW || whichOne == SUB_VIEW; }
 +	int kexLegacyViewOf(int whichOne) const { return whichOne == VIEW_3 ? MAIN_VIEW : (whichOne == VIEW_4 ? SUB_VIEW : whichOne); }
 +	LRESULT kexProcessMessage(UINT message, WPARAM wParam, LPARAM lParam);
++	int kexSaveDesktopCopy(const wchar_t* folder);
++	int kexLoadDesktopCopy(const wchar_t* folder);
 +	// tear-out
 +	HWND _kexViewWindow[NB_VIEWS] = {};
 +	UCHAR _kexDistractionFreeHiddenViews = 0;
@@ -2491,7 +2684,7 @@ index fefc2bd..87aec87 100644
 +	KexSnapTarget kexSnapTargetAt(POINT screenPoint, bool clone);
 +	RECT kexPredictViewRect(int whichOne, unsigned dockedViews, const RECT& area);
 +	bool kexSnapDrop(POINT screenPoint, bool clone);
-+	void kexOnTabDrag(int state);
++	void kexOnTabDrag(int state, HWND tabBar);
 +	int _kexLastDockedView = MAIN_VIEW;
 +	static LRESULT CALLBACK kexViewWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 +
@@ -4495,10 +4688,39 @@ index ddcf11c..e1f0dbd 100644
  	Window* _pWin0 = nullptr; // left or top window
  	Window* _pWin1 = nullptr; // right or bottom window
 diff --git a/PowerEditor/src/WinControls/TabBar/TabBar.cpp b/PowerEditor/src/WinControls/TabBar/TabBar.cpp
-index 57b5251..409dd77 100644
+index 57b5251..15971c5 100644
 --- a/PowerEditor/src/WinControls/TabBar/TabBar.cpp
 +++ b/PowerEditor/src/WinControls/TabBar/TabBar.cpp
-@@ -948,6 +948,7 @@ LRESULT TabBarPlus::runProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lPara
+@@ -884,6 +884,10 @@ LRESULT TabBarPlus::runProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lPara
+ 			if (doDragNDrop)
+ 			{
+ 				_mightBeDragging = true;
++				// KEX: the drag starts from anywhere on the tab, however fast the mouse leaves the tab bar
++				_kexPressPoint = POINT{ static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam)) };
++				if (::GetCapture() != _hSelf)
++					::SetCapture(hwnd);
+ 			}
+ 
+ 			notify(NM_CLICK, currentTabOn);
+@@ -917,7 +921,8 @@ LRESULT TabBarPlus::runProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lPara
+ 					_mightBeDragging = false;
+ 					_dragCount = 0;
+ 				}
+-				else if (++_dragCount > 2)
++				else if (std::abs(static_cast<short>(LOWORD(lParam)) - _kexPressPoint.x) > ::GetSystemMetrics(SM_CXDRAG) ||
++				         std::abs(static_cast<short>(HIWORD(lParam)) - _kexPressPoint.y) > ::GetSystemMetrics(SM_CYDRAG)) // KEX: Windows' drag distance, not 3 mouse moves
+ 				{
+ 					int tabSelected = static_cast<int32_t>(::SendMessage(_hSelf, TCM_GETCURSEL, 0, 0));
+ 
+@@ -932,6 +937,7 @@ LRESULT TabBarPlus::runProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lPara
+ 						{
+ 							::SetCapture(hwnd);
+ 						}
++						::SendMessage(_hParent, NPPM_INTERNAL_KEX_TABDRAG, KEX_TABDRAG_STARTED, reinterpret_cast<LPARAM>(_hSelf)); // KEX: the tab lifts off
+ 					}
+ 				}
+ 			}
+@@ -948,6 +954,7 @@ LRESULT TabBarPlus::runProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lPara
  				// For using the function "WindowFromPoint" afterward!!!
  				::GetCursorPos(&_draggingPoint);
  				draggingCursor(_draggingPoint);
@@ -4506,7 +4728,16 @@ index 57b5251..409dd77 100644
  				return TRUE;
  			}
  			else
-@@ -1184,6 +1185,7 @@ LRESULT TabBarPlus::runProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lPara
+@@ -1100,6 +1107,8 @@ LRESULT TabBarPlus::runProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lPara
+ 		{
+ 			_mightBeDragging = false;
+ 			_dragCount = 0;
++			if (!_isDragging && ::GetCapture() == _hSelf)
++				::ReleaseCapture(); // KEX: taken on the press
+ 
+ 			int xPos = LOWORD(lParam);
+ 			int yPos = HIWORD(lParam);
+@@ -1184,6 +1193,7 @@ LRESULT TabBarPlus::runProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lPara
  			if (_isDragging)
  			{
  				_isDragging = false;
@@ -4514,7 +4745,7 @@ index 57b5251..409dd77 100644
  				return 0;
  			}
  			break;
-@@ -1831,10 +1833,12 @@ void TabBarPlus::drawItem(DRAWITEMSTRUCT* pDrawItemStruct, bool isDarkMode)
+@@ -1831,10 +1841,12 @@ void TabBarPlus::drawItem(DRAWITEMSTRUCT* pDrawItemStruct, bool isDarkMode)
  	::RestoreDC(hDC, nSavedDC);
  }
  
@@ -4529,10 +4760,10 @@ index 57b5251..409dd77 100644
  		::SetCursor(::LoadCursor(NULL, IDC_ARROW));
  	else
 diff --git a/PowerEditor/src/WinControls/TabBar/TabBar.h b/PowerEditor/src/WinControls/TabBar/TabBar.h
-index a2c3e1f..4a41b06 100644
+index a2c3e1f..309b16c 100644
 --- a/PowerEditor/src/WinControls/TabBar/TabBar.h
 +++ b/PowerEditor/src/WinControls/TabBar/TabBar.h
-@@ -17,6 +17,13 @@
+@@ -17,6 +17,14 @@
  
  #pragma once
  
@@ -4542,10 +4773,19 @@ index a2c3e1f..4a41b06 100644
 +#define KEX_TABDRAG_ENDED 0
 +#define KEX_TABDRAG_MOVED 1
 +#define KEX_TABDRAG_OVERTABS 2
++#define KEX_TABDRAG_STARTED 3
 +
  #include <windows.h>
  
  #include <commctrl.h>
+@@ -188,6 +196,7 @@ protected:
+ 	// drag & drop members
+ 	bool _mightBeDragging = false;
+ 	int _dragCount = 0;
++	POINT _kexPressPoint{}; // KEX: where the tab was pressed (client coordinates)
+ 	bool _isDragging = false;
+ 	bool _isDraggingInside = false;
+     int _nSrcTab = -1;
 diff --git a/PowerEditor/src/WinControls/VerticalFileSwitcher/VerticalFileSwitcher.cpp b/PowerEditor/src/WinControls/VerticalFileSwitcher/VerticalFileSwitcher.cpp
 index 726e507..0ec69e3 100644
 --- a/PowerEditor/src/WinControls/VerticalFileSwitcher/VerticalFileSwitcher.cpp
@@ -4668,6 +4908,33 @@ index 408b4ac..6559961 100644
  
  #define    IDM_TOOL  (IDM + 8500)
      #define    IDM_TOOL_MD5_GENERATE                    (IDM_TOOL + 1)
+diff --git a/PowerEditor/src/winmain.cpp b/PowerEditor/src/winmain.cpp
+index a675012..4ecedc4 100644
+--- a/PowerEditor/src/winmain.cpp
++++ b/PowerEditor/src/winmain.cpp
+@@ -581,6 +581,8 @@ bool isParentProcessThisNotepadPlusPlus()
+ std::chrono::steady_clock::time_point g_nppStartTimePoint{};
+ 
+ 
++namespace kexsuite { HWND desktopHandOff(HWND running, const wchar_t* settingsDir); } // KEX: KexSuiteHost.h
++
+ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE /*hPrevInstance*/, _In_ PWSTR pCmdLine, _In_ int /*nShowCmd*/)
+ {
+ 	g_nppStartTimePoint = std::chrono::steady_clock::now();
+@@ -808,6 +810,13 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE /*hPrevInstance
+ 			hNotepad_plus = ::FindWindow(Notepad_plus_Window::getClassName(), NULL);
+ 		}
+ 
++		if (hNotepad_plus) // KEX: a Notepad++ for each virtual desktop - with none on this one, start a new one here
++		{
++			hNotepad_plus = kexsuite::desktopHandOff(hNotepad_plus, nppParameters.getUserPath().c_str());
++			if (!hNotepad_plus)
++				cmdLineParams._isNoSession = true;
++		}
++
+         if (hNotepad_plus)
+         {
+ 			// First of all, destroy static object NppParameters
 -- 
 2.43.0
 

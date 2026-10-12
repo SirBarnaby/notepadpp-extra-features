@@ -139,31 +139,25 @@ bool setModuleEnabled(int id, bool on, bool interactive);
 void refreshPrefPages();           // after a feature was switched on/off or failed
 void showNote(const std::wstring& text, int ms);   // non-modal note in the corner of Notepad++
 bool isPostItMode();
-enum PrefPageId { PAGE_EDITING = 0, PAGE_TABS, PAGE_WINDOWS, PAGE_HIGHLIGHT, PAGE_COUNT };
+enum PrefPageId { PAGE_EDITING = 0, PAGE_TABS, PAGE_WINDOWS, PAGE_HIGHLIGHT, PAGE_NOTE, PAGE_COUNT };
 HWND prefPage(int i);              // a KEX Preferences page (PrefPageId), once created
 int pageOfModule(int module);      // the page a feature's settings are on
 void openPreferences();            // Settings > KEX Features...
 
 // Main-window subclass hooks (owned by the core, consulted by modules).
 struct MainHooks {
-    // NPPM_INTERNAL_RESTOREFROMMINIMIZED arrived from a second notepad++.exe process.
-    void (*onSecondInstance)() = nullptr;
-    // WM_SYSCOMMAND/SC_CLOSE (title-bar X, taskbar close). Return true to swallow it.
-    bool (*onSysClose)() = nullptr;
     // main window moved/sized/activated
     void (*onMainMoved)() = nullptr;
 };
 extern MainHooks mainHooks;
 
-// Desktop module: "summon to this desktop".
-void desktopSummonHere(const wchar_t* why);   // register current desktop + move window here
-bool desktopMoveHere();            // plain move of Notepad++ (+ KEX view hosts) to the current desktop
-void restoreNppWindow();           // Notepad++'s own restore (tray/minimized) without triggering our hooks
+// "A Notepad++ for each desktop" (DesktopSync.cpp)
+void desktopLoadPendingCopy();     // at NPPN_READY: a new window opens the copy of the first window's tabs
+LRESULT desktopServeCopy(HWND sender, const COPYDATASTRUCT* cds);   // WM_COPYDATA 'KEXT' from a new window
 
 // Self-test entry points
 void selfTestStart(const std::wstring& args);
 void selfTestOnNotify(SCNotification* n);
-extern const UINT NPPM_INTERNAL_RESTOREFROMMINIMIZED_;
 
 // Wine compatibility: layered windows there have no partial alpha, so use a threshold.
 inline bool binaryAlpha() { return underWine; }
@@ -174,11 +168,14 @@ struct LettersStats { int lastSpawned = 0; int lastCandidates = 0; int totalSpaw
 LettersStats lettersStats();
 void lettersFreezeAfter(int ms);   // <0 = run normally
 struct CaretStats { int carets = 0; RECT overlay{}; bool visible = false; HWND target = nullptr; int lastStyleSaved = -1;
-                    float mainX = 0, mainY = 0, mainH = 0; bool block = false; };
+                    float mainX = 0, mainY = 0, mainH = 0; bool block = false;
+                    int pushes = 0;   // times the caret window was redrawn
+                    double workMs = 0, computeMs = 0, pushMs = 0;   // time in the caret's code, its caret maths, its redraws
+};
 CaretStats caretStats();
 void caretTestFreeze(double glideFraction, bool solidBlink);   // fraction <0 = off
 int caretOriginalStyle(HWND sciHwnd);
-struct HotkeyStats { bool registered = false; DWORD lastError = 0; UINT mods = 0, vk = 0; int presses = 0; std::wstring text; bool noteOpen = false; };
+struct HotkeyStats { bool registered = false; bool byOtherNpp = false; DWORD lastError = 0; UINT mods = 0, vk = 0; int presses = 0; std::wstring text; bool noteOpen = false; };
 HotkeyStats hotkeyStats();
 void hotkeyPress();              // run the same code path as WM_HOTKEY
 bool hotkeyApply(UINT mods, UINT vk);   // store + re-register; true when registered
@@ -189,7 +186,8 @@ std::wstring quickNoteFile();
 struct TabsStats { bool stripVisible = false; RECT strip{}; int tabCount = 0; int activeIndex = -1; int view = 0; std::vector<RECT> tabRects; std::vector<int> dirty; };
 TabsStats tabsStats();
 void tabsTestClick(int index);
-struct SnapStats { bool visible = false; RECT target{}; RECT window{}; int alpha = 0; int shows = 0; int moves = 0; int cancels = 0; };
+struct SnapStats { bool visible = false; RECT target{}; RECT window{}; int alpha = 0; int shows = 0; int moves = 0; int cancels = 0;
+                   bool lifted = false; RECT lift{}; int liftAlpha = 0; int lifts = 0; };
 SnapStats snapStats();
 struct JetBrainsStats { int handled = 0; int grows = 0; std::wstring last; };
 JetBrainsStats jetBrainsStats();
@@ -234,9 +232,7 @@ void fakeSwitchTo(int i);
 int fakeWindowDesktop(HWND h);
 std::wstring guidStr(const GUID& g);
 bool guidFromStr(const std::wstring& s, GUID* g);
-struct DesktopStats { int registered = 0; std::vector<std::wstring> regs; std::wstring here; std::wstring lastAction; int switches = 0; };
+struct DesktopStats { bool newWindow = false; int copiedTabs = -1; int served = 0; std::wstring lastAction; };
 DesktopStats desktopStats();
-void desktopPollNow();
-bool desktopWouldCloseHere();
 
 } // namespace kex

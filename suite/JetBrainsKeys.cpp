@@ -74,14 +74,20 @@ public:
     const wchar_t* key() const override { return L"JetBrainsKeys"; }
     const wchar_t* title() const override { return L"JetBrains shortcuts"; }
 
-    void loadOptions() override { _all = settings.getInt(key(), L"AlsoNotepadKeys", 1) != 0; }
+    void loadOptions() override
+    {
+        _all = settings.getInt(key(), L"AlsoNotepadKeys", 1) != 0;
+        _caseMode = settings.getInt(key(), L"OccurrenceCase", 0);
+        _wordMode = settings.getInt(key(), L"OccurrenceWords", 0);
+    }
 
     bool selfCheck(std::wstring& why) override
     {
         // every Notepad++ command the table sends has to be in the main menu
         HMENU mm = reinterpret_cast<HMENU>(nppMsg(NPPM_GETMENUHANDLE, NPPMAINMENU, 0));
-        const UINT extra[] = { IDM_EDIT_MULTISELECTNEXTMATCHCASE, IDM_EDIT_MULTISELECTNEXTMATCHCASEWHOLEWORD,
-                               IDM_EDIT_MULTISELECTALLMATCHCASE, IDM_EDIT_MULTISELECTALLMATCHCASEWHOLEWORD, IDM_EDIT_UPPERCASE, IDM_EDIT_LOWERCASE };
+        const UINT extra[] = { IDM_EDIT_MULTISELECTNEXT, IDM_EDIT_MULTISELECTNEXTMATCHCASE, IDM_EDIT_MULTISELECTNEXTWHOLEWORD,
+                               IDM_EDIT_MULTISELECTNEXTMATCHCASEWHOLEWORD, IDM_EDIT_MULTISELECTALL, IDM_EDIT_MULTISELECTALLMATCHCASE,
+                               IDM_EDIT_MULTISELECTALLWHOLEWORD, IDM_EDIT_MULTISELECTALLMATCHCASEWHOLEWORD, IDM_EDIT_UPPERCASE, IDM_EDIT_LOWERCASE };
         std::vector<UINT> ids(extra, extra + sizeof(extra) / sizeof(extra[0]));
         for (const Binding& b : kBindings) if (b.act == A_CMD) ids.push_back(b.cmd);
         for (UINT id : ids)
@@ -175,6 +181,17 @@ private:
 
     void command(UINT id) { nppMsg(WM_COMMAND, id, 0); }
 
+    // Alt+J matches what Smart Highlighting shows, unless the KEX Editing page picks otherwise:
+    // case 0 like Smart Highlighting, 1 match case, 2 ignore case; whole words 0 like Smart
+    // Highlighting, 1 from a bare caret (JetBrains), 2 always, 3 never
+    void decideMatching(HWND s)
+    {
+        bool hlCase = false, hlWord = true;
+        kexsuite::smartHighlightOptions(&hlCase, &hlWord);
+        _matchCase = _caseMode == 1 ? true : _caseMode == 2 ? false : hlCase;
+        _wholeWord = _wordMode == 1 ? sci(s, SCI_GETSELECTIONEMPTY) != 0 : _wordMode == 2 ? true : _wordMode == 3 ? false : hlWord;
+    }
+
     void run(int index, HWND s)
     {
         if (index < 0 || index >= kBindingCount || !::IsWindow(s)) return;
@@ -183,17 +200,18 @@ private:
         {
         case A_CMD: command(b.cmd); break;
         case A_NEXT_OCCURRENCE:
+        case A_ALL_OCCURRENCES:
         {
-            // from a bare caret JetBrains takes the word and matches whole words; from a selection, the text
-            const bool single = sci(s, SCI_GETSELECTIONS) == 1;
-            if (single) _wholeWord = sci(s, SCI_GETSELECTIONEMPTY) != 0;
-            command(_wholeWord ? IDM_EDIT_MULTISELECTNEXTMATCHCASEWHOLEWORD : IDM_EDIT_MULTISELECTNEXTMATCHCASE);
+            // the matching is settled on the first press and kept while occurrences are added
+            if (sci(s, SCI_GETSELECTIONS) == 1) decideMatching(s);
+            const bool next = b.act == A_NEXT_OCCURRENCE;
+            const UINT id = _matchCase ? (_wholeWord ? (next ? IDM_EDIT_MULTISELECTNEXTMATCHCASEWHOLEWORD : IDM_EDIT_MULTISELECTALLMATCHCASEWHOLEWORD)
+                                                     : (next ? IDM_EDIT_MULTISELECTNEXTMATCHCASE : IDM_EDIT_MULTISELECTALLMATCHCASE))
+                                       : (_wholeWord ? (next ? IDM_EDIT_MULTISELECTNEXTWHOLEWORD : IDM_EDIT_MULTISELECTALLWHOLEWORD)
+                                                     : (next ? IDM_EDIT_MULTISELECTNEXT : IDM_EDIT_MULTISELECTALL));
+            command(id);
             break;
         }
-        case A_ALL_OCCURRENCES:
-            if (sci(s, SCI_GETSELECTIONS) == 1) _wholeWord = sci(s, SCI_GETSELECTIONEMPTY) != 0;
-            command(_wholeWord ? IDM_EDIT_MULTISELECTALLMATCHCASEWHOLEWORD : IDM_EDIT_MULTISELECTALLMATCHCASE);
-            break;
         case A_DUPLICATE:
             sci(s, sci(s, SCI_GETSELECTIONEMPTY) ? SCI_LINEDUPLICATE : SCI_SELECTIONDUPLICATE);
             break;
@@ -347,7 +365,8 @@ private:
     }
 
     HHOOK _hook = nullptr;
-    bool _all = true, _swallowAltUp = false, _wholeWord = true;
+    bool _all = true, _swallowAltUp = false, _wholeWord = true, _matchCase = false;
+    int _caseMode = 0, _wordMode = 0;
     struct Hist { HWND wnd; std::vector<Range> ranges; };
     struct HistMap {
         std::vector<Hist> items;

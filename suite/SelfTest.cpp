@@ -4,7 +4,7 @@
 // <testdir>\selftest-log.txt. "SHOT n name" lines ask the harness (test/run-selftest.sh) for a
 // screenshot; the step machine waits for <testdir>\ackN before going on.
 // Optional argument: KexSuite_testdir=C:\path (default: <plugin config dir>\KexSuite-selftest).
-#include "KexSuite.h"
+#include "Overlay.h"
 #include "KexSuiteRes.h"
 #include "preference_rc.h"
 #include "SciLexer.h"
@@ -179,6 +179,265 @@ HWND findReplaceDlg()
     return nullptr;
 }
 
+// ---- a Notepad++ for each desktop ------------------------------------------------------------------
+const char* const kDeskNote = "desk note\r\nsecond line";
+std::wstring g_deskNote;               // the untitled tab's name
+intptr_t g_deskNoteBuf = 0;
+int g_deskNoteView = -1, g_deskNoteIndex = -1;   // where the copy should have it
+int g_deskTabs[4] = {}, g_deskActive[4] = {}, g_deskView = 0;
+std::vector<std::wstring> g_deskNames[4];
+intptr_t g_deskCaret = 0;
+HWND g_secondWnd = nullptr;
+
+std::wstring windowTitle(HWND w)
+{
+    wchar_t t[512] = {};
+    if (w) ::GetWindowTextW(w, t, 511);
+    return t;
+}
+
+// The tabs a copy holds: every tab except empty untitled ones (Notepad++'s own sessions leave those out).
+void recordDeskLayout()
+{
+    int active[4];
+    for (int v = 0; v < views.count(); ++v) active[v] = views.currentIndex(v);
+    const int focus = views.current();
+    for (int v = 0; v < views.count(); ++v)
+    {
+        g_deskNames[v].clear();
+        g_deskActive[v] = -1;
+        for (int i = 0; views.visible(v) && i < views.nbFiles(v); ++i)
+        {
+            views.activate(v, i);
+            const intptr_t id = views.bufferId(v, i);
+            const std::wstring p = bufferPath(id);
+            const bool untitled = p.find(L'\\') == std::wstring::npos;
+            if (untitled && sci(views.sci(v), SCI_GETLENGTH) == 0) continue;
+            if (i == active[v]) g_deskActive[v] = static_cast<int>(g_deskNames[v].size());
+            if (id == g_deskNoteBuf) { g_deskNoteView = v; g_deskNoteIndex = static_cast<int>(g_deskNames[v].size()); }
+            g_deskNames[v].push_back(fileNameOf(p));
+        }
+        g_deskTabs[v] = static_cast<int>(g_deskNames[v].size());
+    }
+    for (int v = 0; v < views.count(); ++v)
+        if (views.visible(v) && active[v] >= 0) views.activate(v, active[v]);
+    views.activate(focus, active[focus]);
+    g_deskView = views.current();
+    g_deskCaret = static_cast<intptr_t>(sci(curSci(), SCI_GETCURRENTPOS));
+}
+
+std::wstring deskLayoutText()
+{
+    std::wstring t;
+    for (int v = 0; v < views.count(); ++v)
+    {
+        t += L" view" + std::to_wstring(v + 1) + L"[";
+        for (size_t i = 0; i < g_deskNames[v].size(); ++i)
+            t += (i ? L"," : L"") + std::wstring(static_cast<int>(i) == g_deskActive[v] ? L"*" : L"") + g_deskNames[v][i];
+        t += L"]";
+    }
+    return t + L" focus view" + std::to_wstring(g_deskView + 1);
+}
+
+// The new window has the recorded tabs (plus `extraInMain` files opened from its command line).
+bool sameDeskLayout(HWND w, int extraInMain, std::wstring* why)
+{
+    if (!w) { *why = L": no window"; return false; }
+    bool ok = true;
+    std::wstring got;
+    for (int v = 0; v < views.count(); ++v)
+    {
+        const bool vis = ::SendMessageW(w, NPPM_KEX_ISVIEWVISIBLE, v, 0) != 0;
+        const int n = vis ? static_cast<int>(::SendMessageW(w, NPPM_KEX_GETNBVIEWFILES, v, 0)) : 0;
+        const int a = vis ? static_cast<int>(::SendMessageW(w, NPPM_KEX_GETVIEWCURRENTINDEX, v, 0)) : -1;
+        const int want = g_deskTabs[v] + (v == 0 ? extraInMain : 0);
+        got += L" view" + std::to_wstring(v + 1) + L":" + std::to_wstring(n) + L"/" + std::to_wstring(want) + L" active " + std::to_wstring(a + 1);
+        if (n != want) ok = false;
+        if (extraInMain == 0 && want > 0 && g_deskActive[v] >= 0 && a != g_deskActive[v]) ok = false;
+    }
+    const int focus = static_cast<int>(::SendMessageW(w, NPPM_KEX_GETCURRENTVIEW, 0, 0));
+    if (extraInMain == 0 && focus != g_deskView) ok = false;
+    got += L", focus view " + std::to_wstring(focus + 1);
+    *why = L" (" + got + L")";
+    return ok;
+}
+
+// %TEMP%\KEX-Notepad++\desktop-copy-<pid of the second process>
+std::wstring deskCopyFolder()
+{
+    wchar_t tmp[MAX_PATH] = {};
+    ::GetTempPathW(MAX_PATH, tmp);
+    std::wstring d = tmp;
+    if (!d.empty() && d.back() != L'\\') d += L'\\';
+    return d + L"KEX-Notepad++\\desktop-copy-" + std::to_wstring(g_second.dwProcessId);
+}
+
+// notepad++.exe [file]; KEX_SELFTEST_OTHER_DESKTOP tells it whether this window is on its desktop
+void launchSecond(const wchar_t* otherDesktop, const std::wstring& file)
+{
+    wchar_t exe[MAX_PATH];
+    ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring cmd = std::wstring(L"\"") + exe + L"\"";
+    if (!file.empty()) cmd += L" \"" + file + L"\"";
+    ::SetEnvironmentVariableW(L"KEX_SELFTEST_OTHER_DESKTOP", otherDesktop);
+    STARTUPINFOW si{}; si.cb = sizeof(si);
+    g_second = PROCESS_INFORMATION{};
+    g_secondWnd = nullptr;
+    BOOL ok = ::CreateProcessW(exe, &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &g_second);
+    ::SetEnvironmentVariableW(L"KEX_SELFTEST_OTHER_DESKTOP", nullptr);
+    tlog(L"INFO started notepad++.exe%ls%ls with KEX_SELFTEST_OTHER_DESKTOP=%ls (pid %lu): %d", file.empty() ? L"" : L" ",
+         fileNameOf(file).c_str(), otherDesktop, g_second.dwProcessId, ok);
+}
+
+// the second process's Notepad++ window is up and shows the copied tabs (its title names the active file)
+bool deskCopyReady(const wchar_t* activeName, int mainTabs)
+{
+    if (!g_second.hProcess || ::WaitForSingleObject(g_second.hProcess, 0) == WAIT_OBJECT_0) return true;   // gone: fail in the check
+    HWND h = nullptr;
+    g_secondWnd = nullptr;
+    while ((h = ::FindWindowExW(nullptr, h, L"Notepad++", nullptr)) != nullptr)
+    {
+        DWORD pid = 0;
+        ::GetWindowThreadProcessId(h, &pid);
+        if (pid == g_second.dwProcessId && ::IsWindowVisible(h)) g_secondWnd = h;
+    }
+    if (!g_secondWnd || windowTitle(g_secondWnd).find(activeName) == std::wstring::npos) return false;
+    // ready once the copy is open (it opens in one go at startup)
+    return static_cast<int>(::SendMessageW(g_secondWnd, NPPM_KEX_GETNBVIEWFILES, 0, 0)) >= mainTabs;
+}
+
+void closeSecond(bool kill)
+{
+    if (!g_second.hProcess) return;
+    if (kill && ::WaitForSingleObject(g_second.hProcess, 0) != WAIT_OBJECT_0)
+    {
+        ::TerminateProcess(g_second.hProcess, 0);
+        ::WaitForSingleObject(g_second.hProcess, 5000);
+    }
+    ::CloseHandle(g_second.hProcess);
+    ::CloseHandle(g_second.hThread);
+    g_second = PROCESS_INFORMATION{};
+    g_secondWnd = nullptr;
+}
+
+// ---- speed --------------------------------------------------------------------------------------
+struct Perf { double keyMs = 0; double idleCpu = 0; double caretRedraws = 0; double idleRedraws = 0; double paints = 0;
+             double caretWork = 0, caretCompute = 0, caretPush = 0; };
+
+int g_sciPaints = 0;
+LRESULT CALLBACK countPaints(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR)
+{
+    if (m == WM_PAINT) ++g_sciPaints;
+    return ::DefSubclassProc(h, m, w, l);
+}
+
+double processCpuMs()
+{
+    FILETIME c, e, k, u;
+    ::GetProcessTimes(::GetCurrentProcess(), &c, &e, &k, &u);
+    auto ms = [](const FILETIME& f) { return ((static_cast<ULONGLONG>(f.dwHighDateTime) << 32) | f.dwLowDateTime) / 10000.0; };
+    return ms(k) + ms(u);
+}
+
+void drainMessages()
+{
+    MSG m;
+    while (::PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) { ::TranslateMessage(&m); ::DispatchMessageW(&m); }
+}
+
+// Typing: keys posted the way the keyboard delivers them (through the message loop and its hooks),
+// each one painted before the next. Idle: waiting for messages for two seconds, as Notepad++ does.
+Perf measurePerf()
+{
+    Perf r;
+    HWND s = curSci();
+    if (!s) return r;
+    sci(s, SCI_GOTOLINE, 1500);
+    sci(s, SCI_LINEEND);
+    drainMessages();
+    const int keys = 200;
+    sci(s, SCI_BEGINUNDOACTION);
+    const int p0 = caretStats().pushes;
+    const CaretStats cs0 = caretStats();
+    ::SetWindowSubclass(s, countPaints, 0x4B455050, 0);
+    g_sciPaints = 0;
+    const double t0 = nowMs();
+    for (int i = 0; i < keys; ++i)
+    {
+        ::PostMessageW(s, WM_CHAR, static_cast<WPARAM>(i % 20 == 19 ? ' ' : 'a' + i % 26), 0);
+        drainMessages();
+        ::UpdateWindow(s);
+    }
+    r.keyMs = (nowMs() - t0) / keys;
+    r.caretRedraws = static_cast<double>(caretStats().pushes - p0) / keys;
+    r.paints = static_cast<double>(g_sciPaints) / keys;
+    const CaretStats cs1 = caretStats();
+    r.caretWork = (cs1.workMs - cs0.workMs) / keys;
+    r.caretCompute = (cs1.computeMs - cs0.computeMs) / keys;
+    r.caretPush = (cs1.pushMs - cs0.pushMs) / keys;
+    ::RemoveWindowSubclass(s, countPaints, 0x4B455050);
+    sci(s, SCI_ENDUNDOACTION);
+    sci(s, SCI_UNDO);
+    drainMessages();
+    ::UpdateWindow(s);
+    const int i0 = caretStats().pushes;
+    const double c0 = processCpuMs(), w0 = nowMs();
+    for (;;)
+    {
+        const double left = 2000 - (nowMs() - w0);
+        if (left <= 0) break;
+        ::MsgWaitForMultipleObjects(0, nullptr, FALSE, static_cast<DWORD>(left) + 1, QS_ALLINPUT);
+        drainMessages();
+    }
+    r.idleCpu = 100.0 * (processCpuMs() - c0) / (nowMs() - w0);
+    r.idleRedraws = 1000.0 * (caretStats().pushes - i0) / (nowMs() - w0);
+    return r;
+}
+
+// What one redraw of a small layered window like the smooth caret's costs on this machine, in time
+// and in this process's CPU, including whatever the window system makes the text under it repaint.
+// Under Wine (no compositor) the X11 driver reshapes an X window and the text under the old spot is
+// painted again; on Windows the compositor does it without repainting anything.
+struct PushCost { double ms = 0, cpuMs = 0, paints = 0; };
+PushCost layeredPushCost()
+{
+    PushCost r;
+    HWND s = curSci();
+    HWND w = createOverlayWindow(npp._nppHandle, false, L"KEX perf probe");
+    Surface surf;
+    if (!s || !w || !surf.ensure(4, 24)) { if (w) ::DestroyWindow(w); return r; }
+    POINT pos{ 120, 60 };
+    ::ClientToScreen(s, &pos);
+    const int x0 = pos.x;
+    SIZE sz{ 4, 24 };
+    surf.clear();
+    fillRectF(surf, 1, 1, 3, 23, RGB(0, 0, 0), 1.0f);
+    pushLayered(w, surf, pos, sz);
+    ::SetWindowPos(w, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    drainMessages();
+    ::UpdateWindow(s);
+    ::SetWindowSubclass(s, countPaints, 0x4B455050, 0);
+    g_sciPaints = 0;
+    const int n = 60;
+    const double c0 = processCpuMs(), t0 = nowMs();
+    for (int i = 0; i < n; ++i)
+    {
+        surf.clear();
+        fillRectF(surf, 1, 1, 3, 23, RGB(0, 0, 0), (i % 2) ? 0.6f : 1.0f);
+        pos.x = x0 + (i % 9) * 7;
+        pushLayered(w, surf, pos, sz);
+        drainMessages();
+        ::UpdateWindow(s);
+    }
+    r.ms = (nowMs() - t0) / n;
+    r.cpuMs = (processCpuMs() - c0) / n;
+    r.paints = static_cast<double>(g_sciPaints) / n;
+    ::RemoveWindowSubclass(s, countPaints, 0x4B455050);
+    ::DestroyWindow(w);
+    drainMessages();
+    return r;
+}
+
 LRESULT CALLBACK testWndProc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
     if (m == WM_TEST_TRACKMENU)
@@ -282,6 +541,14 @@ std::string selText(HWND s)
     const char* p = reinterpret_cast<const char*>(sci(s, SCI_GETRANGEPOINTER, a, b - a));
     return p ? std::string(p, static_cast<size_t>(b - a)) : std::string();
 }
+
+// what picking an item in a drop-down list does
+void pickCombo(HWND page, int id, int index)
+{
+    HWND cb = ::GetDlgItem(page, id);
+    ::SendMessageW(cb, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
+    ::SendMessageW(page, WM_COMMAND, MAKEWPARAM(id, CBN_SELCHANGE), reinterpret_cast<LPARAM>(cb));
+}
 std::string lineText(HWND s, intptr_t line)
 {
     intptr_t a = sci(s, SCI_POSITIONFROMLINE, line), b = sci(s, SCI_GETLINEENDPOSITION, line);
@@ -360,7 +627,7 @@ void dragEnd()
 
 // ---- glass text area -----------------------------------------------------------------------------
 COLORREF g_glassBack[4] = {};
-int g_glassTech[4] = {};
+int g_glassTech[4] = {}, g_glassQuality[4] = {};
 const UINT WM_UPDATESCINTILLAS_ = WM_USER + 5000 + 1;   // WordStyleDlg.h: Style Configurator's "apply"
 HWND glassCatcherOf(HWND host)
 {
@@ -594,20 +861,20 @@ void buildSteps()
     });
     add([] { return shot(L"preferences-kex-editing"); });
     add([] {
-        showPrefPage(L"KEX Windows");
+        showPrefPage(L"KEX Quick Note");
         pump(200);
-        HWND p = prefPage(PAGE_WINDOWS);
+        HWND p = prefPage(PAGE_NOTE);
         std::wstring k = itemText(p, IDC_H_KEYSTATUS);
-        check(p && ::IsWindowVisible(p) && !::IsWindowVisible(prefPage(PAGE_EDITING)), L"P3", L"\"KEX Windows\" page shows when picked in the list");
+        check(p && ::IsWindowVisible(p) && !::IsWindowVisible(prefPage(PAGE_EDITING)), L"P3", L"\"KEX Quick Note\" page shows when picked in the list");
         check(k.find(L"works") != std::wstring::npos, L"P4", L"the page reports the quick note hotkey: \"%ls\"", k.c_str());
         return 300;
     });
-    add([] { return shot(L"preferences-kex-windows"); });
+    add([] { return shot(L"preferences-kex-quicknote"); });
     add([] {
         showPrefPage(L"KEX Tabs");
         pump(200);
         HWND p = prefPage(PAGE_TABS);
-        check(p && ::IsWindowVisible(p) && !::IsWindowVisible(prefPage(PAGE_WINDOWS)) && ::IsDlgButtonChecked(p, IDC_S_EN) == BST_CHECKED,
+        check(p && ::IsWindowVisible(p) && !::IsWindowVisible(prefPage(PAGE_NOTE)) && ::IsDlgButtonChecked(p, IDC_S_EN) == BST_CHECKED,
             L"P3b", L"\"KEX Tabs\" page shows tab snapping (on) and F12 hover tabs: \"%ls\"", itemText(p, IDC_S_STATUS).c_str());
         return 300;
     });
@@ -621,7 +888,7 @@ void buildSteps()
         HotkeyStats hs = hotkeyStats();
         check(!hs.registered && hs.lastError == ERROR_HOTKEY_ALREADY_REGISTERED, L"P5",
             L"taken hotkey detected: registered=%d error=%lu", hs.registered ? 1 : 0, hs.lastError);
-        std::wstring k = itemText(prefPage(PAGE_WINDOWS), IDC_H_KEYSTATUS);
+        std::wstring k = itemText(prefPage(PAGE_NOTE), IDC_H_KEYSTATUS);
         check(k.find(L"taken") != std::wstring::npos, L"P6", L"the page shows: \"%ls\"", k.c_str());
         return 400;
     });
@@ -630,7 +897,7 @@ void buildSteps()
         ::UnregisterHotKey(g_testWnd, 77);
         clickEnable(M_HOTKEY);   // off
         clickEnable(M_HOTKEY);   // and on again
-        std::wstring k = itemText(prefPage(PAGE_WINDOWS), IDC_H_KEYSTATUS);
+        std::wstring k = itemText(prefPage(PAGE_NOTE), IDC_H_KEYSTATUS);
         check(hotkeyStats().registered && k.find(L"works") != std::wstring::npos, L"P7",
             L"after the other program lets go, switching the quick note off and on takes the key back: \"%ls\"", k.c_str());
         HWND p1 = prefPage(PAGE_TABS);
@@ -963,103 +1230,109 @@ void buildSteps()
         return 100;
     });
 
-    // ---- per-desktop (fake desktops) ------------------------------------------------------------
+    // ---- a Notepad++ for each desktop: a second notepad++.exe ---------------------------------------
     add([] {
         DesktopStats d = desktopStats();
-        check(d.registered == 1 && d.here == guidStr(fakeDesktopGuid(0)), L"D1", L"started on fake desktop A %ls: 1 registered desktop", d.here.c_str());
+        check(modules[M_DESKTOP]->isEnabled() && !d.newWindow, L"D1", L"per-desktop windows on; this is the first window");
+        // what a copy must reproduce: a.cpp active with its caret, the other views, and an untitled tab with text
         switchTo(L"c.txt");
-        if (views.current() == 1) nppMsg(NPPM_MENUCOMMAND, 0, IDM_FILE_CLOSE);   // close the clone in view 2
+        if (views.current() == 1 && views.nbFiles(1) > 1) nppMsg(NPPM_MENUCOMMAND, 0, IDM_FILE_CLOSE);   // the clone in view 2
+        views.activate(0, 0);
+        nppMsg(NPPM_MENUCOMMAND, 0, IDM_FILE_NEW);
+        sci(curSci(), SCI_SETTEXT, 0, reinterpret_cast<LPARAM>(kDeskNote));
+        sci(curSci(), SCI_GOTOPOS, 12);
+        g_deskNote = curName();
+        g_deskNoteBuf = static_cast<intptr_t>(nppMsg(NPPM_GETCURRENTBUFFERID));
         switchTo(L"a.cpp");
         focusEditor();
         sci(curSci(), SCI_GOTOPOS, posOf(curSci(), 4, 2));
-        ::MoveWindow(npp._nppHandle, 20, 16, 960, 660, TRUE);
         pump(150);
-        fakeSwitchTo(1);   // the user switches to desktop B (not registered)
-        desktopPollNow();
-        check(fakeWindowDesktop(npp._nppHandle) == 0, L"D2", L"switch to unregistered desktop B: Notepad++ stays on A (%ls)", desktopStats().lastAction.c_str());
-        // the user runs notepad++.exe on desktop B
-        wchar_t exe[MAX_PATH]; ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
-        std::wstring cmd = std::wstring(L"\"") + exe + L"\"";
-        STARTUPINFOW si{}; si.cb = sizeof(si);
-        BOOL ok = ::CreateProcessW(exe, &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &g_second);
-        tlog(L"INFO started a second notepad++.exe (pid %lu): %d", g_second.dwProcessId, ok);
-        return until([] { return g_second.hProcess && ::WaitForSingleObject(g_second.hProcess, 0) == WAIT_OBJECT_0; }, 20000);
+        recordDeskLayout();
+        tlog(L"INFO desktop copy expected:%ls", deskLayoutText().c_str());
+        // a second notepad++.exe that finds this window on its own desktop hands it its file, as Notepad++ always did
+        writeFile(path(L"d1.txt"), "handed over\r\n");
+        launchSecond(L"0", path(L"d1.txt"));
+        return until([] { return !g_second.hProcess || ::WaitForSingleObject(g_second.hProcess, 0) == WAIT_OBJECT_0; }, 20000);
     });
     add([] {
         DWORD code = 0;
-        if (g_second.hProcess) { ::GetExitCodeProcess(g_second.hProcess, &code); ::CloseHandle(g_second.hProcess); ::CloseHandle(g_second.hThread); }
-        DesktopStats d = desktopStats();
-        check(g_untilOk && d.registered == 2 && fakeWindowDesktop(npp._nppHandle) == 1 && countNppWindows() == 1, L"D3",
-            L"second notepad++.exe on B: it exited (code %lu), B registered (%d desktops), the single window moved to B (%ls)",
-            code, d.registered, d.lastAction.c_str());
-        switchTo(L"c.txt");
-        focusEditor();
-        sci(curSci(), SCI_GOTOPOS, posOf(curSci(), 2, 5));
-        ::MoveWindow(npp._nppHandle, 120, 90, 820, 520, TRUE);
+        if (g_second.hProcess) ::GetExitCodeProcess(g_second.hProcess, &code);
+        closeSecond(false);
+        pump(300);
+        check(g_untilOk && countNppWindows() == 1 && curName() == L"d1.txt", L"D2",
+              L"notepad++.exe d1.txt with this window on the same desktop: it exited (code %lu) and this window opened d1.txt (%ls)", code, curName().c_str());
+        if (curName() == L"d1.txt") nppMsg(NPPM_MENUCOMMAND, 0, IDM_FILE_CLOSE);
         switchTo(L"a.cpp");
-        sci(curSci(), SCI_GOTOPOS, posOf(curSci(), 24, 3));
-        pump(150);   // let Scintilla paint and report the caret move (SCN_UPDATEUI), as it does for a real user
-        switchTo(L"c.txt");
         pump(150);
-        return 200;
+        // the same, started on a desktop without Notepad++
+        launchSecond(L"1", L"");
+        return until([] { return deskCopyReady(L"a.cpp", g_deskTabs[0]); }, 30000);
     });
-    add([] { return shot(L"desktop-B-state"); });
+    add([] { return shot(L"desktop-new-window"); });
     add([] {
-        fakeSwitchTo(0);
-        desktopPollNow();
+        HWND w = g_secondWnd;
+        std::wstring why;
+        const bool layout = sameDeskLayout(w, 0, &why);
+        check(g_untilOk && w && ::IsWindowVisible(w) && countNppWindows() == 2 && ::IsWindow(npp._nppHandle), L"D3",
+              L"notepad++.exe on a desktop without Notepad++: a new Notepad++ window (pid %lu) opened there, this one stayed", g_second.dwProcessId);
+        check(layout, L"D4", L"the new window has the same tabs in every view, the same active tabs and the same active view%ls", why.c_str());
+        HWND s = reinterpret_cast<HWND>(::SendMessageW(w, NPPM_KEX_GETVIEWSCINTILLA, g_deskView, 0));
+        const intptr_t caret = s ? static_cast<intptr_t>(::SendMessageW(s, SCI_GETCURRENTPOS, 0, 0)) : -1;
+        check(caret == g_deskCaret, L"D5", L"a.cpp's caret is where it was in the first window (%lld, expected %lld)",
+              static_cast<long long>(caret), static_cast<long long>(g_deskCaret));
+        // the untitled tab: a copy of its text, caret and name, unmodified so closing that window does not ask to save it
+        std::wstring text;
+        intptr_t noteCaret = -1;
+        LRESULT modified = -1;
+        if (g_deskNoteView >= 0 && ::SendMessageW(w, NPPM_KEX_ACTIVATEDOC, g_deskNoteView, g_deskNoteIndex))
+        {
+            HWND ns = reinterpret_cast<HWND>(::SendMessageW(w, NPPM_KEX_GETVIEWSCINTILLA, g_deskNoteView, 0));
+            wchar_t t[256] = {};
+            ::SendMessageW(ns, WM_GETTEXT, 255, reinterpret_cast<LPARAM>(t));
+            text = t;
+            noteCaret = static_cast<intptr_t>(::SendMessageW(ns, SCI_GETCURRENTPOS, 0, 0));
+            modified = ::SendMessageW(ns, SCI_GETMODIFY, 0, 0);
+        }
         pump(300);
-        RECT r; ::GetWindowRect(npp._nppHandle, &r);
-        HWND s = curSci();
-        intptr_t caret = sci(s, SCI_GETCURRENTPOS);
-        check(fakeWindowDesktop(npp._nppHandle) == 0 && curName() == L"a.cpp" && caret == posOf(s, 4, 2) && r.left == 20 && r.top == 16 && r.right - r.left == 960,
-            L"D4", L"back on A: window followed, A's tab (%ls), caret (line %lld) and placement %ls restored",
-            curName().c_str(), static_cast<long long>(sci(s, SCI_LINEFROMPOSITION, caret)) + 1, rectStr(r).c_str());
-        return 200;
+        const std::wstring title = windowTitle(w);
+        check(text == L"desk note\r\nsecond line" && noteCaret == 12 && modified == 0 && title.find(g_deskNote) != std::wstring::npos, L"D6",
+              L"untitled tab %ls copied: text \"%ls\", caret %lld, unmodified (%d), title \"%ls\"", g_deskNote.c_str(),
+              text.substr(0, 9).c_str(), static_cast<long long>(noteCaret), static_cast<int>(modified), title.c_str());
+        const std::wstring leftover = deskCopyFolder();
+        closeSecond(true);
+        pump(300);
+        check(!fileExists(leftover) && countNppWindows() == 1 && curName() == L"a.cpp", L"D7",
+              L"the copy's temporary folder was removed (%ls) and this window kept a.cpp active", leftover.c_str());
+        // a file opened on a desktop without Notepad++: the copied tabs, then that file, active
+        writeFile(path(L"d2.txt"), "opened on desktop 2\r\n");
+        launchSecond(L"1", path(L"d2.txt"));
+        return until([] { return deskCopyReady(L"d2.txt", g_deskTabs[0] + 1); }, 30000);
     });
-    add([] { return shot(L"desktop-A-state"); });
     add([] {
-        fakeSwitchTo(1);
-        desktopPollNow();
+        HWND w = g_secondWnd;
+        std::wstring why;
+        const bool layout = sameDeskLayout(w, 1, &why);
+        const int n = w ? static_cast<int>(::SendMessageW(w, NPPM_KEX_GETNBVIEWFILES, 0, 0)) : 0;
+        const int active = w ? static_cast<int>(::SendMessageW(w, NPPM_KEX_GETVIEWCURRENTINDEX, 0, 0)) : -2;
+        check(g_untilOk && layout && n == g_deskTabs[0] + 1 && active == n - 1 && windowTitle(w).find(L"d2.txt") != std::wstring::npos, L"D8",
+              L"notepad++.exe d2.txt on a desktop without Notepad++: the copied tabs, then d2.txt last and active (%d of %d)%ls", active + 1, n, why.c_str());
+        closeSecond(true);
         pump(300);
-        RECT r; ::GetWindowRect(npp._nppHandle, &r);
-        HWND s = curSci();
-        intptr_t caret = sci(s, SCI_GETCURRENTPOS);
-        check(fakeWindowDesktop(npp._nppHandle) == 1 && curName() == L"c.txt" && caret == posOf(s, 2, 5) && r.left == 120 && r.top == 90,
-            L"D5", L"back on B: B's tab (%ls), caret and placement %ls restored", curName().c_str(), rectStr(r).c_str());
+        // tidy up: the untitled tab goes without a question
+        for (int v = 0; v < views.count(); ++v)
+            for (int i = 0; views.visible(v) && i < views.nbFiles(v); ++i)
+                if (views.bufferId(v, i) == g_deskNoteBuf)
+                {
+                    views.activate(v, i);
+                    sci(curSci(), SCI_SETSAVEPOINT);
+                    nppMsg(NPPM_MENUCOMMAND, 0, IDM_FILE_CLOSE);
+                    v = views.count();
+                    break;
+                }
         switchTo(L"a.cpp");
-        pump(300);
-        Sci_Position line = sci(curSci(), SCI_LINEFROMPOSITION, sci(curSci(), SCI_GETCURRENTPOS));
-        check(line == 24, L"D6", L"lazy restore on activation: a.cpp on B is at line %lld (B's own position; A keeps line 5)", static_cast<long long>(line) + 1);
-        switchTo(L"c.txt");
-        bool would = desktopWouldCloseHere();
-        ::SendMessageW(npp._nppHandle, WM_SYSCOMMAND, SC_CLOSE, 0);   // title-bar X
-        pump(250);
-        DesktopStats d = desktopStats();
-        std::wstring ini = settings.getStr((L"Desktop." + guidStr(fakeDesktopGuid(1))).c_str(), L"Registered", L"");
-        check(would && ::IsWindow(npp._nppHandle) && d.registered == 1 && fakeWindowDesktop(npp._nppHandle) == 0 && ini.empty(), L"D7",
-            L"X on B closed Notepad++ only on B: still running, now on A, %d registered, B's INI section removed", d.registered);
-        check(!desktopWouldCloseHere(), L"D8", L"with one registered desktop the X button exits as usual (not intercepted); File > Exit is never intercepted");
-        fakeSwitchTo(2);
-        desktopPollNow();
-        ::SendMessageW(npp._nppHandle, NPPM_INTERNAL_RESTOREFROMMINIMIZED_, 0, 0);   // what a second notepad++.exe sends
-        pump(400);
-        d = desktopStats();
-        check(d.registered == 2 && fakeWindowDesktop(npp._nppHandle) == 2, L"D9", L"second instance on unregistered desktop C: registered and moved there (%ls)", d.lastAction.c_str());
-        return 200;
-    });
-    add([] {
-        std::wstring regs;
-        for (const std::wstring& s : settings.sectionNames()) if (s.compare(0, 8, L"Desktop.") == 0) regs += s + L" ";
-        tlog(L"INFO INI sections: %ls", regs.c_str());
-        std::wstring a = settings.getStr((L"Desktop." + guidStr(fakeDesktopGuid(0))).c_str(), L"Active0", L"");
-        check(regs.find(guidStr(fakeDesktopGuid(0))) != std::wstring::npos && regs.find(guidStr(fakeDesktopGuid(2))) != std::wstring::npos, L"D10",
-            L"state persisted per desktop GUID in %ls (A's active tab: %ls)", settings.path().c_str(), a.c_str());
-        fakeSwitchTo(0);
-        desktopPollNow();   // A is registered: the window follows
-        pump(300);
-        if (isPostItMode()) nppMsg(NPPM_MENUCOMMAND, 0, IDM_VIEW_POSTIT);
-        pump(200);
-        return 200;
+        focusEditor();
+        pump(150);
+        return 100;
     });
 
     // ---- global hotkey ---------------------------------------------------------------------------
@@ -1131,6 +1404,39 @@ void buildSteps()
         check(q && lostFocus && quickNoteWindow() == q && ::GetForegroundWindow() == q, L"Q7", L"hotkey while the note is open but not in front: brought to front, not hidden");
         pressHotkey();
         check(!quickNoteWindow(), L"Q8", L"and the next press hides it");
+        ::ShowWindow(npp._nppHandle, SW_RESTORE);
+        focusEditor();
+        pump(200);
+        return 200;
+    });
+    add([] {
+        // the options: line numbers, no wrapping, current line, open where it was left
+        const wchar_t* k = modules[M_HOTKEY]->key();
+        settings.setInt(k, L"LineNumbers", 1); settings.setInt(k, L"WordWrap", 0); settings.setInt(k, L"CurrentLine", 1); settings.setInt(k, L"RememberPlace", 1);
+        modules[M_HOTKEY]->loadOptions();
+        pressHotkey();
+        pump(200);
+        HWND q = quickNoteWindow(), ed = quickNoteEditor();
+        const LONG_PTR st = q ? ::GetWindowLongPtrW(q, GWL_STYLE) : 0;
+        check(q && ed && !(st & WS_CAPTION) && sci(ed, SCI_GETMARGINWIDTHN, 0) > 0 && sci(ed, SCI_GETWRAPMODE) == SC_WRAP_NONE && sci(ed, SCI_GETCARETLINEVISIBLE),
+              L"Q9", L"no title bar; line numbers %d px wide, no wrapping, current line shown", q && ed ? static_cast<int>(sci(ed, SCI_GETMARGINWIDTHN, 0)) : -1);
+        RECT r{}; if (q) ::GetWindowRect(q, &r);
+        auto hit = [&](int x, int y) { return static_cast<int>(::SendMessageW(q, WM_NCHITTEST, 0, MAKELPARAM(x, y))); };
+        const int top = hit((r.left + r.right) / 2, r.top + 2), corner = hit(r.right - 2, r.bottom - 2), left = hit(r.left + 2, (r.top + r.bottom) / 2),
+                  mid = hit((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+        check(top == HTCAPTION && corner == HTBOTTOMRIGHT && left == HTLEFT && mid == HTCLIENT, L"Q10",
+              L"its edge: top moves it (%d), corner and sides resize it (%d, %d), the middle is text (%d)", top, corner, left, mid);
+        if (q) ::SetWindowPos(q, nullptr, 60, 50, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        pressHotkey();
+        pump(250);
+        pressHotkey();
+        pump(200);
+        RECT r2{}; if (quickNoteWindow()) ::GetWindowRect(quickNoteWindow(), &r2);
+        check(quickNoteWindow() && r2.left == 60 && r2.top == 50, L"Q11", L"\"Open where I left it\": it comes back at %ls", rectStr(r2).c_str());
+        pressHotkey();
+        pump(200);
+        settings.setInt(k, L"LineNumbers", 0); settings.setInt(k, L"WordWrap", 1); settings.setInt(k, L"CurrentLine", 0); settings.setInt(k, L"RememberPlace", 0);
+        modules[M_HOTKEY]->loadOptions();
         ::ShowWindow(npp._nppHandle, SW_RESTORE);
         focusEditor();
         pump(200);
@@ -1223,7 +1529,13 @@ void buildSteps()
                 break;
             }
             case M_TABS: restored = ::FindWindowW(L"KexSuiteTabStrip", nullptr) == nullptr; extra = L"strip window destroyed"; break;
-            case M_DESKTOP: restored = mainHooks.onSysClose == nullptr && mainHooks.onSecondInstance == nullptr; extra = L"close/second-instance hooks removed"; break;
+            case M_DESKTOP:
+            {
+                wchar_t ini[16] = {};
+                ::GetPrivateProfileStringW(L"PerDesktop", L"Enabled", L"", ini, 15, settings.path().c_str());
+                restored = !wcscmp(ini, L"0"); extra = L"a second notepad++.exe will hand its files to this window again";
+                break;
+            }
             case M_SNAP: restored = ::FindWindowW(L"KexSuiteSnapPreview", nullptr) == nullptr && !kexsuite::tabSnapOn(); extra = L"preview window destroyed, the core is back to the drop menu"; break;
             }
             check(off && unchecked && restored, L"E1", L"%ls off from Preferences: unticked and remembered, %ls", modules[i]->title(), extra.c_str());
@@ -1460,6 +1772,11 @@ void buildSteps()
         LONG_PTR ex = pw ? ::GetWindowLongPtrW(pw, GWL_EXSTYLE) : 0;
         check(pw && ::IsWindowVisible(pw) && (ex & WS_EX_TRANSPARENT) && (ex & WS_EX_LAYERED) && (ex & WS_EX_NOACTIVATE), L"N2",
             L"the preview is a click-through layered window that never takes focus");
+        POINT c; ::GetCursorPos(&c);
+        HWND lw = ::FindWindowW(L"KexSuiteTabLift", nullptr);
+        LONG_PTR lex = lw ? ::GetWindowLongPtrW(lw, GWL_EXSTYLE) : 0;
+        check(st.lifted && st.lifts >= 1 && ::PtInRect(&st.lift, c) && lw && ::IsWindowVisible(lw) && (lex & WS_EX_TRANSPARENT) && (lex & WS_EX_LAYERED),
+            L"N12", L"the dragged tab is lifted off the bar and follows the mouse: %ls around the cursor (%ld,%ld), click-through", rectStr(st.lift).c_str(), c.x, c.y);
         return 50;
     });
     add([] { return views.patched() ? shot(L"tab-snap-preview-right") : 0; });
@@ -1468,8 +1785,8 @@ void buildSteps()
         RECT predicted = snapStats().target;
         dragEnd();
         RECT r1 = viewRect(1);
-        check(views.visible(1) && viewOfFile(g_dragFile) == 1 && views.nbFiles(1) == 1 && views.current() == 1 && !snapStats().visible, L"N3",
-            L"dropped there: %ls opened in a new view on the right, preview gone", g_dragFile.c_str());
+        check(views.visible(1) && viewOfFile(g_dragFile) == 1 && views.nbFiles(1) == 1 && views.current() == 1 && !snapStats().visible && !snapStats().lifted, L"N3",
+            L"dropped there: %ls opened in a new view on the right, preview and lifted tab gone", g_dragFile.c_str());
         check(rectNear(r1, predicted, 6), L"N4", L"the new view sits where the preview was: %ls vs preview %ls", rectStr(r1).c_str(), rectStr(predicted).c_str());
         return 200;
     });
@@ -1535,6 +1852,33 @@ void buildSteps()
     });
     add([] {
         if (!views.patched()) return 0;
+        // a quick pull straight down from the tab's label, out of the tab bar at once, still drags the tab
+        switchTo(L"a.cpp");
+        pump(150);
+        const int from = viewOfFile(L"a.cpp");
+        HWND tab = views.tabBar(from);
+        const int idx = views.currentIndex(from);
+        RECT r{};
+        ::SendMessageW(tab, TCM_GETITEMRECT, static_cast<WPARAM>(idx), reinterpret_cast<LPARAM>(&r));
+        ::MapWindowPoints(tab, nullptr, reinterpret_cast<POINT*>(&r), 2);
+        const int x = (r.left + r.right) / 2, y = r.bottom - 4;   // on the label, near the bottom edge
+        const int lifts = snapStats().lifts;
+        mouseTo(x, y); pump(80);
+        mouseButton(true); pump(60);
+        mouseTo(x, y + 40); pump(30);
+        mouseTo(x, y + 90); pump(250);
+        SnapStats st = snapStats();
+        POINT c; ::GetCursorPos(&c);
+        check(st.lifts == lifts + 1 && st.lifted && ::PtInRect(&st.lift, c), L"N13",
+            L"pressing a tab's label and pulling straight down out of the tab bar starts the drag at once (lifted tab at %ls)", rectStr(st.lift).c_str());
+        mouseTo(x, (r.top + r.bottom) / 2); pump(100);   // back onto its own tab
+        dragEnd();
+        check(viewOfFile(L"a.cpp") == from && !snapStats().lifted && !snapStats().visible, L"N14",
+            L"dropped back on its own tab: nothing moved, the lifted tab is gone");
+        return 200;
+    });
+    add([] {
+        if (!views.patched()) return 0;
         // switched off: no preview, the classic drop handling (a drop on another view still moves it)
         setModuleEnabled(M_SNAP, false, false);
         switchTo(L"a.cpp");
@@ -1572,6 +1916,7 @@ void buildSteps()
             HWND s = views.sci(v);
             g_glassBack[v] = s ? static_cast<COLORREF>(sci(s, SCI_STYLEGETBACK, STYLE_DEFAULT)) : 0;
             g_glassTech[v] = s ? static_cast<int>(sci(s, SCI_GETTECHNOLOGY)) : -1;
+            g_glassQuality[v] = s ? static_cast<int>(sci(s, SCI_GETFONTQUALITY)) : -1;
         }
         tlog(L"INFO glass: g.txt in view %d, theme background %06lx, renderers %d %d %d %d", viewOfFile(L"g.txt") + 1,
              static_cast<unsigned long>(g_glassBack[0]), g_glassTech[0], g_glassTech[1], g_glassTech[2], g_glassTech[3]);
@@ -1601,6 +1946,11 @@ void buildSteps()
             ts += std::to_wstring(o) + L">" + std::to_wstring(now) + L" ";
         }
         check(tech, L"G3", L"Direct2D window renderers drawn through a DC while the glass is on (view renderers %ls)", ts.c_str());
+        bool sharp = true;
+        for (int v = 0; v < views.count(); ++v)
+            if (HWND s = views.sci(v)) sharp = sharp && sci(s, SCI_GETFONTQUALITY) == SC_EFF_QUALITY_NON_ANTIALIASED;
+        check(sharp, L"G16", L"the views draw their text without smoothing while the glass is on (Notepad++ had quality %d), so letters get no outline",
+              g_glassQuality[0]);
         HWND c = glassCatcherOf(npp._nppHandle);
         RECT cr = clientOnScreen(npp._nppHandle), kr = screenRectOf(c);
         check(c && ::IsWindowVisible(c) && ::EqualRect(&cr, &kr) && nextVisible(npp._nppHandle) == c && g.hosts >= 1, L"G4",
@@ -1679,10 +2029,29 @@ void buildSteps()
         pump(200);
         HWND p = prefPage(PAGE_WINDOWS);
         std::wstring st = itemText(p, IDC_G_STATUS), info = itemText(p, IDC_G_INFO), tint = itemText(p, IDC_G_TINT);
-        check(st == L"Running" && info.rfind(L"On:", 0) == 0 && tint == L"65", L"G14", L"KEX Windows page: \"%ls\", \"%ls\", tint %ls%%", st.c_str(), info.c_str(), tint.c_str());
+        std::wstring style = itemText(p, IDC_G_STYLE), edges = itemText(p, IDC_G_EDGES);
+        check(st == L"Running" && info.rfind(L"On:", 0) == 0 && tint == L"40" && style == L"Blur" && edges.rfind(L"Sharp", 0) == 0, L"G14",
+              L"KEX Windows page: \"%ls\", \"%ls\", style %ls, tint %ls%%, text edges %ls", st.c_str(), info.c_str(), style.c_str(), tint.c_str(), edges.c_str());
         return 200;
     });
     add([] { return shot(L"preferences-kex-windows-glass"); });
+    add([] {
+        HWND p = prefPage(PAGE_WINDOWS);
+        pickCombo(p, IDC_G_EDGES, 2);   // "As Notepad++ draws them"
+        pump(300);
+        bool own = true;
+        for (int v = 0; v < views.count(); ++v)
+            if (HWND s = views.sci(v)) own = own && sci(s, SCI_GETFONTQUALITY) == g_glassQuality[v];
+        check(glassStats().active && own && settings.getInt(L"Glass", L"TextEdges", 0) == 2, L"G17",
+              L"Text edges \"As Notepad++ draws them\": the glass stays on and the views keep Notepad++'s own text smoothing");
+        pickCombo(p, IDC_G_STYLE, 1);   // acrylic: the test engine has no blur, the setting must still be taken
+        pump(200);
+        check(glassStats().active && settings.getInt(L"Glass", L"Style", 0) == 1, L"G18", L"Style Acrylic is remembered and the glass restarts with it");
+        pickCombo(p, IDC_G_STYLE, 0);
+        pickCombo(p, IDC_G_EDGES, 0);
+        pump(300);
+        return 100;
+    });
     add([] {
         clickEnable(M_GLASS);
         pump(300);
@@ -1695,9 +2064,10 @@ void buildSteps()
             {
                 if (static_cast<COLORREF>(sci(s, SCI_STYLEGETBACK, STYLE_DEFAULT)) != g_glassBack[v]) back = false;
                 if (static_cast<int>(sci(s, SCI_GETTECHNOLOGY)) != g_glassTech[v]) tech = false;
+                if (static_cast<int>(sci(s, SCI_GETFONTQUALITY)) != g_glassQuality[v]) tech = false;
             }
         check(!modules[M_GLASS]->isEnabled() && !layered && back && tech && !glassCatcherOf(npp._nppHandle) && settings.getInt(L"Glass", L"Enabled", 1) == 0, L"G15",
-              L"glass off: the window is not layered, the theme's backgrounds and renderers are back, the catcher is gone");
+              L"glass off: the window is not layered, the theme's backgrounds, renderers and text smoothing are back, the catcher is gone");
         if (views.sci(1)) sci(views.sci(1), SCI_SETTECHNOLOGY, SC_TECHNOLOGY_DEFAULT);
         return 200;
     });
@@ -1915,6 +2285,95 @@ void buildSteps()
               L"L21", L"Clear all Styles clears the live tokens too, and k.cpp is forgotten %ls", why.c_str());
         focusEditor();
         return 200;
+    });
+    add([] {
+        // plain text: its null lexer styles only the last character of a range, the rest needs the suite
+        writeFile(path(L"t.txt"), "plain words here\r\nmore words: plain and plainer plain\r\n");
+        open(L"t.txt");
+        settle(300);
+        HWND s = curSci();
+        caretOn(s, wordsIn(s, "plain")[0]);
+        tokCommand(IDM_SEARCH_MARKALLEXT3);
+        settle();
+        tokCommand(static_cast<UINT>(tokenCommandId(0)));   // Bold
+        settle(400);
+        sci(s, SCI_DOCUMENTEND);
+        sci(s, SCI_REPLACESEL, 0, reinterpret_cast<LPARAM>("typed plain\r\n"));
+        settle(400);
+        std::wstring why;
+        const std::vector<intptr_t> pl = wordsIn(s, "plain");
+        const int st = pl.empty() ? -1 : styleAt(s, pl[0]);
+        check(curName() == L"t.txt" && pl.size() == 4 && allOurs(s, 23, pl, 5) == 4 && styledAs(s, pl, 5, 1, -1, &why) && styledAs(s, wordsIn(s, "words"), 5, 0, -1, nullptr)
+              && sci(s, SCI_STYLEGETWEIGHT, st) >= SC_WEIGHT_BOLD, L"L22",
+              L"plain .txt: \"plain\" is coloured and bold, the one typed later too, \"plainer\" and the other words stay plain (style %d) %ls", st, why.c_str());
+        return 100;
+    });
+    add([] {
+        HWND s = curSci();
+        caretOn(s, wordsIn(s, "plain")[1]);
+        tokCommand(static_cast<UINT>(tokenCommandId(1)));   // Italic on
+        settle(300);
+        tokCommand(static_cast<UINT>(tokenCommandId(0)));   // Bold off
+        settle(400);
+        std::wstring why;
+        const std::vector<intptr_t> pl = wordsIn(s, "plain");
+        const bool italicOnly = styledAs(s, pl, 5, 2, -1, &why);
+        tokCommand(static_cast<UINT>(tokenCommandId(2)));   // Clear This Token
+        settle(400);
+        std::wstring why2;
+        const bool cleared = styledAs(s, pl, 5, 0, -1, &why2) && tokRuns(s, 23) == 0;
+        check(italicOnly && cleared, L"L23", L"plain .txt: Bold off leaves it italic, Clear This Token makes it plain again %ls %ls", why.c_str(), why2.c_str());
+        nppMsg(NPPM_SAVECURRENTFILE);
+        nppMsg(NPPM_MENUCOMMAND, 0, IDM_FILE_CLOSE);
+        pump(200);
+        focusEditor();
+        return 200;
+    });
+    // ---- speed: what the features cost while typing and while idle --------------------------------
+    add([] {
+        std::string text;
+        for (int i = 1; i <= 3000; ++i)
+            text += "static int value" + std::to_string(i) + " = " + std::to_string(i * 7) + ";   // line " + std::to_string(i) + " of the speed test\r\n";
+        writeFile(path(L"perf.cpp"), text);
+        open(L"perf.cpp");
+        focusEditor();
+        pump(300);
+        bool was[M_COUNT];
+        for (int i = 0; i < M_COUNT; ++i) was[i] = modules[i]->isEnabled();
+        const Perf on = measurePerf();
+        for (int i = 0; i < M_COUNT; ++i) if (was[i]) setModuleEnabled(i, false, false);
+        focusEditor();
+        const Perf off = measurePerf();
+        const PushCost push = layeredPushCost();
+        tlog(L"INFO PERF all KEX features on: %.3f ms per key, %.2f%% CPU idle; all off: %.3f ms per key, %.2f%% CPU idle",
+             on.keyMs, on.idleCpu, off.keyMs, off.idleCpu);
+        tlog(L"INFO PERF smooth caret: window redrawn %.2f times per key while typing, %.1f times a second while idle; one redraw costs %.3f ms (%.3f ms CPU) here and makes the text repaint %.2f times",
+             on.caretRedraws, on.idleRedraws, push.ms, push.cpuMs, push.paints);
+        tlog(L"INFO PERF text repaints per key: %.2f with the features on, %.2f with them off", on.paints, off.paints);
+        tlog(L"INFO PERF smooth caret's own code per key: %.3f ms, of it %.3f ms working out caret positions and %.3f ms redrawing its window",
+             on.caretWork, on.caretCompute, on.caretPush);
+        for (int i = 0; i < M_COUNT; ++i)
+        {
+            if (!was[i]) continue;
+            setModuleEnabled(i, true, false);
+            focusEditor();
+            const Perf one = measurePerf();
+            tlog(L"INFO PERF only %-34ls %.3f ms per key (%+.3f), %.2f%% CPU idle (%+.2f)", modules[i]->title(),
+                 one.keyMs, one.keyMs - off.keyMs, one.idleCpu, one.idleCpu - off.idleCpu);
+            setModuleEnabled(i, false, false);
+        }
+        for (int i = 0; i < M_COUNT; ++i) if (was[i]) setModuleEnabled(i, true, false);
+        // The features' own work, without the window system's time for the caret's redraws (measured
+        // above: that part depends on the machine, not on our code); the redraws themselves are capped
+        // by the caret's glide (80 ms at one frame per 15 ms) and blink fade.
+        const double ownKey = on.keyMs - on.caretRedraws * push.ms - off.keyMs;
+        const double ownIdle = on.idleCpu - off.idleCpu - on.idleRedraws * push.cpuMs / 10.0;
+        check(ownKey <= off.keyMs * 0.5 + 0.3 && ownIdle <= 1.5 && on.caretRedraws <= 8 && on.idleRedraws <= 25, L"PERF1",
+              L"the features' own work adds %.3f ms per key and %.2f%% CPU while idle; caret redraws %.2f per key, %.1f a second idle (total %.3f vs %.3f ms per key, %.2f%% vs %.2f%% idle)",
+              ownKey, ownIdle, on.caretRedraws, on.idleRedraws, on.keyMs, off.keyMs, on.idleCpu, off.idleCpu);
+        nppMsg(NPPM_MENUCOMMAND, 0, IDM_FILE_CLOSE);
+        pump(200);
+        return 100;
     });
     add([] {
         if (g_other.hProcess) { ::TerminateProcess(g_other.hProcess, 0); ::CloseHandle(g_other.hProcess); ::CloseHandle(g_other.hThread); }

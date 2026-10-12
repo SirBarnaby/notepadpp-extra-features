@@ -15,6 +15,9 @@
 //   own drop handling works.
 // - Direct2D's window render target cannot draw into a layered window, so while the glass is on,
 //   Scintilla windows that use it switch to DirectWrite drawn through a DC (same text rendering).
+// - Smoothed text edges are blends of the text colour and the key colour, so they are not keyed and
+//   would show as an outline around every letter on the glass. By default the views draw their text
+//   without smoothing while the glass is on ("Text edges" option).
 #include "KexSuite.h"
 #include <ole2.h>
 #include <map>
@@ -30,6 +33,7 @@ const UINT_PTR TIMER_SYNC = 1, TIMER_DRAG = 2;
 const UINT WM_GLASS_REFRESH = WM_APP + 91;
 
 enum Engine { E_BEHIND = 0, E_SELF, E_KEYONLY };
+enum Edges { EDGES_SHARP = 0, EDGES_SMOOTH, EDGES_KEEP };
 enum { ACCENT_DISABLED = 0, ACCENT_BLURBEHIND = 3, ACCENT_ACRYLIC = 4 };
 
 struct AccentPolicy { int state; int flags; DWORD colour; int animationId; };
@@ -129,14 +133,15 @@ public:
 
     void loadOptions() override
     {
-        _tint = std::max(0, std::min(100, settings.getInt(key(), L"TintPercent", 65)));
+        _tint = std::max(0, std::min(100, settings.getInt(key(), L"Tint", 40)));
         _margins = settings.getInt(key(), L"Margins", 1) != 0;
         _keepRenderer = settings.getInt(key(), L"KeepRenderer", 0) != 0;
         std::wstring e = settings.getStr(key(), L"Engine", L"auto");
         if (e == L"self") _engine = E_SELF;
         else if (e == L"keyonly") _engine = E_KEYONLY;
         else _engine = E_BEHIND;
-        _acrylic = settings.getInt(key(), L"Acrylic", windowsBuild() >= 17134 ? 1 : 0) != 0;   // acrylic needs 1803
+        _acrylic = settings.getInt(key(), L"Style", 0) == 1 && windowsBuild() >= 17134;   // acrylic needs 1803
+        _edges = std::max(0, std::min(2, settings.getInt(key(), L"TextEdges", EDGES_SHARP)));
     }
 
     bool selfCheck(std::wstring& why) override
@@ -241,6 +246,9 @@ public:
             if (::IsWindow(t.first) && sci(t.first, SCI_GETTECHNOLOGY) == SC_TECHNOLOGY_DIRECTWRITEDC)
                 sci(t.first, SCI_SETTECHNOLOGY, t.second);
         _tech.clear();
+        for (auto& q : _quality)
+            if (::IsWindow(q.first)) sci(q.first, SCI_SETFONTQUALITY, q.second);
+        _quality.clear();
         _from.clear();
         if (was && npp._nppHandle)
         {
@@ -293,8 +301,11 @@ public:
         auto it = _from.find(s);
         if (it != _from.end() && static_cast<COLORREF>(sci(s, SCI_STYLEGETBACK, 0)) == it->second) return true;
         if (_margins && static_cast<COLORREF>(sci(s, SCI_STYLEGETBACK, STYLE_LINENUMBER)) != _key) return true;
+        if (_edges != EDGES_KEEP && sci(s, SCI_GETFONTQUALITY) != wantedQuality()) return true;
         return false;
     }
+
+    int wantedQuality() const { return _edges == EDGES_SHARP ? SC_EFF_QUALITY_NON_ANTIALIASED : SC_EFF_QUALITY_ANTIALIASED; }
 
     void remapView(HWND s)
     {
@@ -321,6 +332,15 @@ public:
         {
             sci(s, SCI_SETFOLDMARGINCOLOUR, 1, _key);
             sci(s, SCI_SETFOLDMARGINHICOLOUR, 1, _key);
+        }
+        if (_edges != EDGES_KEEP)
+        {
+            const int q = static_cast<int>(sci(s, SCI_GETFONTQUALITY));
+            if (q != wantedQuality())
+            {
+                if (_quality.find(s) == _quality.end()) _quality[s] = q;
+                sci(s, SCI_SETFONTQUALITY, wantedQuality());
+            }
         }
     }
 
@@ -447,8 +467,7 @@ public:
         if (_engine == E_KEYONLY) return;
         HWND w = _engine == E_BEHIND ? h.catcher : h.wnd;
         if (!w) return;
-        // acrylic makes dragging the window lag on Windows 10, so plain blur while it moves
-        const int state = (_acrylic && !h.moving) ? ACCENT_ACRYLIC : ACCENT_BLURBEHIND;
+        const int state = _acrylic ? ACCENT_ACRYLIC : ACCENT_BLURBEHIND;
         if (!setAccent(w, state))
         {
             ++s_stats.accentFailures;
@@ -499,7 +518,7 @@ public:
     }
 
     // The catcher must stay directly beneath its host, on the same virtual desktop.
-    void checkPlacement(Host& h)
+    void checkPlacement(Host& h, bool desktop)
     {
         if (!h.catcher || !::IsWindowVisible(h.wnd) || ::IsIconic(h.wnd))
         {
@@ -513,7 +532,8 @@ public:
         ::MapWindowPoints(h.wnd, nullptr, reinterpret_cast<POINT*>(&cr), 2);
         ::GetWindowRect(h.catcher, &kr);
         if (n != h.catcher || !::EqualRect(&cr, &kr) || !::IsWindowVisible(h.catcher)) placeCatcher(h);
-        DesktopProvider* dp = desktopProvider();
+        // which desktop a window is on is a call into Explorer: once a second, and when the window is activated
+        DesktopProvider* dp = desktop ? desktopProvider() : nullptr;
         if (dp && dp->ok())
         {
             GUID a{}, b{};
@@ -534,7 +554,6 @@ public:
         if (!h) return;
         h->moving = start;
         if (start) insetsOf(*h);
-        if (_acrylic) applyAccent(*h);
     }
 
     void onHostPosChanged(HWND w)
@@ -668,6 +687,8 @@ public:
             {
                 LRESULT r = ::DefSubclassProc(h, m, w, l);
                 if (g == s_glass) g->onHostPosChanged(h);
+                if (g == s_glass && m == WM_ACTIVATE && LOWORD(w) != WA_INACTIVE)
+                    if (Host* host = g->find(h)) g->checkPlacement(*host, true);   // it may have been moved to another desktop
                 return r;
             }
             case WM_ENTERSIZEMOVE:
@@ -710,7 +731,7 @@ public:
         ++_ticks;
         if (!_active) { evaluate(); return; }
         syncHosts();
-        for (Host& h : _hosts) checkPlacement(h);
+        for (Host& h : _hosts) checkPlacement(h, _ticks % 4 == 0);
         bool stale = false;
         for (int v = 0; v < views.count() && !stale; ++v)
             if (HWND s = views.sci(v)) stale = viewNeedsRemap(s);
@@ -737,8 +758,9 @@ public:
     std::vector<Host> _hosts;
     std::map<HWND, int> _tech;          // Scintilla windows switched to DirectWriteDC: their own technology
     std::map<HWND, COLORREF> _from;     // each view's own background before the key replaced it
+    std::map<HWND, int> _quality;       // views whose text smoothing was switched: their own setting
     COLORREF _bg = 0, _key = 0, _oldKey = 0xFFFFFFFF;
-    int _tint = 65;
+    int _tint = 40, _edges = EDGES_SHARP;
     bool _margins = true, _keepRenderer = false, _acrylic = true;
     Engine _engine = E_BEHIND;
     bool _active = false, _disabling = false, _blurRefused = false, _dragSolid = false;
@@ -777,6 +799,9 @@ std::wstring glassInfo()
     if (!m || !m->isEnabled()) return L"";
     if (!s_stats.active) return s_stats.state;
     std::wstring s = L"On: " + s_stats.state + L". Clicks on the glass go to the text under them.";
+    const int edges = settings.getInt(m->key(), L"TextEdges", EDGES_SHARP);
+    if (edges == EDGES_SHARP) s += L" Text is drawn without smoothing while the glass is on, so letters have no outline.";
+    else s += L" Smoothed letters show a thin outline of the theme's background on the glass.";
     return s;
 }
 

@@ -45,7 +45,8 @@ public:
     {
         if (!createMsgWindow(L"KexHoverTabs")) return false;
         if (!createStrip()) return false;
-        ::SetTimer(hwnd(), TIMER_POLL, 60, nullptr);
+        _pollMs = 60;
+        ::SetTimer(hwnd(), TIMER_POLL, _pollMs, nullptr);
         return true;
     }
 
@@ -111,7 +112,11 @@ private:
     void poll()
     {
         HWND n = npp._nppHandle;
-        if (!::IsWindowVisible(n) || ::IsIconic(n) || !isPostItMode()) { hideStrip(); return; }
+        const bool postIt = ::IsWindowVisible(n) && !::IsIconic(n) && isPostItMode();
+        // outside F12 mode only watch for it to start, a few times a second
+        const UINT wantMs = postIt ? 60 : 400;
+        if (wantMs != _pollMs) { _pollMs = wantMs; ::SetTimer(hwnd(), TIMER_POLL, _pollMs, nullptr); }
+        if (!postIt) { hideStrip(); return; }
         POINT pt; ::GetCursorPos(&pt);
         int zv = zoneView(pt);
         bool inZone = zv >= 0;
@@ -356,6 +361,7 @@ private:
     bool _shown = false;
     double _leftAt = 0;
     int _zone = 6, _hideDelay = 350, _view = 0, _hot = -1;
+    UINT _pollMs = 60;
     std::vector<Tab> _tabs;
 };
 

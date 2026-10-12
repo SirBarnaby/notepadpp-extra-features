@@ -1,18 +1,21 @@
 // HotkeyDrop.cpp - quick note: a global hotkey (RegisterHotKey, default Ctrl+Alt+M) fades a small
-// Notepad++-styled note window in at the centre of the screen, over whatever program is in front and
-// whether or not Notepad++ is minimised. Pressing it again fades the note out and gives the focus
-// back. The text is saved to kex-quicknote.txt in Notepad++'s settings folder as you type.
+// Notepad++-styled note window in at the centre of the screen (or where it was left), over whatever
+// program is in front and whether or not Notepad++ is minimised. Pressing it again fades the note out
+// and gives the focus back. The text is saved to kex-quicknote.txt in Notepad++'s settings folder as
+// you type. The note has no title bar: its top edge moves it, the other edges and corners resize it.
 #include "KexSuite.h"
 #include <dwmapi.h>
 #include <cmath>
+#include <climits>
 
 namespace kex {
 
 namespace {
 
 const int HOTKEY_ID = 0x4B45;
-const UINT_PTR TIMER_FADE = 1, TIMER_SAVE = 2;
-const double FADE_MS = 120.0;
+const UINT_PTR TIMER_FADE = 1, TIMER_SAVE = 2, TIMER_TAKEOVER = 3;
+const double FADE_MS = 150.0;
+const int FRAME96 = 7;                 // the edge around the text: move (top) and resize (the rest)
 const wchar_t* NOTE_CLASS = L"KexQuickNote";
 HotkeyStats s_stats;
 
@@ -57,6 +60,14 @@ public:
         _fade = settings.getInt(key(), L"Fade", 1) != 0;
         _w96 = std::max(240, settings.getInt(key(), L"Width", 640));
         _h96 = std::max(140, settings.getInt(key(), L"Height", 420));
+        _lineNumbers = settings.getInt(key(), L"LineNumbers", 0) != 0;
+        _wrap = settings.getInt(key(), L"WordWrap", 1) != 0;
+        _caretLine = settings.getInt(key(), L"CurrentLine", 0) != 0;
+        _onTop = settings.getInt(key(), L"OnTop", 1) != 0;
+        _remember = settings.getInt(key(), L"RememberPlace", 0) != 0;
+        _x = settings.getInt(key(), L"X", INT_MIN);
+        _y = settings.getInt(key(), L"Y", INT_MIN);
+        _zoom = settings.getInt(key(), L"Zoom", INT_MIN);
     }
 
     bool selfCheck(std::wstring& why) override
@@ -74,13 +85,16 @@ public:
     {
         if (!createMsgWindow(L"KexHotkey")) return false;
         registerKey();
-        if (!s_stats.registered && !selfTestMode)
+        if (!s_stats.registered && s_stats.byOtherNpp)
+            ::SetTimer(hwnd(), TIMER_TAKEOVER, 3000, nullptr);   // take the hotkey over once that window closes
+        else if (!s_stats.registered && !selfTestMode)
             showNote(L"KEX: the quick note hotkey " + s_stats.text + L" is already taken by another program. Pick another one in Settings > KEX Features.", 8000);
         return true;
     }
 
     void disable() override
     {
+        if (hwnd()) ::KillTimer(hwnd(), TIMER_TAKEOVER);
         if (hwnd() && s_stats.registered) ::UnregisterHotKey(hwnd(), HOTKEY_ID);
         s_stats.registered = false;
         destroyNote(true);
@@ -100,9 +114,24 @@ public:
             s_stats.lastError = s_stats.registered ? 0 : ::GetLastError();
         }
         s_stats.mods = _mods; s_stats.vk = _vk;
+        // With a Notepad++ for each desktop, the first window holds the hotkey and opens the note on
+        // whichever desktop the user is on.
+        s_stats.byOtherNpp = !s_stats.registered && s_stats.lastError == ERROR_HOTKEY_ALREADY_REGISTERED && otherNotepadPlusPlus();
         s_stats.text = text(_mods, _vk);
         log(L"hotkey %ls: %ls (error %lu)", s_stats.text.c_str(), s_stats.registered ? L"registered" : L"NOT registered", s_stats.lastError);
         return s_stats.registered;
+    }
+
+    static bool otherNotepadPlusPlus()
+    {
+        HWND h = nullptr;
+        while ((h = ::FindWindowExW(nullptr, h, L"Notepad++", nullptr)) != nullptr)
+        {
+            DWORD pid = 0;
+            ::GetWindowThreadProcessId(h, &pid);
+            if (pid != ::GetCurrentProcessId()) return true;
+        }
+        return false;
     }
 
     static std::wstring text(UINT mods, UINT vk)
@@ -134,6 +163,11 @@ protected:
     LRESULT onMessage(UINT m, WPARAM w, LPARAM l) override
     {
         if (m == WM_HOTKEY && w == HOTKEY_ID) { log(L"WM_HOTKEY received"); press(); return 0; }
+        if (m == WM_TIMER && w == TIMER_TAKEOVER)
+        {
+            if (registerKey() || !s_stats.byOtherNpp) { ::KillTimer(hwnd(), TIMER_TAKEOVER); refreshPrefPages(); }
+            return 0;
+        }
         return MsgWindow::onMessage(m, w, l);
     }
 
@@ -154,12 +188,21 @@ private:
         int h = std::min<int>(::MulDiv(_h96, dpi, 96), wa.bottom - wa.top - 40);
         int x = wa.left + (wa.right - wa.left - w) / 2;
         int y = wa.top + (wa.bottom - wa.top - h) / 2;
+        if (_remember && _x != INT_MIN && _y != INT_MIN)
+        {
+            // where it was left, if that is still on a screen
+            POINT tl{ _x, _y }, br{ _x + w - 1, _y + h - 1 };
+            if (::MonitorFromPoint(tl, MONITOR_DEFAULTTONULL) && ::MonitorFromPoint(br, MONITOR_DEFAULTTONULL)) { x = _x; y = _y; }
+        }
 
         std::wstring caption = L"Quick note  (" + s_stats.text + L" or Esc to hide)";
-        DWORD ex = WS_EX_TOOLWINDOW | WS_EX_TOPMOST | (_fade && !binaryAlpha() ? WS_EX_LAYERED : 0);
+        // Layered for its whole life when it fades: switching the style on a shown window is what made
+        // the fade skip now and then.
+        _layered = _fade && !binaryAlpha();
+        DWORD ex = WS_EX_TOOLWINDOW | (_onTop ? WS_EX_TOPMOST : 0) | (_layered ? WS_EX_LAYERED : 0);
         // Unowned, so it shows even while Notepad++ is minimised; created fresh each time, so it opens on
-        // the desktop you are looking at.
-        _note = ::CreateWindowExW(ex, NOTE_CLASS, caption.c_str(), WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
+        // the desktop you are looking at. No title bar: the edge around the text moves and sizes it.
+        _note = ::CreateWindowExW(ex, NOTE_CLASS, caption.c_str(), WS_POPUP | WS_CLIPCHILDREN,
                                   x, y, w, h, nullptr, nullptr, hInst, this);
         if (!_note) { log(L"quick note: CreateWindowEx failed (%lu)", ::GetLastError()); return; }
         if (nppMsg(NPPM_ISDARKMODEENABLED, 0, 0))
@@ -176,11 +219,13 @@ private:
         layout();
 
         _closing = false;
-        if (ex & WS_EX_LAYERED) { _alpha = 0; ::SetLayeredWindowAttributes(_note, 0, 0, LWA_ALPHA); }
+        if (_layered) { _alpha = 0; ::SetLayeredWindowAttributes(_note, 0, 0, LWA_ALPHA); }
         else _alpha = 255;
-        ::ShowWindow(_note, SW_SHOW);
+        ::ShowWindow(_note, SW_SHOWNA);
+        // paint the text before the first visible frame, so the fade shows the note and not a blank box
+        ::RedrawWindow(_note, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
         front();
-        if (ex & WS_EX_LAYERED) fadeTo(255);
+        if (_layered) fadeTo(255);
         s_stats.noteOpen = true;
         log(L"quick note: opened at %d,%d %dx%d, previous window %p", x, y, w, h, _prevFg);
     }
@@ -188,7 +233,7 @@ private:
     void front()
     {
         if (!_note) return;
-        ::SetWindowPos(_note, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        ::SetWindowPos(_note, _onTop ? HWND_TOPMOST : HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
         ::SetForegroundWindow(_note);
         ::SetFocus(_sci);
     }
@@ -201,22 +246,15 @@ private:
         int dpi = systemDpi();
         settings.setInt(key(), L"Width", ::MulDiv(r.right - r.left, 96, dpi));
         settings.setInt(key(), L"Height", ::MulDiv(r.bottom - r.top, 96, dpi));
+        settings.setInt(key(), L"X", r.left);
+        settings.setInt(key(), L"Y", r.top);
+        if (_sci) settings.setInt(key(), L"Zoom", static_cast<int>(sci(_sci, SCI_GETZOOM)));
         loadOptions();
         _closing = true;
         s_stats.noteOpen = false;
         if (_prevFg && ::IsWindow(_prevFg) && ::IsWindowVisible(_prevFg) && !::IsIconic(_prevFg)) ::SetForegroundWindow(_prevFg);
         log(L"quick note: closed, focus back to %p", _prevFg);
-        if (_fade && !binaryAlpha())
-        {
-            LONG_PTR st = ::GetWindowLongPtrW(_note, GWL_EXSTYLE);
-            if (!(st & WS_EX_LAYERED))
-            {
-                ::SetWindowLongPtrW(_note, GWL_EXSTYLE, st | WS_EX_LAYERED);
-                ::SetLayeredWindowAttributes(_note, 0, 255, LWA_ALPHA);
-                _alpha = 255;
-            }
-            fadeTo(0);
-        }
+        if (_layered) fadeTo(0);
         else destroyNote(false);
     }
 
@@ -233,7 +271,8 @@ private:
     void fadeTo(int target)
     {
         _alphaFrom = _alpha; _alphaTo = target; _fadeT0 = nowMs();
-        ::SetTimer(_note, TIMER_FADE, 15, nullptr);
+        ::SetTimer(_note, TIMER_FADE, 10, nullptr);
+        fadeStep();
     }
 
     void fadeStep()
@@ -244,17 +283,72 @@ private:
         ::SetLayeredWindowAttributes(_note, 0, static_cast<BYTE>(_alpha), LWA_ALPHA);
         if (t < 1.0) return;
         ::KillTimer(_note, TIMER_FADE);
-        if (_alphaTo == 0) { destroyNote(false); return; }
-        // fully shown: drop the layered style so the editor paints directly (no redirection cost)
-        ::SetWindowLongPtrW(_note, GWL_EXSTYLE, ::GetWindowLongPtrW(_note, GWL_EXSTYLE) & ~WS_EX_LAYERED);
-        ::RedrawWindow(_note, nullptr, nullptr, RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+        if (_alphaTo == 0) destroyNote(false);
     }
+
+    int frame() const { return ::MulDiv(FRAME96, systemDpi(), 96); }
 
     void layout()
     {
         if (!_note || !_sci) return;
         RECT rc{}; ::GetClientRect(_note, &rc);
-        ::MoveWindow(_sci, 0, 0, rc.right, rc.bottom, TRUE);
+        const int f = frame();
+        ::MoveWindow(_sci, f, f, std::max(0L, rc.right - 2 * f), std::max(0L, rc.bottom - 2 * f), TRUE);
+    }
+
+    // the edge around the text, in the editor's background with a hairline in a quieter text colour
+    void paintFrame(HDC dc)
+    {
+        RECT rc{}; ::GetClientRect(_note, &rc);
+        const COLORREF back = _sci ? static_cast<COLORREF>(sci(_sci, SCI_STYLEGETBACK, STYLE_DEFAULT)) : RGB(255, 255, 255);
+        const COLORREF fore = _sci ? static_cast<COLORREF>(sci(_sci, SCI_STYLEGETFORE, STYLE_DEFAULT)) : RGB(0, 0, 0);
+        auto mix = [](COLORREF a, COLORREF b, int pct) {
+            return RGB((GetRValue(a) * (100 - pct) + GetRValue(b) * pct) / 100, (GetGValue(a) * (100 - pct) + GetGValue(b) * pct) / 100,
+                       (GetBValue(a) * (100 - pct) + GetBValue(b) * pct) / 100);
+        };
+        HBRUSH bb = ::CreateSolidBrush(back);
+        ::FillRect(dc, &rc, bb);
+        ::DeleteObject(bb);
+        HBRUSH lb = ::CreateSolidBrush(mix(back, fore, 35));
+        ::FrameRect(dc, &rc, lb);
+        ::DeleteObject(lb);
+        // a short grip in the middle of the top edge says "drag here"
+        const int f = frame(), gw = ::MulDiv(36, systemDpi(), 96);
+        RECT g{ (rc.right - gw) / 2, f / 2 - 1, (rc.right + gw) / 2, f / 2 + 1 };
+        HBRUSH gb = ::CreateSolidBrush(mix(back, fore, 30));
+        ::FillRect(dc, &g, gb);
+        ::DeleteObject(gb);
+    }
+
+    LRESULT hitTest(HWND h, LPARAM l)
+    {
+        POINT pt{ static_cast<short>(LOWORD(l)), static_cast<short>(HIWORD(l)) };
+        ::ScreenToClient(h, &pt);
+        RECT rc{}; ::GetClientRect(h, &rc);
+        const int f = frame(), c = f * 2;
+        const bool left = pt.x < f, right = pt.x >= rc.right - f, top = pt.y < f, bottom = pt.y >= rc.bottom - f;
+        const bool nearLeft = pt.x < c, nearRight = pt.x >= rc.right - c, nearTop = pt.y < c, nearBottom = pt.y >= rc.bottom - c;
+        if ((top && nearLeft) || (left && nearTop)) return HTTOPLEFT;
+        if ((top && nearRight) || (right && nearTop)) return HTTOPRIGHT;
+        if ((bottom && nearLeft) || (left && nearBottom)) return HTBOTTOMLEFT;
+        if ((bottom && nearRight) || (right && nearBottom)) return HTBOTTOMRIGHT;
+        if (top) return HTCAPTION;
+        if (left) return HTLEFT;
+        if (right) return HTRIGHT;
+        if (bottom) return HTBOTTOM;
+        return HTCLIENT;
+    }
+
+    void updateMargins()
+    {
+        if (!_sci) return;
+        if (!_lineNumbers) { sci(_sci, SCI_SETMARGINWIDTHN, 0, 0); return; }
+        const LRESULT lines = sci(_sci, SCI_GETLINECOUNT);
+        int digits = 1;
+        for (LRESULT n = lines; n >= 10; n /= 10) ++digits;
+        std::string sample = "_" + std::string(static_cast<size_t>(std::max(2, digits)), '9');
+        const LRESULT w = sci(_sci, SCI_TEXTWIDTH, STYLE_LINENUMBER, reinterpret_cast<LPARAM>(sample.c_str()));
+        if (w != _marginWidth) { _marginWidth = w; sci(_sci, SCI_SETMARGINWIDTHN, 0, w + 4); }
     }
 
     // Look like the editor the user is in: font, colours, caret, selection, rendering, zoom.
@@ -264,7 +358,9 @@ private:
         sci(s, SCI_SETCODEPAGE, SC_CP_UTF8);
         if (src)
         {
-            sci(s, SCI_SETTECHNOLOGY, sci(src, SCI_GETTECHNOLOGY));
+            // DirectWrite drawn through a DC: an HWND render target doesn't show in a layered window
+            const LRESULT tech = sci(src, SCI_GETTECHNOLOGY);
+            sci(s, SCI_SETTECHNOLOGY, tech == SC_TECHNOLOGY_DEFAULT ? SC_TECHNOLOGY_DEFAULT : SC_TECHNOLOGY_DIRECTWRITEDC);
             char font[128] = {};
             if (sci(src, SCI_STYLEGETFONT, STYLE_DEFAULT, 0) < static_cast<LRESULT>(sizeof(font)))
                 sci(src, SCI_STYLEGETFONT, STYLE_DEFAULT, reinterpret_cast<LPARAM>(font));
@@ -276,14 +372,29 @@ private:
             sci(s, SCI_SETCARETFORE, sci(src, SCI_GETCARETFORE));
             sci(s, SCI_SETCARETWIDTH, std::max<LRESULT>(1, sci(src, SCI_GETCARETWIDTH)));
             sci(s, SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_BACK, sci(src, SCI_GETELEMENTCOLOUR, SC_ELEMENT_SELECTION_BACK));
-            sci(s, SCI_SETZOOM, sci(src, SCI_GETZOOM));
+            sci(s, SCI_SETZOOM, _zoom != INT_MIN ? _zoom : sci(src, SCI_GETZOOM));
+            sci(s, SCI_STYLESETFORE, STYLE_LINENUMBER, sci(src, SCI_STYLEGETFORE, STYLE_LINENUMBER));
+            sci(s, SCI_STYLESETBACK, STYLE_LINENUMBER, sci(src, SCI_STYLEGETBACK, STYLE_LINENUMBER));
+            if (_caretLine)
+            {
+                LRESULT back = sci(src, SCI_GETELEMENTCOLOUR, SC_ELEMENT_CARET_LINE_BACK);
+                if (!back) back = sci(src, SCI_GETCARETLINEBACK) | 0xFF000000;
+                sci(s, SCI_SETELEMENTCOLOUR, SC_ELEMENT_CARET_LINE_BACK, back);
+            }
         }
         for (int m = 0; m < 5; ++m) sci(s, SCI_SETMARGINWIDTHN, m, 0);
-        sci(s, SCI_SETMARGINLEFT, 0, 10);
-        sci(s, SCI_SETMARGINRIGHT, 0, 10);
-        sci(s, SCI_SETWRAPMODE, SC_WRAP_WORD);
-        sci(s, SCI_SETHSCROLLBAR, 0);
+        sci(s, SCI_SETMARGINTYPEN, 0, SC_MARGIN_NUMBER);
+        sci(s, SCI_SETMARGINLEFT, 0, _lineNumbers ? 4 : 6);
+        sci(s, SCI_SETMARGINRIGHT, 0, 6);
+        sci(s, SCI_SETWRAPMODE, _wrap ? SC_WRAP_WORD : SC_WRAP_NONE);
+        sci(s, SCI_SETHSCROLLBAR, _wrap ? 0 : 1);
+        sci(s, SCI_SETSCROLLWIDTHTRACKING, 1);
+        sci(s, SCI_SETSCROLLWIDTH, 1);
+        sci(s, SCI_SETCARETLINEVISIBLE, _caretLine ? 1 : 0);
+        sci(s, SCI_SETCARETLINEVISIBLEALWAYS, _caretLine ? 1 : 0);
+        if (!_caretLine) sci(s, SCI_RESETELEMENTCOLOUR, SC_ELEMENT_CARET_LINE_BACK);
         sci(s, SCI_SETMODEVENTMASK, SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT);
+        _marginWidth = -1;
     }
 
     void load()
@@ -311,6 +422,7 @@ private:
         sci(_sci, SCI_DOCUMENTEND);
         _loading = false;
         _dirty = false;
+        updateMargins();
     }
 
     void save()
@@ -339,6 +451,7 @@ private:
         wc.lpfnWndProc = noteProc;
         wc.hInstance = hInst;
         wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
         wc.hIcon = reinterpret_cast<HICON>(::GetClassLongPtrW(npp._nppHandle, GCLP_HICON));
         wc.hIconSm = reinterpret_cast<HICON>(::GetClassLongPtrW(npp._nppHandle, GCLP_HICONSM));
         wc.lpszClassName = NOTE_CLASS;
@@ -356,6 +469,26 @@ private:
         switch (m)
         {
         case WM_SIZE: self->layout(); return 0;
+        case WM_NCHITTEST: return self->hitTest(h, l);
+        case WM_SETCURSOR:
+            if (LOWORD(l) == HTCAPTION) { ::SetCursor(::LoadCursorW(nullptr, IDC_SIZEALL)); return TRUE; }
+            break;
+        case WM_ERASEBKGND: return 1;
+        case WM_PAINT:
+        {
+            PAINTSTRUCT ps;
+            HDC dc = ::BeginPaint(h, &ps);
+            self->paintFrame(dc);
+            ::EndPaint(h, &ps);
+            return 0;
+        }
+        case WM_GETMINMAXINFO:
+        {
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(l);
+            mmi->ptMinTrackSize.x = ::MulDiv(200, systemDpi(), 96);
+            mmi->ptMinTrackSize.y = ::MulDiv(100, systemDpi(), 96);
+            return 0;
+        }
         case WM_ACTIVATE: if (LOWORD(w) != WA_INACTIVE && self->_sci) ::SetFocus(self->_sci); return 0;
         case WM_CLOSE: self->close(); return 0;
         case WM_COMMAND: if (LOWORD(w) == IDCANCEL) { self->close(); return 0; } break;
@@ -371,6 +504,7 @@ private:
             {
                 self->_dirty = true;
                 ::SetTimer(h, TIMER_SAVE, 800, nullptr);
+                self->updateMargins();
             }
             return 0;
         }
@@ -387,8 +521,10 @@ private:
     }
 
     UINT _mods = MOD_CONTROL | MOD_ALT, _vk = 'M';
-    bool _keepText = true, _fade = true, _closing = false, _dirty = false, _loading = false;
-    int _w96 = 640, _h96 = 420;
+    bool _keepText = true, _fade = true, _closing = false, _dirty = false, _loading = false, _layered = false;
+    bool _lineNumbers = false, _wrap = true, _caretLine = false, _onTop = true, _remember = false;
+    int _w96 = 640, _h96 = 420, _x = INT_MIN, _y = INT_MIN, _zoom = INT_MIN;
+    LRESULT _marginWidth = -1;
     HWND _note = nullptr, _sci = nullptr, _prevFg = nullptr;
     int _alpha = 255, _alphaFrom = 0, _alphaTo = 255;
     double _fadeT0 = 0;

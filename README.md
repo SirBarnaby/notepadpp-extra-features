@@ -4,16 +4,16 @@ An unofficial build of [Notepad++](https://github.com/notepad-plus-plus/notepad-
 
 - **Four editing views** in a 2×2 grid instead of two. Move or clone a document to any view, rotate the grid with the splitter, and give every new command a shortcut.
 - **Snap-out views.** Drag a tab outside Notepad++ (or use *Move to New Window*) and that view becomes its own window; close it or drop it on the tab bar to snap it back.
-- **Built-in KEX features**, each switchable in *Settings > KEX Features* (four pages in Preferences):
-  - tab snapping: drag a tab to the edge of a view and a preview shows the new view it will open in; drop it on another view to move it there
-  - JetBrains (IntelliJ) editor shortcuts: Alt+J next occurrence, Ctrl+W extend selection, Ctrl+/ comment, Ctrl+Y delete line, Shift+Alt+Up/Down move line and more
-  - the same Notepad++ on every virtual desktop, with each desktop keeping its own active tab and position
+- **Built-in KEX features**, each switchable in *Settings > KEX Features* (five pages in Preferences):
+  - tab snapping: pull a tab from anywhere on it and it lifts off the bar and follows the mouse; at the edge of a view a preview shows the new view it will open in; drop it on another view to move it there
+  - JetBrains (IntelliJ) editor shortcuts: Alt+J next occurrence (match case and whole words like Smart Highlighting, or your own choice), Ctrl+W extend selection, Ctrl+/ comment, Ctrl+Y delete line, Shift+Alt+Up/Down move line and more
+  - a Notepad++ for each virtual desktop: starting Notepad++ on a desktop that has none opens a new window there with the same tabs, active tabs and carets, and a copy of every untitled tab; windows never move between desktops
   - falling letters when you delete text
   - a smooth, gliding caret
-  - a quick note on a global hotkey (Ctrl+Alt+M): a small note fades in over any app and fades out on the next press
+  - a quick note on a global hotkey (Ctrl+Alt+M): a small borderless note fades in over any app and fades out on the next press; line numbers, word wrap, current line, always on top and a remembered position are options
   - a tab strip that appears when you hover the top of a view in F12 mode
-  - a glass text area (off until you tick it): Windows' live blur shows through the background of the text, while menus, toolbar and tabs stay solid
-  - live token styles: *Style All Occurrences of Token* also styles the occurrences you type later, can make a token bold or italic, and remembers the styled tokens of each file; it is in the right-click menu and on a menu key (Ctrl+Shift+H)
+  - a glass text area (off until you tick it): Windows' live blur (or acrylic) shows through the background of the text, while menus, toolbar and tabs stay solid; text is drawn without smoothing there by default so letters get no outline
+  - live token styles: *Style All Occurrences of Token* also styles the occurrences you type later, can make a token bold or italic (in plain text files too), and remembers the styled tokens of each file; it is in the right-click menu and on a menu key (Ctrl+Shift+H)
 
 Not affiliated with the Notepad++ project. Built from the official source of each release.
 

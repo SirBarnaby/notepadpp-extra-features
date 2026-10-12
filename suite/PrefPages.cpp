@@ -1,4 +1,4 @@
-// PrefPages.cpp - Settings > Preferences > "KEX Editing", "KEX Tabs", "KEX Windows" and "KEX Highlighting" (the core
+// PrefPages.cpp - Settings > Preferences > "KEX Editing", "KEX Tabs", "KEX Windows", "KEX Highlighting" and "KEX Quick Note" (the core
 // creates the pages inside Notepad++'s Preferences dialog and hands their messages to prefPageProc).
 // Like the other Preferences pages, every change takes effect at once; numbers apply half a second
 // after the last keystroke.
@@ -12,8 +12,8 @@ namespace {
 
 const UINT_PTR TIMER_APPLY = 1;
 HWND g_pages[PAGE_COUNT] = {};
-const wchar_t* const kPageTitle[PAGE_COUNT] = { L"KEX Editing", L"KEX Tabs", L"KEX Windows", L"KEX Highlighting" };
-const wchar_t* const kPageName[PAGE_COUNT] = { L"KexEditing", L"KexTabs", L"KexWindows", L"KexHighlighting" };
+const wchar_t* const kPageTitle[PAGE_COUNT] = { L"KEX Editing", L"KEX Tabs", L"KEX Windows", L"KEX Highlighting", L"KEX Quick Note" };
+const wchar_t* const kPageName[PAGE_COUNT] = { L"KexEditing", L"KexTabs", L"KexWindows", L"KexHighlighting", L"KexQuickNote" };
 bool g_filling = false;
 
 struct IntField { int id; int module; const wchar_t* key; int def; };
@@ -26,8 +26,7 @@ const IntField kInts[] = {
     { IDC_C_SNAP, M_CARET, L"SnapAfterLines", 12 },
     { IDC_T_ZONE, M_TABS, L"HotZonePx", 6 },
     { IDC_T_DELAY, M_TABS, L"HideDelayMs", 350 },
-    { IDC_D_POLL, M_DESKTOP, L"PollMs", 150 },
-    { IDC_G_TINT, M_GLASS, L"TintPercent", 65 },
+    { IDC_G_TINT, M_GLASS, L"Tint", 40 },
 };
 struct BoolField { int id; int module; const wchar_t* key; int def; };
 const BoolField kBools[] = {
@@ -37,11 +36,24 @@ const BoolField kBools[] = {
     { IDC_C_OVB, M_CARET, L"OvertypeBlock", 1 },
     { IDC_H_KEEP, M_HOTKEY, L"KeepText", 1 },
     { IDC_H_FADE, M_HOTKEY, L"Fade", 1 },
-    { IDC_D_CLOSE, M_DESKTOP, L"CloseOnlyThisDesktop", 1 },
+    { IDC_H_LINES, M_HOTKEY, L"LineNumbers", 0 },
+    { IDC_H_WRAP, M_HOTKEY, L"WordWrap", 1 },
+    { IDC_H_CARETLINE, M_HOTKEY, L"CurrentLine", 0 },
+    { IDC_H_ONTOP, M_HOTKEY, L"OnTop", 1 },
+    { IDC_H_PLACE, M_HOTKEY, L"RememberPlace", 0 },
     { IDC_S_ANIM, M_SNAP, L"Animate", 1 },
+    { IDC_S_LIFT, M_SNAP, L"LiftTab", 1 },
     { IDC_J_ALL, M_KEYS, L"AlsoNotepadKeys", 1 },
     { IDC_G_MARGINS, M_GLASS, L"Margins", 1 },
     { IDC_K_REMEMBER, M_TOKENS, L"Remember", 1 },
+};
+// a drop-down list: the setting is the index of the picked item
+struct ComboField { int id; int module; const wchar_t* key; int def; const wchar_t* items; };
+const ComboField kCombos[] = {
+    { IDC_J_CASE, M_KEYS, L"OccurrenceCase", 0, L"Like Smart Highlighting|Match case|Ignore case" },
+    { IDC_J_WORDS, M_KEYS, L"OccurrenceWords", 0, L"Like Smart Highlighting|From a bare caret (IntelliJ)|Always|Never" },
+    { IDC_G_STYLE, M_GLASS, L"Style", 0, L"Blur|Acrylic" },
+    { IDC_G_EDGES, M_GLASS, L"TextEdges", 0, L"Sharp (no outlines on the glass)|Smooth|As Notepad++ draws them" },
 };
 const int kEnable[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN, IDC_G_EN, IDC_K_EN };
 const int kStatus[M_COUNT] = { IDC_L_STATUS, IDC_C_STATUS, IDC_H_STATUS, IDC_T_STATUS, IDC_D_STATUS, IDC_S_STATUS, IDC_J_STATUS, IDC_G_STATUS, IDC_K_STATUS };
@@ -71,6 +83,7 @@ void fillStatus(HWND d)
         if (modules[M_HOTKEY]->isEnabled())
         {
             if (hs.registered) ks = L"works from any program";
+            else if (hs.byOtherNpp) ks = L"handled by the first Notepad++ window, on every desktop";
             else
             {
                 wchar_t e[160];
@@ -85,8 +98,12 @@ void fillStatus(HWND d)
         DesktopStats ds = desktopStats();
         std::wstring info;
         if (modules[M_DESKTOP]->isEnabled())
-            info = L"Notepad++ is on " + std::to_wstring(ds.registered) + (ds.registered == 1 ? L" desktop. " : L" desktops. ")
-                 + L"Open it on another desktop to add that one.";
+        {
+            if (ds.newWindow)
+                info = L"This window opened on its own desktop with " + std::to_wstring(std::max(0, ds.copiedTabs)) + L" tabs from the first window.";
+            else
+                info = L"Start Notepad++ on another desktop (taskbar, Start, a file) to open a window there with these tabs.";
+        }
         ::SetDlgItemTextW(d, IDC_D_INFO, info.c_str());
     }
     if (has(d, IDC_G_INFO)) ::SetDlgItemTextW(d, IDC_G_INFO, glassInfo().c_str());
@@ -106,6 +123,23 @@ void fill(HWND d)
         if (has(d, f.id)) ::SetDlgItemInt(d, f.id, static_cast<UINT>(settings.getInt(modules[f.module]->key(), f.key, f.def)), FALSE);
     for (const BoolField& f : kBools)
         if (has(d, f.id)) ::CheckDlgButton(d, f.id, settings.getInt(modules[f.module]->key(), f.key, f.def) ? BST_CHECKED : BST_UNCHECKED);
+    for (const ComboField& f : kCombos)
+    {
+        if (!has(d, f.id)) continue;
+        HWND cb = ::GetDlgItem(d, f.id);
+        if (::SendMessageW(cb, CB_GETCOUNT, 0, 0) <= 0)
+        {
+            std::wstring items = f.items;
+            for (size_t a = 0; a <= items.size();)
+            {
+                size_t e = items.find(L'|', a);
+                if (e == std::wstring::npos) e = items.size();
+                ::SendMessageW(cb, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(items.substr(a, e - a).c_str()));
+                a = e + 1;
+            }
+        }
+        ::SendMessageW(cb, CB_SETCURSEL, static_cast<WPARAM>(settings.getInt(modules[f.module]->key(), f.key, f.def)), 0);
+    }
     if (has(d, IDC_H_KEY))
     {
         UINT mods = static_cast<UINT>(settings.getInt(modules[M_HOTKEY]->key(), L"Modifiers", MOD_CONTROL | MOD_ALT));
@@ -203,6 +237,21 @@ void onCommand(HWND d, int id, int code)
             ::MessageBoxW(::GetParent(d), jetBrainsKeyList().c_str(), L"JetBrains shortcuts", MB_OK | MB_ICONINFORMATION);
         return;
     }
+    if (code == CBN_SELCHANGE)
+    {
+        for (const ComboField& f : kCombos)
+            if (id == f.id)
+            {
+                const LRESULT sel = ::SendDlgItemMessageW(d, id, CB_GETCURSEL, 0, 0);
+                if (sel < 0) return;
+                settings.setInt(modules[f.module]->key(), f.key, static_cast<int>(sel));
+                if (f.module == M_GLASS) restart(f.module);   // it reads its settings when it starts
+                else modules[f.module]->loadOptions();
+                refreshPrefPages();
+                return;
+            }
+        return;
+    }
     if (code == EN_CHANGE)
     {
         if (id == IDC_H_KEY) { applyHotkey(d); fillStatus(d); return; }
@@ -212,7 +261,10 @@ void onCommand(HWND d, int id, int code)
     }
 }
 
-int pageIndex(HWND d) { return has(d, IDC_L_EN) ? PAGE_EDITING : has(d, IDC_S_EN) ? PAGE_TABS : has(d, IDC_K_EN) ? PAGE_HIGHLIGHT : PAGE_WINDOWS; }
+int pageIndex(HWND d)
+{
+    return has(d, IDC_L_EN) ? PAGE_EDITING : has(d, IDC_S_EN) ? PAGE_TABS : has(d, IDC_K_EN) ? PAGE_HIGHLIGHT : has(d, IDC_H_EN) ? PAGE_NOTE : PAGE_WINDOWS;
+}
 
 } // namespace
 
@@ -226,6 +278,7 @@ int pageOfModule(int module)
     case M_TABS: case M_SNAP: return PAGE_TABS;
     case M_GLASS: return PAGE_WINDOWS;
     case M_TOKENS: return PAGE_HIGHLIGHT;
+    case M_HOTKEY: return PAGE_NOTE;
     default: return PAGE_WINDOWS;
     }
 }

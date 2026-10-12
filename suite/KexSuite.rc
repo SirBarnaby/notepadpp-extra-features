@@ -33,11 +33,14 @@ BEGIN
     AUTOCHECKBOX    "Block caret in overtype", IDC_C_OVB, 316, 104, 110, 10
 
     GROUPBOX        "JetBrains shortcuts", -1, 4, 130, 452, 58
-    AUTOCHECKBOX    "IntelliJ editor keys: Alt+J next occurrence, Ctrl+W extend selection, Ctrl+/ comment...", IDC_J_EN, 12, 143, 300, 10
-    LTEXT           "", IDC_J_STATUS, 318, 144, 130, 9
-    AUTOCHECKBOX    "Also the keys Notepad++ uses for something else (Ctrl+Y, Ctrl+W, Ctrl+R, F11, Ctrl+Num +/-...)", IDC_J_ALL, 12, 157, 340, 10
-    PUSHBUTTON      "All shortcuts...", IDC_J_LIST, 12, 171, 70, 13
-    LTEXT           "Only in the editing views; every other key stays as Notepad++ has it.", -1, 90, 173, 300, 9
+    AUTOCHECKBOX    "IntelliJ editor keys: Alt+J next occurrence, Ctrl+W extend selection, Ctrl+/ comment...", IDC_J_EN, 12, 141, 300, 10
+    LTEXT           "", IDC_J_STATUS, 318, 142, 130, 9
+    AUTOCHECKBOX    "Also the keys Notepad++ uses for something else (Ctrl+Y, Ctrl+W, Ctrl+R, F11, Ctrl+Num +/-...)", IDC_J_ALL, 12, 154, 340, 10
+    LTEXT           "Alt+J case:", -1, 12, 171, 40, 8
+    COMBOBOX        IDC_J_CASE, 54, 169, 104, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Whole words:", -1, 168, 171, 46, 8
+    COMBOBOX        IDC_J_WORDS, 216, 169, 148, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "All shortcuts...", IDC_J_LIST, 376, 168, 70, 13
 
     LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
 END
@@ -50,6 +53,7 @@ BEGIN
     AUTOCHECKBOX    "Drag a tab to the edge of a view to open it beside that view", IDC_S_EN, 12, 15, 214, 10
     LTEXT           "", IDC_S_STATUS, 232, 16, 216, 9
     AUTOCHECKBOX    "Animate the preview", IDC_S_ANIM, 12, 31, 100, 10
+    AUTOCHECKBOX    "Lift the tab off the bar while it is dragged", IDC_S_LIFT, 120, 31, 200, 10
     LTEXT           "A preview shows where the tab will land. Drop it on another view to move it there; hold Ctrl to clone it instead. Esc cancels. Off: dropping a tab on its own view shows the Move/Clone menu.", -1, 12, 45, 436, 18
 
     GROUPBOX        "F12 hover tabs", -1, 4, 72, 452, 46
@@ -67,31 +71,23 @@ IDD_KEX_PAGE_WINDOWS DIALOGEX 115, 10, 460, 205
 STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD
 FONT 8, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
-    GROUPBOX        "Quick note", -1, 4, 2, 452, 50
-    AUTOCHECKBOX    "A global hotkey fades a small note in over any program", IDC_H_EN, 12, 15, 204, 10
-    LTEXT           "", IDC_H_STATUS, 222, 16, 226, 9
-    LTEXT           "Hotkey:", -1, 12, 33, 28, 8
-    CONTROL         "", IDC_H_KEY, "msctls_hotkey32", WS_BORDER | WS_TABSTOP, 42, 31, 84, 12
-    AUTOCHECKBOX    "+ Win", IDC_H_WIN, 132, 32, 34, 10
-    LTEXT           "", IDC_H_KEYSTATUS, 170, 33, 112, 9
-    AUTOCHECKBOX    "Keep the text between uses", IDC_H_KEEP, 286, 32, 104, 10
-    AUTOCHECKBOX    "Fade in and out", IDC_H_FADE, 392, 32, 62, 10
+    GROUPBOX        "A Notepad++ for each desktop", -1, 4, 4, 452, 66
+    AUTOCHECKBOX    "Starting Notepad++ on a desktop without one opens a new window there", IDC_D_EN, 12, 17, 262, 10
+    LTEXT           "", IDC_D_STATUS, 280, 18, 168, 9
+    LTEXT           "The new window opens with the same tabs, active tabs and carets as the first one, and with a copy of every untitled tab. Windows never move to another desktop.", -1, 12, 32, 436, 17
+    LTEXT           "", IDC_D_INFO, 12, 54, 436, 9
 
-    GROUPBOX        "Same Notepad++ on every desktop", -1, 4, 58, 452, 62
-    AUTOCHECKBOX    "The window follows you to every desktop you opened it on", IDC_D_EN, 12, 71, 214, 10
-    LTEXT           "", IDC_D_STATUS, 232, 72, 216, 9
-    LTEXT           "Check every (ms):", -1, 12, 89, 72, 8
-    EDITTEXT        IDC_D_POLL, 86, 87, 30, 12, ES_NUMBER
-    AUTOCHECKBOX    "The title-bar X closes it only on this desktop (when it is on 2 or more)", IDC_D_CLOSE, 128, 88, 270, 10
-    LTEXT           "", IDC_D_INFO, 12, 105, 436, 9
-
-    GROUPBOX        "Glass text area", -1, 4, 126, 452, 62
-    AUTOCHECKBOX    "Windows' blur shows through the background of the text", IDC_G_EN, 12, 139, 214, 10
-    LTEXT           "", IDC_G_STATUS, 232, 140, 216, 9
-    LTEXT           "Tint (%):", -1, 12, 157, 32, 8
-    EDITTEXT        IDC_G_TINT, 46, 155, 26, 12, ES_NUMBER
-    AUTOCHECKBOX    "Margins too (line numbers, bookmarks, folding)", IDC_G_MARGINS, 84, 156, 180, 10
-    LTEXT           "", IDC_G_INFO, 12, 173, 436, 9
+    GROUPBOX        "Glass text area", -1, 4, 76, 452, 104
+    AUTOCHECKBOX    "Windows' blur shows through the background of the text", IDC_G_EN, 12, 89, 214, 10
+    LTEXT           "", IDC_G_STATUS, 232, 90, 216, 9
+    LTEXT           "Style:", -1, 12, 107, 40, 8
+    COMBOBOX        IDC_G_STYLE, 58, 105, 92, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Tint (%):", -1, 164, 107, 32, 8
+    EDITTEXT        IDC_G_TINT, 198, 105, 26, 12, ES_NUMBER
+    LTEXT           "Text edges:", -1, 12, 125, 44, 8
+    COMBOBOX        IDC_G_EDGES, 58, 123, 166, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Margins too (line numbers, bookmarks, folding)", IDC_G_MARGINS, 238, 124, 200, 10
+    LTEXT           "", IDC_G_INFO, 12, 144, 436, 30
 
     LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
 END
@@ -109,6 +105,29 @@ BEGIN
     AUTOCHECKBOX    "Remember the styled tokens of each file", IDC_K_REMEMBER, 296, 32, 152, 10
     LTEXT           "Right-click a word > Style All Occurrences of Token, or press the menu key, to give it one of the five styles, bold or italic. Text you type or paste later is styled too. Match case and whole word follow the Highlighting page; the colours are Mark Style 1-5 in the Style Configurator.", -1, 12, 50, 436, 28
     LTEXT           "", IDC_K_INFO, 12, 86, 436, 9
+
+    LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
+END
+
+IDD_KEX_PAGE_NOTE DIALOGEX 115, 10, 460, 205
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD
+FONT 8, "MS Shell Dlg", 0, 0, 0x1
+BEGIN
+    GROUPBOX        "Quick note", -1, 4, 2, 452, 126
+    AUTOCHECKBOX    "A global hotkey fades a small note in over any program", IDC_H_EN, 12, 15, 204, 10
+    LTEXT           "", IDC_H_STATUS, 222, 16, 226, 9
+    LTEXT           "Hotkey:", -1, 12, 33, 28, 8
+    CONTROL         "", IDC_H_KEY, "msctls_hotkey32", WS_BORDER | WS_TABSTOP, 42, 31, 84, 12
+    AUTOCHECKBOX    "+ Win", IDC_H_WIN, 132, 32, 34, 10
+    LTEXT           "", IDC_H_KEYSTATUS, 170, 33, 278, 9
+    AUTOCHECKBOX    "Line numbers", IDC_H_LINES, 12, 52, 140, 10
+    AUTOCHECKBOX    "Wrap long lines", IDC_H_WRAP, 160, 52, 140, 10
+    AUTOCHECKBOX    "Highlight the current line", IDC_H_CARETLINE, 308, 52, 140, 10
+    AUTOCHECKBOX    "Fade in and out", IDC_H_FADE, 12, 67, 140, 10
+    AUTOCHECKBOX    "Stay on top of other windows", IDC_H_ONTOP, 160, 67, 140, 10
+    AUTOCHECKBOX    "Open where I left it", IDC_H_PLACE, 308, 67, 140, 10
+    AUTOCHECKBOX    "Keep the text between uses (saved as you type)", IDC_H_KEEP, 12, 82, 220, 10
+    LTEXT           "The note has no title bar: drag its top edge to move it, the other edges and corners to resize it. Esc or the hotkey hides it again and gives the focus back; Ctrl+mouse wheel zooms. Its size and zoom are remembered.", -1, 12, 100, 436, 20
 
     LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
 END

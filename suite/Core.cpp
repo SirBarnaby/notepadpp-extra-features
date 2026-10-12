@@ -11,7 +11,6 @@ bool selfTestMode = false;
 bool underWine = false;
 Module* modules[M_COUNT] = {};
 MainHooks mainHooks;
-const UINT NPPM_INTERNAL_RESTOREFROMMINIMIZED_ = WM_USER + 71;   // resource.h:723 (NOTEPADPLUS_USER_INTERNAL + 71)
 
 static std::wstring g_cmdlineArgs;
 static bool g_ready = false, g_shutdown = false, g_subclassed = false;
@@ -140,38 +139,21 @@ void showNote(const std::wstring& text, int ms)
 // ---------------------------------------------------------------------------------------------
 // main window subclass, shared by the modules through mainHooks
 
-static bool g_selfRestore = false;
-
-void restoreNppWindow()
-{
-    // Notepad++'s handler restores from the tray or from minimized; our hooks must not see it as a launch.
-    g_selfRestore = true;
-    ::SendMessageW(npp._nppHandle, NPPM_INTERNAL_RESTOREFROMMINIMIZED_, 0, 0);
-    g_selfRestore = false;
-}
-
 static LRESULT CALLBACK mainSubclass(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR)
 {
-    if (m == NPPM_INTERNAL_RESTOREFROMMINIMIZED_ && !g_selfRestore)
-    {
-        // A second notepad++.exe sends this synchronously before SetForegroundWindow (winmain.cpp:817/831).
-        try
-        {
-            if (mainHooks.onSecondInstance) mainHooks.onSecondInstance();
-        }
-        catch (...) { log(L"exception in second-instance hook"); }
-        return ::DefSubclassProc(h, m, w, l);
-    }
     switch (m)
     {
-    case WM_SYSCOMMAND:
-        if ((w & 0xFFF0) == SC_CLOSE && mainHooks.onSysClose)
+    case WM_COPYDATA:
+    {
+        // a new Notepad++ on another desktop asks for a copy of the tabs (DesktopSync.cpp)
+        const auto* cds = reinterpret_cast<const COPYDATASTRUCT*>(l);
+        if (cds && cds->dwData == 0x4B455854)   // 'KEXT'
         {
-            bool swallow = false;
-            try { swallow = mainHooks.onSysClose(); } catch (...) { swallow = false; }
-            if (swallow) return 0;
+            try { return desktopServeCopy(reinterpret_cast<HWND>(w), cds); }
+            catch (...) { log(L"exception while copying the tabs for a new window"); return 0; }
         }
         break;
+    }
     case WM_WINDOWPOSCHANGED:
     case WM_ACTIVATEAPP:
     case WM_SIZE:
@@ -227,6 +209,8 @@ static void onReady()
     else log(L"could not subclass the Notepad++ main window");
 
     if (selfTestMode) useFakeDesktops(true);
+    try { desktopLoadPendingCopy(); }   // a new window on its own desktop: the first window's tabs, before the features start
+    catch (...) { log(L"exception while opening the copied tabs"); }
 
     // Startup self-check: every module verifies what it relies on, then the enabled ones start.
     for (int i = 0; i < M_COUNT; ++i)

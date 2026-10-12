@@ -300,6 +300,8 @@ public:
     Proxy(IDocument* real, Doc& d) : _r(real), _d(d) {}
     std::vector<Span> spans;      // bold/italic occurrences of the range being lexed
     bool collision = false;
+    bool started = false;         // the lexer called StartStyling
+    intptr_t pos() const { return _pos; }
 
     int SCI_METHOD Version() const override { return _r->Version(); }
     void SCI_METHOD SetErrorStatus(int status) override { _r->SetErrorStatus(status); }
@@ -315,7 +317,7 @@ public:
     int SCI_METHOD SetLevel(Sci_Position line, int level) override { return _r->SetLevel(line, level); }
     int SCI_METHOD GetLineState(Sci_Position line) const override { return _r->GetLineState(line); }
     int SCI_METHOD SetLineState(Sci_Position line, int state) override { return _r->SetLineState(line, state); }
-    void SCI_METHOD StartStyling(Sci_Position position) override { _pos = position; _r->StartStyling(position); }
+    void SCI_METHOD StartStyling(Sci_Position position) override { _pos = position; started = true; _r->StartStyling(position); }
     bool SCI_METHOD SetStyleFor(Sci_Position n, char style) override { return write(n, nullptr, style); }
     bool SCI_METHOD SetStyles(Sci_Position n, const char* styles) override { return write(n, styles, 0); }
     void SCI_METHOD DecorationSetCurrentIndicator(int indicator) override { _r->DecorationSetCurrentIndicator(indicator); }
@@ -460,6 +462,9 @@ public:
         }
         catch (...) { px.spans.clear(); }
         _in->Lex(startPos, length, d.base[static_cast<unsigned char>(initStyle)], &px);
+        if (!px.collision && (d.variants || !px.spans.empty()))
+            settleUnwritten(pAccess, d, px.spans, static_cast<intptr_t>(startPos), static_cast<intptr_t>(startPos) + length,
+                            px.started ? px.pos() : static_cast<intptr_t>(startPos));
         if (px.collision)
         {
             // the lexer uses a style we gave out: the variants move elsewhere and the document is styled again
@@ -478,6 +483,42 @@ public:
         if (it == g_docs.end() || !it->second.variants) { _in->Fold(startPos, length, initStyle, pAccess); return; }
         Proxy px(pAccess, it->second);
         _in->Fold(startPos, length, it->second.base[static_cast<unsigned char>(initStyle)], &px);
+    }
+
+    // Some lexers leave characters alone: the null lexer of plain text styles only the last one of
+    // the range. Those characters still get their bold/italic, or lose one the token no longer has.
+    static void settleUnwritten(IDocument* r, Doc& d, const std::vector<Span>& spans, intptr_t a, intptr_t b, intptr_t endStyled)
+    {
+        a = std::max<intptr_t>(a, 0);
+        b = std::min<intptr_t>(b, static_cast<intptr_t>(r->Length()));
+        bool wrote = false;
+        intptr_t runStart = -1;
+        int runStyle = -1;
+        auto flush = [&](intptr_t end)
+        {
+            if (runStart < 0) return;
+            r->StartStyling(runStart);
+            r->SetStyleFor(end - runStart, static_cast<char>(runStyle));
+            wrote = true;
+            runStart = -1;
+        };
+        if (b <= a) return;
+        std::vector<unsigned char> flagsAt(static_cast<size_t>(b - a), 0);
+        for (const Span& sp : spans)
+            for (intptr_t i = std::max(sp.a, a), e = std::min(sp.b, b); i < e; ++i) flagsAt[static_cast<size_t>(i - a)] |= static_cast<unsigned char>(sp.flags);
+        for (intptr_t i = a; i < b; ++i)
+        {
+            const unsigned char c = static_cast<unsigned char>(r->StyleAt(i));
+            const int flags = flagsAt[static_cast<size_t>(i - a)];
+            int want = c;
+            if (flags) { const int v = variantFor(d, d.base[c], flags, i); want = v ? v : d.base[c]; }
+            else if (d.vflags[c]) want = d.base[c];
+            if (want == c) { flush(i); continue; }
+            if (runStart >= 0 && want != runStyle) flush(i);
+            if (runStart < 0) { runStart = i; runStyle = want; }
+        }
+        flush(b);
+        if (wrote) r->StartStyling(endStyled);   // where the lexer left the document's styling
     }
 
     // this lexer now styles the document: variants made for another lexer have to go
