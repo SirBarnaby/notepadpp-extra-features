@@ -9,7 +9,7 @@ on:
     - cron: '23 5 * * *'
   push:
     branches: [main]
-    paths-ignore: ['README.md']
+    paths-ignore: ['README.md', 'assets/**']
   workflow_dispatch:
     inputs:
       version:
