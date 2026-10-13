@@ -5,7 +5,7 @@
 <h1 align="center">Notepad++ KEX</h1>
 
 <p align="center">
-  <em>The Notepad++ you know, with four views, a gliding caret and a dozen small upgrades built right in.</em>
+  <em>Notepad++ with four views, a smooth caret, JetBrains keys and more.</em>
 </p>
 
 <p align="center">
@@ -18,90 +18,91 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-GPL%20v3-24292f?style=flat" alt="GPL v3 licence" /></a>
 </p>
 
-Ever needed a third file open next to the two you're comparing? Wished the caret slid where you clicked instead of teleporting, or that <kbd>Alt</kbd>+<kbd>J</kbd> worked like it does in IntelliJ?
+Notepad++ KEX is Notepad++ with extra features compiled in: four editor views, tab snapping, a smooth caret, JetBrains shortcuts, a global quick note and more. Each build is made from the official Notepad++ source of the same version. Your settings and plugins keep working, and every feature can be switched off.
 
-**Notepad++ KEX** is Notepad++ with all of that built in. It is still Notepad++ underneath: the same menus, themes, settings and plugins. It just does more, and every extra has its own on/off switch, so you keep exactly the parts you like.
+<p align="center"><sub><a href="#features">Features</a> · <a href="#see-it-in-action">See it in action</a> · <a href="#install">Install</a> · <a href="#faq">FAQ</a> · <a href="#licence">Licence</a></sub></p>
 
-<p align="center"><sub><a href="#what-you-get">Features</a> · <a href="#see-it-in-action">See it in action</a> · <a href="#install">Install</a> · <a href="#common-questions">FAQ</a> · <a href="#licence">Licence</a></sub></p>
+## Features
 
-## What you get
-
-- **Four views instead of two.** Work on up to four files side by side in a 2×2 grid. Move or clone any tab to any view, and rotate the whole grid from the middle splitter.
-- **Tab snapping.** Grab a tab and pull: it lifts off the bar and follows your mouse. Near the edge of a view, a preview shows where the new view will open. Hold <kbd>Ctrl</kbd> to clone instead of move, or press <kbd>Esc</kbd> to cancel.
-- **Snap-out windows.** Drag a tab outside Notepad++ and that view becomes a window of its own. Close it, or drop it back on the tab bar, and it snaps back in.
-- **Smooth caret.** The caret glides to its new spot as you type and click, instead of jumping there.
-- **Falling letters.** Text you delete drops off the screen, CS2D style.
-- **JetBrains shortcuts.** The IntelliJ editor keys: <kbd>Alt</kbd>+<kbd>J</kbd> next occurrence, <kbd>Ctrl</kbd>+<kbd>W</kbd> extend selection, <kbd>Ctrl</kbd>+<kbd>/</kbd> comment, <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicate, <kbd>Ctrl</kbd>+<kbd>Y</kbd> delete line, <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> move line, and more.
-- **Live token styles.** *Style All Occurrences of Token* keeps up with you: words you type or paste later get the colour too. Tokens can also be bold or italic, even in plain text, and every file remembers its styled tokens.
-- **Quick note.** Press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd> anywhere in Windows and a small note fades in over whatever you're doing. Press it again and you're right back. What you type is saved as you go.
-- **A Notepad++ on every virtual desktop.** Start Notepad++ on a desktop that doesn't have one and a new window opens right there with the same tabs, instead of throwing you back to the other desktop.
-- **F12 hover tabs.** In distraction-free F12 mode, touch the top edge of a view to see its tabs.
-- **Glass text area.** Windows' live blur (or acrylic) shows through behind your text, while the menus, toolbar and tabs stay solid.
-- **A switch for everything.** Each feature can be turned on and off from the KEX group at the bottom of the *Settings* menu, and has its own page in *Preferences*. Changes apply at once. Everything except glass starts switched on.
-- **Always on the latest Notepad++.** Every new Notepad++ release gets its own KEX build automatically, and KEX can install it for you.
+- **Four views**: a 2×2 grid instead of two views. Move or clone tabs between any of them.
+- **Tab snapping**: drag a tab to the edge of a view to split it. <kbd>Ctrl</kbd> clones, <kbd>Esc</kbd> cancels.
+- **Snap-out windows**: drag a tab out of Notepad++ and its view gets its own window.
+- **Smooth caret**: the caret glides instead of jumping.
+- **Falling letters**: deleted text falls off the screen.
+- **JetBrains keys**: <kbd>Alt</kbd>+<kbd>J</kbd>, <kbd>Ctrl</kbd>+<kbd>W</kbd>, <kbd>Ctrl</kbd>+<kbd>/</kbd>, <kbd>Ctrl</kbd>+<kbd>D</kbd>, <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> and more.
+- **Live token styles**: styled words stay styled as you type. Bold and italic too.
+- **Quick note**: <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd> opens a note over any app.
+- **Per-desktop windows**: each virtual desktop gets its own Notepad++ with the same tabs.
+- **F12 hover tabs**: in F12 mode, the tabs appear when you touch the top of a view.
+- **Glass**: Windows' live blur behind the text. Off by default.
+- **On/off switches**: one per feature, in the KEX submenus at the bottom of the *Settings* menu.
+- **Automatic updates**: a KEX build follows every Notepad++ release.
 
 ## See it in action
 
 ### Smooth caret
 
-The caret slides from letter to letter and line to line.
-
 <p align="center"><img src="assets/smooth-caret.gif" alt="Typing three lines of text while the caret glides smoothly behind the letters" /></p>
 
-### JetBrains shortcuts and falling letters
+### JetBrains keys and falling letters
 
-<kbd>Alt</kbd>+<kbd>J</kbd> picks the next `void`, one delete removes both, and the letters tumble away. Then both spots get `int` at once.
+<kbd>Alt</kbd>+<kbd>J</kbd> selects the next `void`, both are deleted at once, then `int` is typed into both places.
 
 <p align="center"><img src="assets/jetbrains-keys-falling-letters.gif" alt="Two occurrences of void selected with Alt+J, deleted with falling letters, and replaced by int in both places" /></p>
 
 ### Live token styles
 
-Style a word once and it stays styled, including every new time you type it. Bold and italic are right there in the same menu.
+Right-click > *Style all occurrences of token*. New occurrences pick up the style as you type them.
 
 <p align="center"><img src="assets/live-token-styles.gif" alt="Right-click menu styling every occurrence of Sony in red and bold, and a newly typed Sony picking up the style" /></p>
 
 ### Quick note
 
-One hotkey, over any app. Jot it down, press it again, carry on.
+<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd> shows and hides the note from any app. The text is saved automatically.
 
 <p align="center"><img src="assets/quick-note.gif" alt="A small dark note fading in over a web browser with Ctrl+Alt+M, receiving text, and fading out again" width="100%" /></p>
 
-### Every feature, your call
+### Settings
 
-Each KEX page in *Preferences* shows its features with an on/off tick, their settings, and whether they're running.
+Each KEX page in *Preferences* has the on/off switches, the options, and whether each feature is running.
 
 <p align="center"><img src="assets/preferences.gif" alt="Clicking through the KEX Editing, KEX Tabs, KEX Highlighting and KEX Windows pages in Preferences" /></p>
 
 ## Install
 
+Requires 64-bit Windows.
+
 1. Download `Notepad++-<version>-KEX.zip` from the [latest release](https://github.com/SirBarnaby/notepadpp-kex/releases/latest).
-2. Right-click it > *Properties* > tick **Unblock**, then extract it.
-3. Pick how you want to use it:
-   - **Try it first:** run `notepad++.exe` from that folder. It keeps its own settings there and leaves your installed Notepad++ alone.
-   - **Make it your Notepad++:** double-click **Install-KEX.cmd**. Your settings, sessions and plugins stay. At the end it asks whether to install new releases automatically; say yes and you never have to come back here.
+2. Right-click the zip > *Properties* > tick **Unblock**, then extract it.
+3. Then either:
+   - **Portable:** run `notepad++.exe` from the extracted folder. It keeps its own settings and doesn't touch an installed Notepad++.
+   - **Installed:** run `Install-KEX.cmd`. It puts the KEX `notepad++.exe` into your installed Notepad++ and keeps your settings, sessions and plugins. It can also turn on automatic updates.
 
-Changed your mind? **Uninstall-KEX.cmd** puts the official `notepad++.exe` back. Full details are in `KEX-README.txt` inside the zip.
+> [!NOTE]
+> The build isn't code-signed, so Windows may show an "unknown publisher" warning. If your installed Notepad++ is older than the KEX build, the installer first runs the official installer of that version, downloaded from Notepad++'s GitHub and checked for Notepad++'s signature.
 
-> **Heads-up:** the first time, Windows may say "unknown publisher", because this build isn't signed. If your Notepad++ needs updating first, the installer downloads the official one from Notepad++'s own GitHub and checks its signature before running it.
+### Uninstall
 
-## Common Questions
+Run `Uninstall-KEX.cmd`. It restores the official `notepad++.exe` and removes the update task. See `KEX-README.txt` in the zip for details.
+
+## FAQ
 
 **What happens when Notepad++ releases a new version?**  
-A KEX build of it follows automatically, usually within a day. If you turned on automatic updates, it installs itself the next time you close Notepad++ and lets you know. Notepad++'s own updater is switched off in KEX, so it can't quietly swap your build for one without the extras. In the rare case a release changes Notepad++ too much, you simply keep the version you have until KEX catches up.
+A daily build checks for new Notepad++ releases and publishes a matching KEX build. With automatic updates on, it's installed the next time Notepad++ closes. Notepad++'s own updater is disabled so it can't replace the KEX build. If a release breaks the patch, no build is published and you stay on your current version.
 
-**Will my plugins still work?**  
-Yes. Plugins work in views 1 and 2 exactly as before. Older plugins only know about two views, so while view 3 or 4 has focus their commands are paused with a message, and they never edit the wrong file. Plugin authors can opt in to all four views: see [`include/KexApi.h`](include/KexApi.h) and export `kexAware()`.
+**Do my plugins still work?**  
+Yes, in views 1 and 2. In views 3 and 4, a plugin's commands are blocked unless the plugin exports `kexAware()` (see [`include/KexApi.h`](include/KexApi.h)).
 
-**I liked <kbd>Ctrl</kbd>+<kbd>Y</kbd> as redo.**  
-Open *Settings* > *KEX Editing* > *Preferences...* and untick *Also the keys Notepad++ uses*. Notepad++'s own <kbd>Ctrl</kbd>+<kbd>Y</kbd>, <kbd>Ctrl</kbd>+<kbd>W</kbd>, <kbd>Ctrl</kbd>+<kbd>R</kbd>, <kbd>F11</kbd> and zoom keys come back, and the rest of the JetBrains keys stay.
+**How do I get <kbd>Ctrl</kbd>+<kbd>Y</kbd> (redo) back?**  
+*Settings* > *KEX Editing* > *Preferences...*, untick *Also the keys Notepad++ uses*. This restores <kbd>Ctrl</kbd>+<kbd>Y</kbd>, <kbd>Ctrl</kbd>+<kbd>W</kbd>, <kbd>Ctrl</kbd>+<kbd>R</kbd>, <kbd>F11</kbd> and the zoom keys.
 
-**The glass doesn't show up.**  
-It's off until you tick it in *Settings* > *KEX Windows*, and it needs Windows' *Transparency effects* turned on (*Settings* > *Personalization* > *Colors*). On Windows 10, the *Acrylic* style can lag while you drag the window; *Blur* is the lighter choice.
+**Glass doesn't show up.**  
+Turn it on under *Settings* > *KEX Windows*, and turn on Windows' *Transparency effects* (*Settings* > *Personalization* > *Colors*). On Windows 10, *Acrylic* can lag while you move the window; *Blur* is lighter.
 
 **Is this an official Notepad++ release?**  
-No. Notepad++ KEX isn't affiliated with the Notepad++ project. It's built from the official source of each Notepad++ release.
+No. It isn't affiliated with the Notepad++ project.
 
-Found a bug or have an idea? [Open an issue](https://github.com/SirBarnaby/notepadpp-kex/issues). Hope you have fun with it.
+Bug reports and ideas go in [Issues](https://github.com/SirBarnaby/notepadpp-kex/issues).
 
 ## Licence
 
