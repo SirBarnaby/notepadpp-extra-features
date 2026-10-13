@@ -9,9 +9,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/SirBarnaby/notepadpp-extra-features/releases/latest"><img src="https://img.shields.io/github/v/release/SirBarnaby/notepadpp-extra-features?label=download&style=flat&color=24292f" alt="Download the latest release" /></a>
+  <a href="https://github.com/SirBarnaby/notepadpp-kex/releases/latest"><img src="https://img.shields.io/github/v/release/SirBarnaby/notepadpp-kex?label=download&style=flat&color=24292f" alt="Download the latest release" /></a>
   &nbsp;
-  <a href="https://github.com/SirBarnaby/notepadpp-extra-features/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/SirBarnaby/notepadpp-extra-features/build.yml?branch=main&label=daily%20build&style=flat" alt="Daily build status" /></a>
+  <a href="https://github.com/SirBarnaby/notepadpp-kex/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/SirBarnaby/notepadpp-kex/build.yml?branch=main&label=daily%20build&style=flat" alt="Daily build status" /></a>
   &nbsp;
   <img src="https://img.shields.io/badge/Windows-64--bit-24292f?style=flat" alt="64-bit Windows" />
   &nbsp;
@@ -74,7 +74,7 @@ Each KEX page in *Preferences* shows its features with an on/off tick, their set
 
 ## Install
 
-1. Download `Notepad++-<version>-KEX.zip` from the [latest release](https://github.com/SirBarnaby/notepadpp-extra-features/releases/latest).
+1. Download `Notepad++-<version>-KEX.zip` from the [latest release](https://github.com/SirBarnaby/notepadpp-kex/releases/latest).
 2. Right-click it > *Properties* > tick **Unblock**, then extract it.
 3. Pick how you want to use it:
    - **Try it first:** run `notepad++.exe` from that folder. It keeps its own settings there and leaves your installed Notepad++ alone.
@@ -101,7 +101,7 @@ It's off until you tick it in *Settings* > *KEX Windows*, and it needs Windows' 
 **Is this an official Notepad++ release?**  
 No. Notepad++ KEX isn't affiliated with the Notepad++ project. It's built from the official source of each Notepad++ release.
 
-Found a bug or have an idea? [Open an issue](https://github.com/SirBarnaby/notepadpp-extra-features/issues). Hope you have fun with it.
+Found a bug or have an idea? [Open an issue](https://github.com/SirBarnaby/notepadpp-kex/issues). Hope you have fun with it.
 
 ## Licence
 
