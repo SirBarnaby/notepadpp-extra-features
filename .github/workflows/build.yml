@@ -98,10 +98,17 @@ jobs:
           # Installed copies only take a zip signed with the key whose public half is in Install-KEX.ps1
           if [ -n "$KEX_SIGNING_KEY" ]; then
             key="$RUNNER_TEMP/kex-signing-key.pem"
-            (umask 077; printf '%s\n' "$KEX_SIGNING_KEY" > "$key")
+            # (a key pasted from Windows may carry CRLF line ends)
+            (umask 077; printf '%s\n' "$KEX_SIGNING_KEY" | tr -d '\r' > "$key")
             want=$(python3 -I -c 'import base64, re, sys; print(base64.b64decode(re.search(r"KexPublicKey = .(\S+).", open(sys.argv[1]).read()).group(1)).hex().upper())' windows/Install-KEX.ps1)
-            have=$(openssl rsa -in "$key" -noout -modulus | cut -d= -f2)
-            if [ "$want" != "$have" ]; then rm -f "$key"; echo "::error::KEX_SIGNING_KEY doesn't match the public key in Install-KEX.ps1"; exit 1; fi
+            have=$(openssl rsa -in "$key" -noout -modulus 2>/dev/null | cut -d= -f2)
+            if [ -z "$have" ]; then
+              rm -f "$key"; echo "::error::KEX_SIGNING_KEY isn't a private key openssl can read: paste the whole .pem, BEGIN and END lines included"; exit 1
+            fi
+            if [ "$want" != "$have" ]; then
+              # the moduli are public; their first digits tell which key is which
+              rm -f "$key"; echo "::error::KEX_SIGNING_KEY is a different key: its modulus starts ${have:0:16}, Install-KEX.ps1 expects ${want:0:16}"; exit 1
+            fi
             openssl dgst -sha256 -sign "$key" -out "$zip.sig" "$zip"
             rm -f "$key"
             files+=("$zip.sig")
