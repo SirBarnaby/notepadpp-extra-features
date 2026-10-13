@@ -98,8 +98,8 @@ jobs:
           # Installed copies only take a zip signed with the key whose public half is in Install-KEX.ps1
           if [ -n "$KEX_SIGNING_KEY" ]; then
             key="$RUNNER_TEMP/kex-signing-key.pem"
-            # (a key pasted from Windows may carry CRLF line ends)
-            (umask 077; printf '%s\n' "$KEX_SIGNING_KEY" | tr -d '\r' > "$key")
+            # (a key pasted from Windows may carry CRLF line ends or a byte order mark)
+            (umask 077; printf '%s\n' "$KEX_SIGNING_KEY" | tr -d '\r' | sed '1s/^\xEF\xBB\xBF//' > "$key")
             want=$(python3 -I -c 'import base64, re, sys; print(base64.b64decode(re.search(r"KexPublicKey = .(\S+).", open(sys.argv[1]).read()).group(1)).hex().upper())' windows/Install-KEX.ps1)
             have=$(openssl rsa -in "$key" -noout -modulus 2>/dev/null | cut -d= -f2)
             if [ -z "$have" ]; then
