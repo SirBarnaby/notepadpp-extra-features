@@ -110,7 +110,8 @@ void fillStatus(HWND d)
     if (has(d, IDC_K_INFO))
     {
         ::SetDlgItemTextW(d, IDC_K_INFO, modules[M_TOKENS]->isEnabled() ? tokenInfo().c_str() : L"");
-        ::SetDlgItemTextW(d, IDC_K_KEYSTATUS, modules[M_TOKENS]->isEnabled() ? L"pops the menu up at the caret" : L"");
+        const std::wstring key = tokenStats().menuKey;
+        ::SetDlgItemTextW(d, IDC_K_KEY, key.empty() ? L"none" : key.c_str());
     }
 }
 
@@ -151,16 +152,6 @@ void fill(HWND d)
         ::SendDlgItemMessageW(d, IDC_H_KEY, HKM_SETHOTKEY, MAKEWORD(vk, hk), 0);
         ::CheckDlgButton(d, IDC_H_WIN, (mods & MOD_WIN) ? BST_CHECKED : BST_UNCHECKED);
     }
-    if (has(d, IDC_K_KEY))
-    {
-        UINT mods = static_cast<UINT>(settings.getInt(modules[M_TOKENS]->key(), L"MenuModifiers", MOD_CONTROL | MOD_SHIFT));
-        UINT vk = static_cast<UINT>(settings.getInt(modules[M_TOKENS]->key(), L"MenuKey", 'H'));
-        BYTE hk = 0;
-        if (mods & MOD_CONTROL) hk |= HOTKEYF_CONTROL;
-        if (mods & MOD_ALT) hk |= HOTKEYF_ALT;
-        if (mods & MOD_SHIFT) hk |= HOTKEYF_SHIFT;
-        ::SendDlgItemMessageW(d, IDC_K_KEY, HKM_SETHOTKEY, MAKEWORD(vk, hk), 0);
-    }
     fillStatus(d);
     g_filling = false;
 }
@@ -199,16 +190,6 @@ void applyHotkey(HWND d)
     if (vk && mods) hotkeyApply(mods, vk);
 }
 
-void applyTokenKey(HWND d)
-{
-    WORD hk = static_cast<WORD>(::SendDlgItemMessageW(d, IDC_K_KEY, HKM_GETHOTKEY, 0, 0));
-    UINT vk = LOBYTE(hk), flags = HIBYTE(hk), mods = 0;
-    if (flags & HOTKEYF_CONTROL) mods |= MOD_CONTROL;
-    if (flags & HOTKEYF_ALT) mods |= MOD_ALT;
-    if (flags & HOTKEYF_SHIFT) mods |= MOD_SHIFT;
-    if (vk && mods) tokenMenuKeyApply(mods, vk);
-}
-
 void onCommand(HWND d, int id, int code)
 {
     if (g_filling) return;
@@ -233,8 +214,13 @@ void onCommand(HWND d, int id, int code)
                 return;
             }
         if (id == IDC_H_WIN) { applyHotkey(d); refreshPrefPages(); }
-        if (id == IDC_J_LIST)
-            ::MessageBoxW(::GetParent(d), jetBrainsKeyList().c_str(), L"JetBrains shortcuts", MB_OK | MB_ICONINFORMATION);
+        if (id == IDC_J_LIST || id == IDC_K_KEYMAP)
+        {
+            // the keys of the KEX commands are Notepad++'s own shortcuts now
+            nppMsg(NPPM_KEX_SHOWSHORTCUTS);
+            modules[M_KEYS]->loadOptions();   // a key moved off or back onto one Notepad++ uses
+            refreshPrefPages();
+        }
         return;
     }
     if (code == CBN_SELCHANGE)
@@ -255,7 +241,6 @@ void onCommand(HWND d, int id, int code)
     if (code == EN_CHANGE)
     {
         if (id == IDC_H_KEY) { applyHotkey(d); fillStatus(d); return; }
-        if (id == IDC_K_KEY) { applyTokenKey(d); fillStatus(d); return; }
         for (const IntField& f : kInts)
             if (id == f.id) { ::SetTimer(d, TIMER_APPLY, 500, nullptr); return; }
     }

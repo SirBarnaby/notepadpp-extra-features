@@ -97,21 +97,7 @@ UINT g_ids[CMD_COUNT] = {};           // our menu command ids (NPPM_ALLOCATECMDI
 
 // ---- Scintilla access ---------------------------------------------------------------------------
 
-struct Sci {
-    HWND h = nullptr; SciFnDirect fn = nullptr; sptr_t p = 0;
-    explicit Sci(HWND w) : h(w)
-    {
-        if (h)
-        {
-            fn = reinterpret_cast<SciFnDirect>(::SendMessageW(h, SCI_GETDIRECTFUNCTION, 0, 0));
-            p = static_cast<sptr_t>(::SendMessageW(h, SCI_GETDIRECTPOINTER, 0, 0));
-        }
-    }
-    sptr_t operator()(UINT m, uptr_t w = 0, sptr_t l = 0) const
-    {
-        return fn ? fn(p, m, w, l) : static_cast<sptr_t>(::SendMessageW(h, m, w, l));
-    }
-};
+using Sci = SciDirect;
 
 sptr_t docOf(HWND h) { return h ? static_cast<sptr_t>(::SendMessageW(h, SCI_GETDOCPOINTER, 0, 0)) : 0; }
 
@@ -593,16 +579,14 @@ struct Stored { std::wstring path; std::vector<Rule> rules; };
 
 class TokenStyles;
 TokenStyles* s_mod = nullptr;
-HHOOK s_hook = nullptr;
+int g_menuCmd = 0;    // "Token Style Menu", a KEX command (Shortcut Mapper sets its key)
 
-int currentMods()
+// the menu command's key as Notepad++ shows it ("" for none)
+std::wstring menuKeyText()
 {
-    int m = 0;
-    if (::GetKeyState(VK_CONTROL) < 0) m |= MOD_CONTROL;
-    if (::GetKeyState(VK_SHIFT) < 0) m |= MOD_SHIFT;
-    if (::GetKeyState(VK_MENU) < 0) m |= MOD_ALT;
-    if (::GetKeyState(VK_LWIN) < 0 || ::GetKeyState(VK_RWIN) < 0) m |= MOD_WIN;
-    return m;
+    ShortcutKey sk{};
+    if (!g_menuCmd || !nppMsg(NPPM_GETSHORTCUTBYCMDID, static_cast<WPARAM>(g_menuCmd), reinterpret_cast<LPARAM>(&sk))) return L"";
+    return hotkeyText((sk._isCtrl ? MOD_CONTROL : 0) | (sk._isAlt ? MOD_ALT : 0) | (sk._isShift ? MOD_SHIFT : 0), sk._key);
 }
 
 bool sameText(const Rule& r, const std::wstring& t)
@@ -646,10 +630,8 @@ public:
 
     void loadOptions() override
     {
-        _mods = static_cast<UINT>(settings.getInt(key(), L"MenuModifiers", MOD_CONTROL | MOD_SHIFT));
-        _vk = static_cast<UINT>(settings.getInt(key(), L"MenuKey", 'H'));
         _remember = settings.getInt(key(), L"Remember", 1) != 0;
-        s_stats.menuKey = hotkeyText(_mods, _vk);
+        s_stats.menuKey = menuKeyText();
     }
 
     bool selfCheck(std::wstring& why) override
@@ -677,8 +659,7 @@ public:
         }
         if (!::SetWindowSubclass(npp._nppHandle, mainProc, kSubclassId, 0)) return false;
         _subclassed = true;
-        s_hook = ::SetWindowsHookExW(WH_GETMESSAGE, hookProc, nullptr, ::GetCurrentThreadId());
-        if (!s_hook) { log(L"Live token styles: SetWindowsHookEx failed (%lu)", ::GetLastError()); return false; }
+        if (g_menuCmd) nppMsg(NPPM_KEX_ENABLECOMMAND, static_cast<WPARAM>(g_menuCmd), TRUE);
         g_post = hwnd();
         s_mod = this;
         _shutdown = false;
@@ -690,7 +671,7 @@ public:
 
     void disable() override
     {
-        if (s_hook) { ::UnhookWindowsHookEx(s_hook); s_hook = nullptr; }
+        if (g_menuCmd) nppMsg(NPPM_KEX_ENABLECOMMAND, static_cast<WPARAM>(g_menuCmd), FALSE);
         if (_subclassed) { ::RemoveWindowSubclass(npp._nppHandle, mainProc, kSubclassId); _subclassed = false; }
         unaugmentMainMenu();
         if (!_shutdown)
@@ -749,20 +730,13 @@ public:
     }
 
     // ---- options page ----
-    bool applyMenuKey(UINT mods, UINT vk)
-    {
-        settings.setInt(key(), L"MenuModifiers", static_cast<int>(mods));
-        settings.setInt(key(), L"MenuKey", static_cast<int>(vk));
-        loadOptions();
-        return true;
-    }
-
     std::wstring info()
     {
         HWND h = views.sci(views.current());
         auto it = g_docs.find(docOf(h));
         const size_t n = it == g_docs.end() ? 0 : it->second.rules.size();
-        std::wstring s = L"Menu key " + s_stats.menuKey + L" in the editing views. ";
+        s_stats.menuKey = menuKeyText();
+        std::wstring s = s_stats.menuKey.empty() ? L"No menu key. " : L"Menu key " + s_stats.menuKey + L". ";
         if (n) s += std::to_wstring(n) + (n == 1 ? L" token is" : L" tokens are") + L" styled in this file.";
         else s += L"No token is styled in this file.";
         return s;
@@ -812,6 +786,7 @@ private:
             return;
         }
         if (!_remember || !isRealPath(path)) return;
+        refreshStore();   // tokens another desktop's Notepad++ saved for this file
         for (const Stored& st : _store)
             if (::CompareStringOrdinal(st.path.c_str(), -1, path.c_str(), -1, TRUE) == CSTR_EQUAL)
             {
@@ -1007,9 +982,24 @@ private:
     }
 
     // ---- remembering them per file (kex-tokens.txt in Notepad++'s settings folder) ----
+    // the store file's last write, so changes another Notepad++ (another desktop's) saved are merged in
+    ULONGLONG storeStamp() const
+    {
+        WIN32_FILE_ATTRIBUTE_DATA a{};
+        if (!::GetFileAttributesExW(storeFile().c_str(), GetFileExInfoStandard, &a)) return 0;
+        return (static_cast<ULONGLONG>(a.ftLastWriteTime.dwHighDateTime) << 32) | a.ftLastWriteTime.dwLowDateTime;
+    }
+
+    // before changing the store: re-read it when another process wrote it since
+    void refreshStore()
+    {
+        if (storeStamp() != _storeStamp) loadStore();
+    }
+
     void loadStore()
     {
         _store.clear();
+        _storeStamp = storeStamp();
         FILE* f = _wfopen(storeFile().c_str(), L"rb");
         if (!f) return;
         std::string all;
@@ -1067,11 +1057,13 @@ private:
         fwrite(s.data(), 1, s.size(), f);
         fclose(f);
         ::MoveFileExW(tmp.c_str(), storeFile().c_str(), MOVEFILE_REPLACE_EXISTING);
+        _storeStamp = storeStamp();
     }
 
     void remember(const Doc& d)
     {
         if (!_remember || !isRealPath(d.path)) return;
+        refreshStore();
         forget(d.path, false);
         if (!d.rules.empty())
         {
@@ -1086,6 +1078,7 @@ private:
     void forget(const std::wstring& path, bool save = true)
     {
         if (!_remember || path.empty()) return;
+        if (save) refreshStore();
         const size_t before = _store.size();
         _store.erase(std::remove_if(_store.begin(), _store.end(), [&](const Stored& s)
             { return ::CompareStringOrdinal(s.path.c_str(), -1, path.c_str(), -1, TRUE) == CSTR_EQUAL; }), _store.end());
@@ -1265,22 +1258,7 @@ private:
         else if (cmd == 13) act(A_CLEAR_ALL, 0);
     }
 
-    // ---- hooks ----
-    static LRESULT CALLBACK hookProc(int code, WPARAM w, LPARAM l)
-    {
-        if (code == HC_ACTION && w == PM_REMOVE && s_mod && s_mod->_vk)
-        {
-            MSG* msg = reinterpret_cast<MSG*>(l);
-            if ((msg->message == WM_KEYDOWN || msg->message == WM_SYSKEYDOWN) && msg->wParam == s_mod->_vk &&
-                static_cast<UINT>(currentMods()) == s_mod->_mods && views.viewOf(msg->hwnd) >= 0)
-            {
-                ::PostMessageW(s_mod->hwnd(), WM_TOK_MENU, 0, reinterpret_cast<LPARAM>(msg->hwnd));
-                msg->message = WM_NULL;
-            }
-        }
-        return ::CallNextHookEx(s_hook, code, w, l);
-    }
-
+    // ---- main window ----
     static LRESULT CALLBACK mainProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR)
     {
         TokenStyles* self = s_mod;
@@ -1338,12 +1316,12 @@ private:
     }
 
 public:
-    UINT _mods = MOD_CONTROL | MOD_SHIFT, _vk = 'H';
     bool _remember = true;
 private:
     bool _subclassed = false, _shutdown = false;
     bool _editorMenu = false, _editorMenuSeen = false;
     std::vector<Stored> _store;
+    ULONGLONG _storeStamp = 0;   // last write of kex-tokens.txt when this process last read or wrote it
 };
 
 } // namespace
@@ -1356,7 +1334,7 @@ TokenStats tokenStats()
     s.docs = static_cast<int>(g_docs.size());
     s.liveWrappers = 0;
     for (auto& kv : g_wrappers) s.liveWrappers += kv.second;
-    s.hooked = s_hook != nullptr;
+    s.menuKeyOn = s_mod != nullptr && g_menuCmd != 0;
     return s;
 }
 int tokenCommandId(int which) { return (which >= 0 && which < CMD_COUNT) ? static_cast<int>(g_ids[which]) : 0; }
@@ -1365,13 +1343,36 @@ std::wstring tokenInfo() { return s_mod ? s_mod->info() : std::wstring(); }
 int tokenRuleCount(HWND view) { return s_mod ? s_mod->ruleCount(view) : 0; }
 int tokenVariantBase(HWND view, int style, int* flags) { return s_mod ? s_mod->variantBase(view, style & 0xFF, flags) : -1; }
 bool tokenDocWrapped(HWND view) { return g_wrappers.count(docOf(view)) != 0; }
-bool tokenMenuKeyApply(UINT mods, UINT vk)
+void showTokenMenu()
 {
-    if (s_mod) return s_mod->applyMenuKey(mods, vk);
-    settings.setInt(L"TokenStyles", L"MenuModifiers", static_cast<int>(mods));
-    settings.setInt(L"TokenStyles", L"MenuKey", static_cast<int>(vk));
-    return true;
+    if (!s_mod) return;
+    HWND focus = ::GetFocus();
+    HWND view = views.viewOf(focus) >= 0 ? focus : views.sci(views.current());
+    ::PostMessageW(s_mod->hwnd(), WM_TOK_MENU, 0, reinterpret_cast<LPARAM>(view));
 }
+
+// Settings > KEX Highlighting > Token Style Menu, a command Shortcut Mapper lists (default Ctrl+Shift+H,
+// or the menu key set on the KEX Highlighting page before it moved to Shortcut Mapper)
+void addTokenCommands(HMENU parent, int position)
+{
+    if (g_menuCmd || !parent) return;
+    const UINT mods = static_cast<UINT>(settings.getInt(L"TokenStyles", L"MenuModifiers", MOD_CONTROL | MOD_SHIFT));
+    const UINT vk = static_cast<UINT>(settings.getInt(L"TokenStyles", L"MenuKey", 'H'));
+    const KexCommand cmd{ 1, L"Token Style Menu", showTokenMenu, (mods & MOD_CONTROL) != 0, (mods & MOD_ALT) != 0, (mods & MOD_SHIFT) != 0,
+                          static_cast<unsigned char>(vk) };
+    int id = 0;
+    KexCommandList list{ &cmd, 1, &id, position };
+    if (!nppMsg(NPPM_KEX_ADDCOMMANDS, reinterpret_cast<WPARAM>(parent), reinterpret_cast<LPARAM>(&list)) || !id)
+    {
+        log(L"Live token styles: Notepad++ did not take the menu command");
+        return;
+    }
+    g_menuCmd = id;
+    nppMsg(NPPM_KEX_ENABLECOMMAND, static_cast<WPARAM>(g_menuCmd), s_mod ? TRUE : FALSE);
+    s_stats.menuKey = menuKeyText();
+}
+
+int tokenMenuCommandId() { return g_menuCmd; }
 
 } // namespace kex
 

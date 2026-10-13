@@ -75,7 +75,14 @@ void pump(int ms)
         MSG m;
         while (::PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE))
         {
-            if (!::IsDialogMessageW(::GetActiveWindow(), &m)) { ::TranslateMessage(&m); ::DispatchMessageW(&m); }
+            // as Notepad++'s own loop: a dialog's keys go to the dialog, the rest through Notepad++'s shortcuts
+            HWND active = ::GetActiveWindow();
+            const bool dialog = active && active != npp._nppHandle && ::IsDialogMessageW(active, &m);
+            if (!dialog && !nppMsg(NPPM_KEX_TRANSLATEACCEL, 0, reinterpret_cast<LPARAM>(&m)))
+            {
+                ::TranslateMessage(&m);
+                ::DispatchMessageW(&m);
+            }
         }
         ::Sleep(2);
     }
@@ -150,7 +157,7 @@ std::wstring rectStr(const RECT& r)
     wchar_t b[96]; swprintf(b, 96, L"(%ld,%ld)-(%ld,%ld)", r.left, r.top, r.right, r.bottom); return b;
 }
 
-int hiddenOf(int style) { return style & ~(CARETSTYLE_INS_MASK | CARETSTYLE_CURSES); }
+int g_caretStyle = -1;   // Notepad++'s caret style in view 1 when the caret tests start
 
 struct EnumCtx { DWORD pid; HWND found; };
 BOOL CALLBACK findTop(HWND h, LPARAM p)
@@ -308,19 +315,27 @@ std::wstring deskCopyFolder()
     return d + L"KEX-Notepad++\\desktop-copy-" + std::to_wstring(g_second.dwProcessId);
 }
 
-// notepad++.exe [file]; KEX_SELFTEST_OTHER_DESKTOP tells it whether this window is on its desktop
-void launchSecond(const wchar_t* otherDesktop, const std::wstring& file)
+// fake desktop ids for the second notepad++.exe: its session file and backup folder are named after them
+const wchar_t kDeskA[] = L"00000000-0000-0000-0000-0000000000a1";
+const wchar_t kDeskB[] = L"00000000-0000-0000-0000-0000000000b2";
+const char kDeskTyped[] = "typed on desktop A, then Notepad++ crashed";
+
+// notepad++.exe [file]; KEX_SELFTEST_OTHER_DESKTOP tells it whether this window is on its desktop,
+// KEX_SELFTEST_DESKTOP_ID which desktop it is on
+void launchSecond(const wchar_t* otherDesktop, const std::wstring& file, const wchar_t* desktopId = kDeskA)
 {
     wchar_t exe[MAX_PATH];
     ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring cmd = std::wstring(L"\"") + exe + L"\"";
     if (!file.empty()) cmd += L" \"" + file + L"\"";
     ::SetEnvironmentVariableW(L"KEX_SELFTEST_OTHER_DESKTOP", otherDesktop);
+    ::SetEnvironmentVariableW(L"KEX_SELFTEST_DESKTOP_ID", desktopId);
     STARTUPINFOW si{}; si.cb = sizeof(si);
     g_second = PROCESS_INFORMATION{};
     g_secondWnd = nullptr;
     BOOL ok = ::CreateProcessW(exe, &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &g_second);
     ::SetEnvironmentVariableW(L"KEX_SELFTEST_OTHER_DESKTOP", nullptr);
+    ::SetEnvironmentVariableW(L"KEX_SELFTEST_DESKTOP_ID", nullptr);
     tlog(L"INFO started notepad++.exe%ls%ls with KEX_SELFTEST_OTHER_DESKTOP=%ls (pid %lu): %d", file.empty() ? L"" : L" ",
          fileNameOf(file).c_str(), otherDesktop, g_second.dwProcessId, ok);
 }
@@ -342,6 +357,72 @@ bool deskCopyReady(const wchar_t* activeName, int mainTabs)
     return static_cast<int>(::SendMessageW(g_secondWnd, NPPM_KEX_GETNBVIEWFILES, 0, 0)) >= mainTabs;
 }
 
+std::string asciiOf(const wchar_t* w)
+{
+    std::string a;
+    for (; *w; ++w) a += static_cast<char>(*w);
+    return a;
+}
+
+std::wstring deskSessionFile(const wchar_t* id) { return settings.dir() + L"\\session-desktop-" + id + L".xml"; }
+std::wstring deskBackupDir(const wchar_t* id) { return settings.dir() + L"\\backup\\desktop-" + id; }
+
+std::string readAll(const std::wstring& p)
+{
+    std::string text;
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, p.c_str(), L"rb") != 0 || !f) return text;
+    char chunk[4096];
+    for (size_t n; (n = fread(chunk, 1, sizeof(chunk), f)) > 0; ) text.append(chunk, n);
+    fclose(f);
+    return text;
+}
+
+int filesIn(const std::wstring& dir)
+{
+    int n = 0;
+    WIN32_FIND_DATAW fd;
+    HANDLE f = ::FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    do { if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) ++n; } while (::FindNextFileW(f, &fd));
+    ::FindClose(f);
+    return n;
+}
+
+void removeDeskSession(const wchar_t* id)
+{
+    ::DeleteFileW(deskSessionFile(id).c_str());
+    const std::wstring dir = deskBackupDir(id);
+    WIN32_FIND_DATAW fd;
+    HANDLE f = ::FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (f != INVALID_HANDLE_VALUE)
+    {
+        do { if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) ::DeleteFileW((dir + L"\\" + fd.cFileName).c_str()); } while (::FindNextFileW(f, &fd));
+        ::FindClose(f);
+    }
+    ::RemoveDirectoryW(dir.c_str());
+}
+
+POINT g_hoverPoint{};   // a point on the first tab while F12 shows the tab bar
+
+// the text of the second window's tab that holds `want` ("" when none does)
+std::wstring findTextInSecond(HWND w, const std::wstring& want)
+{
+    for (int v = 0; v < 4; ++v)
+    {
+        const int n = static_cast<int>(::SendMessageW(w, NPPM_KEX_GETNBVIEWFILES, v, 0));
+        for (int i = 0; i < n; ++i)
+        {
+            if (!::SendMessageW(w, NPPM_KEX_ACTIVATEDOC, v, i)) continue;
+            HWND s = reinterpret_cast<HWND>(::SendMessageW(w, NPPM_KEX_GETVIEWSCINTILLA, v, 0));
+            wchar_t t[512] = {};
+            ::SendMessageW(s, WM_GETTEXT, 511, reinterpret_cast<LPARAM>(t));
+            if (std::wstring(t).find(want) != std::wstring::npos) return t;
+        }
+    }
+    return L"";
+}
+
 void closeSecond(bool kill)
 {
     if (!g_second.hProcess) return;
@@ -358,7 +439,7 @@ void closeSecond(bool kill)
 
 // ---- speed --------------------------------------------------------------------------------------
 struct Perf { double keyMs = 0; double idleCpu = 0; double caretRedraws = 0; double idleRedraws = 0; double paints = 0;
-             double caretWork = 0, caretCompute = 0, caretPush = 0; };
+             double caretWork = 0; };
 
 int g_sciPaints = 0;
 LRESULT CALLBACK countPaints(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR)
@@ -378,7 +459,8 @@ double processCpuMs()
 void drainMessages()
 {
     MSG m;
-    while (::PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) { ::TranslateMessage(&m); ::DispatchMessageW(&m); }
+    while (::PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE))
+        if (!nppMsg(NPPM_KEX_TRANSLATEACCEL, 0, reinterpret_cast<LPARAM>(&m))) { ::TranslateMessage(&m); ::DispatchMessageW(&m); }
 }
 
 // Typing: keys posted the way the keyboard delivers them (through the message loop and its hooks),
@@ -409,8 +491,6 @@ Perf measurePerf()
     r.paints = static_cast<double>(g_sciPaints) / keys;
     const CaretStats cs1 = caretStats();
     r.caretWork = (cs1.workMs - cs0.workMs) / keys;
-    r.caretCompute = (cs1.computeMs - cs0.computeMs) / keys;
-    r.caretPush = (cs1.pushMs - cs0.pushMs) / keys;
     ::RemoveWindowSubclass(s, countPaints, 0x4B455050);
     sci(s, SCI_ENDUNDOACTION);
     sci(s, SCI_UNDO);
@@ -427,50 +507,6 @@ Perf measurePerf()
     }
     r.idleCpu = 100.0 * (processCpuMs() - c0) / (nowMs() - w0);
     r.idleRedraws = 1000.0 * (caretStats().pushes - i0) / (nowMs() - w0);
-    return r;
-}
-
-// What one redraw of a small layered window like the smooth caret's costs on this machine, in time
-// and in this process's CPU, including whatever the window system makes the text under it repaint.
-// Under Wine (no compositor) the X11 driver reshapes an X window and the text under the old spot is
-// painted again; on Windows the compositor does it without repainting anything.
-struct PushCost { double ms = 0, cpuMs = 0, paints = 0; };
-PushCost layeredPushCost()
-{
-    PushCost r;
-    HWND s = curSci();
-    HWND w = createOverlayWindow(npp._nppHandle, false, L"KEX perf probe");
-    Surface surf;
-    if (!s || !w || !surf.ensure(4, 24)) { if (w) ::DestroyWindow(w); return r; }
-    POINT pos{ 120, 60 };
-    ::ClientToScreen(s, &pos);
-    const int x0 = pos.x;
-    SIZE sz{ 4, 24 };
-    surf.clear();
-    fillRectF(surf, 1, 1, 3, 23, RGB(0, 0, 0), 1.0f);
-    pushLayered(w, surf, pos, sz);
-    ::SetWindowPos(w, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    drainMessages();
-    ::UpdateWindow(s);
-    ::SetWindowSubclass(s, countPaints, 0x4B455050, 0);
-    g_sciPaints = 0;
-    const int n = 60;
-    const double c0 = processCpuMs(), t0 = nowMs();
-    for (int i = 0; i < n; ++i)
-    {
-        surf.clear();
-        fillRectF(surf, 1, 1, 3, 23, RGB(0, 0, 0), (i % 2) ? 0.6f : 1.0f);
-        pos.x = x0 + (i % 9) * 7;
-        pushLayered(w, surf, pos, sz);
-        drainMessages();
-        ::UpdateWindow(s);
-    }
-    r.ms = (nowMs() - t0) / n;
-    r.cpuMs = (processCpuMs() - c0) / n;
-    r.paints = static_cast<double>(g_sciPaints) / n;
-    ::RemoveWindowSubclass(s, countPaints, 0x4B455050);
-    ::DestroyWindow(w);
-    drainMessages();
     return r;
 }
 
@@ -1221,14 +1257,14 @@ void buildSteps()
         for (int v = 0; v < 2; ++v)
         {
             HWND s = views.sci(v);
-            int orig = caretOriginalStyle(s), cur = static_cast<int>(sci(s, SCI_GETCARETSTYLE));
-            wchar_t b[96]; swprintf(b, 96, L"view%d original=0x%x now=0x%x; ", v + 1, orig, cur);
+            int cur = static_cast<int>(sci(s, SCI_GETCARETSTYLE));
+            wchar_t b[96]; swprintf(b, 96, L"view%d on=%d style=0x%x; ", v + 1, smoothCaretOn(s) ? 1 : 0, cur);
             detail += b;
-            // hidden only where the smooth caret is drawn, so a lost overlay can never leave you without a caret
-            bool drawnHere = caretStats().target == s && caretStats().visible;
-            if (orig < 0 || cur != (drawnHere ? hiddenOf(orig) : orig)) ok = false;
+            // Scintilla draws the smooth caret itself: Notepad++'s caret setting is left as it is
+            if (!smoothCaretOn(s) || (cur & CARETSTYLE_INS_MASK) == CARETSTYLE_INVISIBLE) ok = false;
         }
-        check(ok, L"C1", L"Scintilla's caret hidden only in the view the smooth caret is drawn in (%ls)", detail.c_str());
+        g_caretStyle = static_cast<int>(sci(views.sci(0), SCI_GETCARETSTYLE));
+        check(ok, L"C1", L"smooth caret on in Scintilla in both views, Notepad++'s caret style untouched (%ls)", detail.c_str());
         switchTo(L"a.cpp");
         focusEditor();
         ::SetFocus(views.sci(0));
@@ -1272,7 +1308,7 @@ void buildSteps()
         sci(s, SCI_GOTOPOS, posOf(s, 10, 30));
         pump(200);
         CaretStats c = caretStats();
-        check(c.visible && c.carets == 1, L"C3", L"custom caret visible, overlay %ls", rectStr(c.overlay).c_str());
+        check(c.visible && c.carets == 1, L"C3", L"smooth caret visible at (%.0f,%.0f), %.0f px high", c.mainX, c.mainY, c.mainH);
         return 100;
     });
     add([] { return shot(L"caret-normal"); });
@@ -1335,24 +1371,21 @@ void buildSteps()
         return 100;
     });
     add([] {
-        // Notepad++ re-applies its caret setting (Preferences > Editing): adopt it and hide again
+        // Notepad++'s caret setting (Preferences > Editing) changes the smooth caret too: a block caret
         HWND s = views.sci(0);
-        int orig = caretOriginalStyle(s);
+        const int orig = static_cast<int>(sci(s, SCI_GETCARETSTYLE));
         sci(s, SCI_SETCARETSTYLE, CARETSTYLE_BLOCK);
         sci(s, SCI_GOTOPOS, posOf(s, 3, 0));
         pump(150);
-        int adopted = caretOriginalStyle(s);
-        check(adopted == CARETSTYLE_BLOCK && sci(s, SCI_GETCARETSTYLE) == hiddenOf(CARETSTYLE_BLOCK), L"C10",
-            L"external caret style change adopted (0x%x) and hidden again", adopted);
+        const CaretStats b = caretStats();
+        check(b.visible && b.block, L"C10", L"caret style set to block in Notepad++: the smooth caret is a block too (%.0f px high)", b.mainH);
         sci(s, SCI_SETCARETSTYLE, orig);   // the user's real value again
         sci(s, SCI_GOTOPOS, posOf(s, 3, 2));
         pump(150);
-        int o0 = caretOriginalStyle(views.sci(0)), o1 = caretOriginalStyle(views.sci(1));
         clickEnable(M_CARET);   // its tick on the KEX Editing page
-        int r0 = static_cast<int>(sci(views.sci(0), SCI_GETCARETSTYLE)), r1 = static_cast<int>(sci(views.sci(1), SCI_GETCARETSTYLE));
-        HWND ov = ::FindWindowW(L"KexSuiteOverlay", L"KEX caret");
-        check(!modules[M_CARET]->isEnabled() && r0 == o0 && r1 == o1 && o0 == orig && !ov, L"C11",
-            L"caret off from Preferences: style restored exactly (view1 0x%x, view2 0x%x), overlay destroyed", r0, r1);
+        const int r0 = static_cast<int>(sci(views.sci(0), SCI_GETCARETSTYLE));
+        check(!modules[M_CARET]->isEnabled() && !smoothCaretOn(views.sci(0)) && !smoothCaretOn(views.sci(1)) && r0 == orig && orig == g_caretStyle, L"C11",
+            L"caret off from Preferences: Scintilla's own caret again in both views, caret style untouched (0x%x)", r0);
         return 300;
     });
     add([] { return shot(L"caret-disabled-scintilla-caret-back"); });
@@ -1360,7 +1393,7 @@ void buildSteps()
         clickEnable(M_CARET);
         focusEditor();
         pump(100);
-        check(modules[M_CARET]->isEnabled() && sci(views.sci(0), SCI_GETCARETSTYLE) == hiddenOf(caretOriginalStyle(views.sci(0))), L"C12",
+        check(modules[M_CARET]->isEnabled() && smoothCaretOn(views.sci(0)) && smoothCaretOn(views.sci(1)), L"C12",
             L"caret back on from Preferences");
         caretTestFreeze(-1, false);
         return 100;
@@ -1370,6 +1403,8 @@ void buildSteps()
     add([] {
         DesktopStats d = desktopStats();
         check(modules[M_DESKTOP]->isEnabled() && !d.newWindow, L"D1", L"per-desktop windows on; this is the first window");
+        removeDeskSession(kDeskA);
+        removeDeskSession(kDeskB);
         // what a copy must reproduce: a.cpp active with its caret, the other views, and an untitled tab with text
         switchTo(L"c.txt");
         if (views.current() == 1 && views.nbFiles(1) > 1) nppMsg(NPPM_MENUCOMMAND, 0, IDM_FILE_CLOSE);   // the clone in view 2
@@ -1434,14 +1469,30 @@ void buildSteps()
         check(text == L"desk note\r\nsecond line" && noteCaret == 12 && modified == 0 && title.find(g_deskNote) != std::wstring::npos, L"D6",
               L"untitled tab %ls copied: text \"%ls\", caret %lld, unmodified (%d), title \"%ls\"", g_deskNote.c_str(),
               text.substr(0, 9).c_str(), static_cast<long long>(noteCaret), static_cast<int>(modified), title.c_str());
+        // text typed in that window is backed up into its own folder, as in the first window
+        if (g_deskNoteView >= 0)
+        {
+            ::SendMessageW(w, NPPM_MENUCOMMAND, 0, IDM_FILE_NEW);
+            HWND ns = reinterpret_cast<HWND>(::SendMessageW(w, NPPM_KEX_GETVIEWSCINTILLA, g_deskNoteView, 0));
+            const std::wstring typed(kDeskTyped, kDeskTyped + sizeof(kDeskTyped) - 1);
+            for (wchar_t c : typed) ::SendMessageW(ns, WM_CHAR, c, 1);   // typed, as Scintilla's WM_SETTEXT takes 8-bit text
+        }
+        return until([] { return filesIn(deskBackupDir(kDeskA)) > 0
+                                 && readAll(deskSessionFile(kDeskA)).find("desktop-" + asciiOf(kDeskA)) != std::string::npos; }, 25000);
+    });
+    add([] {
+        const bool backedUp = g_untilOk;
+        const int backups = filesIn(deskBackupDir(kDeskA));
         const std::wstring leftover = deskCopyFolder();
-        closeSecond(true);
+        closeSecond(true);   // as if it crashed: it isn't closed, its process ends
         pump(300);
         check(!fileExists(leftover) && countNppWindows() == 1 && curName() == L"a.cpp", L"D7",
               L"the copy's temporary folder was removed (%ls) and this window kept a.cpp active", leftover.c_str());
+        check(backedUp, L"D7b", L"the new window backed up typed text into its own folder (%d file(s) in backup\\desktop-%ls) and saved its own session",
+              backups, kDeskA);
         // a file opened on a desktop without Notepad++: the copied tabs, then that file, active
         writeFile(path(L"d2.txt"), "opened on desktop 2\r\n");
-        launchSecond(L"1", path(L"d2.txt"));
+        launchSecond(L"1", path(L"d2.txt"), kDeskB);
         return until([] { return deskCopyReady(L"d2.txt", g_deskTabs[0] + 1); }, 30000);
     });
     add([] {
@@ -1468,6 +1519,53 @@ void buildSteps()
         switchTo(L"a.cpp");
         focusEditor();
         pump(150);
+        return 100;
+    });
+    add([] {
+        // Notepad++ started again on desktop A, whose window crashed: it comes back with that desktop's own
+        // tabs, including the typed text from its backup, instead of a new copy of this window's tabs
+        launchSecond(L"1", L"", kDeskA);
+        return until([] {
+            if (!g_second.hProcess || ::WaitForSingleObject(g_second.hProcess, 0) == WAIT_OBJECT_0) return true;
+            HWND h = nullptr;
+            g_secondWnd = nullptr;
+            while ((h = ::FindWindowExW(nullptr, h, L"Notepad++", nullptr)) != nullptr)
+            {
+                DWORD pid = 0;
+                ::GetWindowThreadProcessId(h, &pid);
+                if (pid == g_second.dwProcessId && ::IsWindowVisible(h)) g_secondWnd = h;
+            }
+            return g_secondWnd && ::SendMessageW(g_secondWnd, NPPM_KEX_GETNBVIEWFILES, 0, 0) > 0;
+        }, 30000);
+    });
+    add([] {
+        HWND w = g_secondWnd;
+        pump(500);
+        const std::wstring typed(kDeskTyped, kDeskTyped + sizeof(kDeskTyped) - 1);
+        const std::wstring found = (g_untilOk && w) ? findTextInSecond(w, typed) : L"";
+        if (found.empty() && w)
+            for (int v = 0; v < 4; ++v)
+                for (int i = 0, n = static_cast<int>(::SendMessageW(w, NPPM_KEX_GETNBVIEWFILES, v, 0)); i < n; ++i)
+                    if (::SendMessageW(w, NPPM_KEX_ACTIVATEDOC, v, i))
+                    {
+                        HWND s = reinterpret_cast<HWND>(::SendMessageW(w, NPPM_KEX_GETVIEWSCINTILLA, v, 0));
+                        wchar_t t[64] = {};
+                        ::SendMessageW(s, WM_GETTEXT, 63, reinterpret_cast<LPARAM>(t));
+                        tlog(L"INFO   view %d tab %d: %ls | %ls", v + 1, i + 1, windowTitle(w).c_str(), t);
+                    }
+        check(!found.empty() && countNppWindows() == 2, L"D9",
+              L"Notepad++ started again on that desktop: its own session came back with the backed-up text (\"%ls\")", found.substr(0, 26).c_str());
+        const std::string own = readAll(settings.dir() + L"\\kex-desktop-" + kDeskA + L".log");
+        check(own.find("own session") != std::string::npos, L"D10",
+              L"that window logs to its own kex-desktop-<id>.log (%d bytes), so it doesn't overwrite kex.log", static_cast<int>(own.size()));
+        closeSecond(true);
+        pump(300);
+        removeDeskSession(kDeskA);
+        removeDeskSession(kDeskB);
+        ::DeleteFileW((settings.dir() + L"\\kex-desktop-" + kDeskA + L".log").c_str());
+        ::DeleteFileW((settings.dir() + L"\\kex-desktop-" + kDeskB + L".log").c_str());
+        switchTo(L"a.cpp");
+        focusEditor();
         return 100;
     });
 
@@ -1598,11 +1696,21 @@ void buildSteps()
         TabsStats t = tabsStats();
         int nb = views.nbFiles(views.current()), cur = views.currentIndex(views.current());
         int dirtyCount = 0; for (int d : t.dirty) dirtyCount += d;
-        check(g_untilOk && t.tabCount == nb && t.activeIndex == cur, L"T1", L"hovering the top edge shows the floating strip %ls: %d tabs (view has %d), active tab %d",
+        check(g_untilOk && t.tabCount == nb && t.activeIndex == cur, L"T1", L"hovering the top edge shows the tab bar %ls: %d tabs (view has %d), active tab %d",
             rectStr(t.strip).c_str(), t.tabCount, nb, t.activeIndex);
         check(dirtyCount >= 1, L"T2", L"unsaved marker shown on %d tab(s)", dirtyCount);
         RECT sr = t.strip; RECT sc; ::GetWindowRect(curSci(), &sc);
-        check(sr.top <= sc.top + 2 && sr.bottom > sc.top, L"T3", L"strip floats over the text; the editor is not pushed down (editor top %ld, strip %ld..%ld)", sc.top, sr.top, sr.bottom);
+        check(sr.top <= sc.top + 2 && sr.bottom > sc.top, L"T3", L"tab bar over the text; the editor is not pushed down (editor top %ld, tab bar %ld..%ld)", sc.top, sr.top, sr.bottom);
+        // Notepad++'s own tab bar, on top: the window under the first tab is that view's tab control
+        HWND under = nullptr;
+        if (!t.tabRects.empty())
+        {
+            const RECT r0 = t.tabRects[0];
+            g_hoverPoint = POINT{ (r0.left + r0.right) / 2, (r0.top + r0.bottom) / 2 };
+            under = ::WindowFromPoint(g_hoverPoint);
+        }
+        check(under && under == views.tabBar(views.current()), L"T3b", L"it is Notepad++'s real tab bar (window under the first tab %p, tab bar %p)",
+              under, views.tabBar(views.current()));
         return 100;
     });
     add([] { return shot(L"f12-hover-tabs"); });
@@ -1624,7 +1732,8 @@ void buildSteps()
         return until([] { return !tabsStats().stripVisible; }, 3000);
     });
     add([] {
-        check(g_untilOk, L"T5", L"strip hides when the mouse leaves");
+        HWND under = ::WindowFromPoint(g_hoverPoint);
+        check(g_untilOk && under == curSci(), L"T5", L"the tab bar hides when the mouse leaves, under the view again (window there %p, view %p)", under, curSci());
         nppMsg(NPPM_MENUCOMMAND, 0, IDM_VIEW_POSTIT);   // leave post-it
         pump(300);
         RECT r; ::GetWindowRect(npp._nppHandle, &r);
@@ -1640,7 +1749,7 @@ void buildSteps()
         for (int i = 0; i < M_COUNT; ++i)
         {
             if (!modules[i]->defaultOn()) continue;   // off by default: its own tests switch it on and off
-            int origStyle0 = caretOriginalStyle(views.sci(0));
+            int origStyle0 = static_cast<int>(sci(views.sci(0), SCI_GETCARETSTYLE));
             clickEnable(i);
             pump(100);
             bool off = !modules[i]->isEnabled();
@@ -1653,8 +1762,8 @@ void buildSteps()
             case M_CARET:
             {
                 int now = static_cast<int>(sci(views.sci(0), SCI_GETCARETSTYLE));
-                restored = now == origStyle0 && ::FindWindowW(L"KexSuiteOverlay", L"KEX caret") == nullptr;
-                wchar_t b[80]; swprintf(b, 80, L"caret style back to 0x%x (original 0x%x)", now, origStyle0); extra = b;
+                restored = now == origStyle0 && !smoothCaretOn(views.sci(0)) && !smoothCaretOn(views.sci(1));
+                wchar_t b[96]; swprintf(b, 96, L"Scintilla's own caret again, caret style 0x%x (was 0x%x)", now, origStyle0); extra = b;
                 break;
             }
             case M_HOTKEY:
@@ -1750,11 +1859,11 @@ void buildSteps()
         ::SetFocus(s3);
         sci(s3, SCI_GOTOPOS, posOf(s3, 1, 3));
         pump(250);
-        RECT hr; ::GetWindowRect(host, &hr);
+        RECT cr; ::GetClientRect(s3, &cr);
         CaretStats cs = caretStats();
-        bool inside = cs.overlay.left >= hr.left && cs.overlay.right <= hr.right && cs.overlay.top >= hr.top && cs.overlay.bottom <= hr.bottom;
-        check(host != npp._nppHandle && cs.target == s3 && cs.visible && inside, L"K4", L"view 3 snapped out: caret drawn in its own window, overlay %ls inside %ls",
-            rectStr(cs.overlay).c_str(), rectStr(hr).c_str());
+        bool inside = cs.mainX >= cr.left && cs.mainX < cr.right && cs.mainY >= cr.top && cs.mainY + cs.mainH <= cr.bottom;
+        check(host != npp._nppHandle && cs.target == s3 && cs.visible && inside, L"K4", L"view 3 snapped out: caret drawn in its own window at (%.0f,%.0f), inside view 3 %ls",
+            cs.mainX, cs.mainY, rectStr(cr).c_str());
         return 200;
     });
     add([] { return views.patched() ? shot(L"kex-view3-snapped-out-caret") : 0; });
@@ -1868,6 +1977,30 @@ void buildSteps()
         ::EndMenu(); tap(VK_ESCAPE); pump(100);
         setModuleEnabled(M_KEYS, true, false);
         check(inert && modules[M_KEYS]->isEnabled(), L"J13", L"switched off, Alt+J does nothing; back on afterwards (%d keys handled in all)", jetBrainsStats().handled);
+        return 100;
+    });
+    add([] {
+        // the keys are Notepad++ commands of KEX's: in Settings > KEX Editing > JetBrains Commands and in
+        // Shortcut Mapper (plugin "KEX"); switched off, the menu shows them without keys
+        auto menuText = [](UINT id) { wchar_t t[128] = {}; ::GetMenuStringW(settingsSubmenu(PAGE_EDITING), id, t, 128, MF_BYCOMMAND); return std::wstring(t); };
+        HMENU edit = settingsSubmenu(PAGE_EDITING);
+        HMENU sub = nullptr;
+        for (int i = 0, n = edit ? ::GetMenuItemCount(edit) : 0; i < n; ++i)
+        {
+            wchar_t t[64] = {};
+            ::GetMenuStringW(edit, i, t, 64, MF_BYPOSITION);
+            if (std::wstring(t) == L"JetBrains Commands") sub = ::GetSubMenu(edit, i);
+        }
+        const UINT next = static_cast<UINT>(jetBrainsCommandId(0));
+        ShortcutKey sk{};
+        const bool mapped = next && nppMsg(NPPM_GETSHORTCUTBYCMDID, next, reinterpret_cast<LPARAM>(&sk)) && sk._key == 'J' && sk._isAlt && !sk._isCtrl && !sk._isShift;
+        const std::wstring on = menuText(next);
+        setModuleEnabled(M_KEYS, false, false);
+        const std::wstring off = menuText(next);
+        setModuleEnabled(M_KEYS, true, false);
+        const std::wstring back = menuText(next);
+        check(sub && ::GetMenuItemCount(sub) == 27 && mapped && on == L"Select Next Occurrence\tAlt+J" && off == L"Select Next Occurrence" && back == on, L"J14",
+              L"Settings > KEX Editing > JetBrains Commands has the 27 commands, Shortcut Mapper has Alt+J for \"%ls\"; off: \"%ls\"", on.c_str(), off.c_str());
         return 100;
     });
     // ---- tab snapping: drag a tab to the edge of a view ------------------------------------------
@@ -2218,7 +2351,7 @@ void buildSteps()
         pump(300);
         HWND s = curSci();
         TokenStats ts = tokenStats();
-        check(modules[M_TOKENS]->isEnabled() && ts.hooked && tokenDocWrapped(s) && ts.wrapperCalls > 0, L"L1",
+        check(modules[M_TOKENS]->isEnabled() && ts.menuKeyOn && tokenDocWrapped(s) && ts.wrapperCalls > 0, L"L1",
               L"live token styles on by default; k.cpp's lexer goes through the suite (%d lexers wrapped, %d alive)", ts.wrapperCalls, ts.liveWrappers);
         std::vector<intptr_t> al = wordsIn(s, "alpha");
         caretOn(s, al[0]);
@@ -2391,10 +2524,11 @@ void buildSteps()
         showPrefPage(L"KEX Highlighting");
         pump(200);
         HWND p = prefPage(PAGE_HIGHLIGHT);
-        const WORD hk = static_cast<WORD>(::SendDlgItemMessageW(p, IDC_K_KEY, HKM_GETHOTKEY, 0, 0));
-        const std::wstring st = itemText(p, IDC_K_STATUS), info = itemText(p, IDC_K_INFO);
-        check(p && ::IsWindowVisible(p) && st == L"Running" && LOBYTE(hk) == 'H' && HIBYTE(hk) == (HOTKEYF_CONTROL | HOTKEYF_SHIFT) && info.find(L"2 tokens") != std::wstring::npos,
-              L"L18", L"KEX Highlighting page: \"%ls\", menu key Ctrl+Shift+H, \"%ls\"", st.c_str(), info.c_str());
+        const std::wstring st = itemText(p, IDC_K_STATUS), info = itemText(p, IDC_K_INFO), key = itemText(p, IDC_K_KEY);
+        wchar_t item[128] = {};
+        ::GetMenuStringW(settingsSubmenu(PAGE_HIGHLIGHT), static_cast<UINT>(tokenMenuCommandId()), item, 128, MF_BYCOMMAND);
+        check(p && ::IsWindowVisible(p) && st == L"Running" && key == L"Ctrl+Shift+H" && std::wstring(item) == L"Token Style Menu\tCtrl+Shift+H" && info.find(L"2 tokens") != std::wstring::npos,
+              L"L18", L"KEX Highlighting page: \"%ls\", menu key %ls (Settings > KEX Highlighting > \"%ls\"), \"%ls\"", st.c_str(), key.c_str(), item, info.c_str());
         return 200;
     });
     add([] { return shot(L"preferences-kex-highlighting"); });
@@ -2405,7 +2539,7 @@ void buildSteps()
         settle(400);
         std::wstring why;
         const bool plain = styledAs(s, wordsIn(s, "gamma"), 5, 0, -1, &why);
-        check(!modules[M_TOKENS]->isEnabled() && !tokenStats().hooked && tokRuns(s, 24) == 0 && plain && settings.getInt(L"TokenStyles", L"Enabled", 1) == 0, L"L19",
+        check(!modules[M_TOKENS]->isEnabled() && !tokenStats().menuKeyOn && tokRuns(s, 24) == 0 && plain && settings.getInt(L"TokenStyles", L"Enabled", 1) == 0, L"L19",
               L"switched off: the colours and the bold are gone %ls", why.c_str());
         clickEnable(M_TOKENS);   // on again: the file's tokens come back from kex-tokens.txt
         pump(300);
@@ -2480,14 +2614,12 @@ void buildSteps()
         for (int i = 0; i < M_COUNT; ++i) if (was[i]) setModuleEnabled(i, false, false);
         focusEditor();
         const Perf off = measurePerf();
-        const PushCost push = layeredPushCost();
         tlog(L"INFO PERF all KEX features on: %.3f ms per key, %.2f%% CPU idle; all off: %.3f ms per key, %.2f%% CPU idle",
              on.keyMs, on.idleCpu, off.keyMs, off.idleCpu);
-        tlog(L"INFO PERF smooth caret: window redrawn %.2f times per key while typing, %.1f times a second while idle; one redraw costs %.3f ms (%.3f ms CPU) here and makes the text repaint %.2f times",
-             on.caretRedraws, on.idleRedraws, push.ms, push.cpuMs, push.paints);
+        tlog(L"INFO PERF smooth caret: drawn in %.2f paints per key while typing, %.1f a second while idle (glide and blink fades)",
+             on.caretRedraws, on.idleRedraws);
         tlog(L"INFO PERF text repaints per key: %.2f with the features on, %.2f with them off", on.paints, off.paints);
-        tlog(L"INFO PERF smooth caret's own code per key: %.3f ms, of it %.3f ms working out caret positions and %.3f ms redrawing its window",
-             on.caretWork, on.caretCompute, on.caretPush);
+        tlog(L"INFO PERF smooth caret's own code in Scintilla per key: %.3f ms", on.caretWork);
         for (int i = 0; i < M_COUNT; ++i)
         {
             if (!was[i]) continue;
@@ -2499,11 +2631,10 @@ void buildSteps()
             setModuleEnabled(i, false, false);
         }
         for (int i = 0; i < M_COUNT; ++i) if (was[i]) setModuleEnabled(i, true, false);
-        // The features' own work, without the window system's time for the caret's redraws (measured
-        // above: that part depends on the machine, not on our code); the redraws themselves are capped
-        // by the caret's glide (80 ms at one frame per 15 ms) and blink fade.
-        const double ownKey = on.keyMs - on.caretRedraws * push.ms - off.keyMs;
-        const double ownIdle = on.idleCpu - off.idleCpu - on.idleRedraws * push.cpuMs / 10.0;
+        // The features' own work; the caret's extra paints are capped by its glide (80 ms at one frame
+        // per 15 ms) and blink fade.
+        const double ownKey = on.keyMs - off.keyMs;
+        const double ownIdle = on.idleCpu - off.idleCpu;
         check(ownKey <= off.keyMs * 0.5 + 0.3 && ownIdle <= 1.5 && on.caretRedraws <= 8 && on.idleRedraws <= 25, L"PERF1",
               L"the features' own work adds %.3f ms per key and %.2f%% CPU while idle; caret redraws %.2f per key, %.1f a second idle (total %.3f vs %.3f ms per key, %.2f%% vs %.2f%% idle)",
               ownKey, ownIdle, on.caretRedraws, on.idleRedraws, on.keyMs, off.keyMs, on.idleCpu, off.idleCpu);

@@ -90,13 +90,29 @@ jobs:
         env:
           TAG: ${{ steps.pick.outputs.tag }}
           LATEST: ${{ steps.pick.outputs.latest }}
+          KEX_SIGNING_KEY: ${{ secrets.KEX_SIGNING_KEY }}
         run: |
           ver=${TAG#v}
           zip="out/Notepad++-$ver-KEX.zip"
-          if gh release view "$TAG-kex" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG-kex" "$zip" --clobber -R "$GITHUB_REPOSITORY"
+          files=("$zip")
+          # Installed copies only take a zip signed with the key whose public half is in Install-KEX.ps1
+          if [ -n "$KEX_SIGNING_KEY" ]; then
+            key="$RUNNER_TEMP/kex-signing-key.pem"
+            (umask 077; printf '%s\n' "$KEX_SIGNING_KEY" > "$key")
+            want=$(python3 -I -c 'import base64, re, sys; print(base64.b64decode(re.search(r"KexPublicKey = .(\S+).", open(sys.argv[1]).read()).group(1)).hex().upper())' windows/Install-KEX.ps1)
+            have=$(openssl rsa -in "$key" -noout -modulus | cut -d= -f2)
+            if [ "$want" != "$have" ]; then rm -f "$key"; echo "::error::KEX_SIGNING_KEY doesn't match the public key in Install-KEX.ps1"; exit 1; fi
+            openssl dgst -sha256 -sign "$key" -out "$zip.sig" "$zip"
+            rm -f "$key"
+            files+=("$zip.sig")
           else
-            gh release create "$TAG-kex" "$zip" -R "$GITHUB_REPOSITORY" --latest="$LATEST" \
+            echo "::warning::The KEX_SIGNING_KEY secret isn't set, so this build is unsigned and installed copies won't install it."
+          fi
+          if gh release view "$TAG-kex" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            [ -f "$zip.sig" ] || gh release delete-asset "$TAG-kex" "$(basename "$zip").sig" -y -R "$GITHUB_REPOSITORY" 2>/dev/null || true
+            gh release upload "$TAG-kex" "${files[@]}" --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG-kex" "${files[@]}" -R "$GITHUB_REPOSITORY" --latest="$LATEST" \
               --title "Notepad++ $ver KEX" \
               --notes "Notepad++ $ver (official $TAG source) with the KEX four-view patch and the KEX Suite plugin. Download the zip, right-click it > Properties > Unblock, extract it, and read KEX-README.txt."
           fi

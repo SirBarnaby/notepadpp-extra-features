@@ -1,6 +1,7 @@
 // SettingsMenu.cpp - the KEX group at the end of Notepad++'s Settings menu: one submenu for each KEX
 // Preferences page ("KEX Editing", "KEX Tabs", "KEX Windows", "KEX Highlighting", "KEX Quick Note"),
-// holding an on/off switch for every feature on that page and "Preferences..." to open the page.
+// holding an on/off switch for every feature on that page, the features' commands and "Preferences..."
+// to open the page.
 // The group goes after Notepad++'s own items, so their positions (which Notepad++'s translations use
 // to name submenus such as Import) stay as upstream has them.
 #include "KexSuite.h"
@@ -48,6 +49,9 @@ bool buildSettingsMenu()
         ::AppendMenuW(settingsMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(sub), kGroupTitle[p]);
         g_sub[p] = sub;
     }
+    // the features' commands, before the separator (Shortcut Mapper lists them under plugin "KEX")
+    addJetBrainsCommands(g_sub[PAGE_EDITING], ::GetMenuItemCount(g_sub[PAGE_EDITING]) - 2);
+    addTokenCommands(g_sub[PAGE_HIGHLIGHT], ::GetMenuItemCount(g_sub[PAGE_HIGHLIGHT]) - 2);
     return true;
 }
 

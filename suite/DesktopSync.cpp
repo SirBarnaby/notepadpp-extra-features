@@ -7,6 +7,9 @@
 // opens with a copy of the first window's tabs: the same files in the same views, the same active tabs,
 // carets and scroll positions, and a copy of every untitled tab. The core writes and reads that copy
 // (NPPM_KEX_SAVEDESKTOPCOPY / NPPM_KEX_LOADDESKTOPCOPY); windows never move between desktops.
+// That window keeps its own session and backups for its desktop (session-desktop-<id>.xml and
+// backup\desktop-<id>\ in the settings folder): unsaved text in it is backed up like in the first window,
+// and the next Notepad++ started on that desktop reopens its tabs instead of copying them again.
 #include "KexSuite.h"
 #include <objbase.h>
 #include <shobjidl.h>
@@ -17,11 +20,9 @@ namespace kex {
 namespace {
 
 const ULONG_PTR COPYDATA_KEX_TABS = 0x4B455854;   // 'KEXT': "write a copy of your tabs into this folder"
-// {AA509086-5CA9-4C25-8F95-589D3C07B48A}, {A5CD92FF-29BE-454C-8D04-D82879FB3F1B} (shobjidl.h)
-const CLSID kCLSID_VirtualDesktopManager = { 0xaa509086, 0x5ca9, 0x4c25, { 0x8f, 0x95, 0x58, 0x9d, 0x3c, 0x07, 0xb4, 0x8a } };
-const IID kIID_IVirtualDesktopManager = { 0xa5cd92ff, 0x29be, 0x454c, { 0x8d, 0x04, 0xd8, 0x28, 0x79, 0xfb, 0x3f, 0x1b } };
 std::wstring g_pendingCopy;     // set in a new instance by desktopHandOff: the folder to open at startup
 std::wstring g_handOffNote;     // what desktopHandOff did, logged once the suite is set up
+std::wstring g_logName = L"kex.log";   // a window for another desktop logs to its own file
 DesktopStats s_stats;
 
 BOOL CALLBACK collectNpp(HWND h, LPARAM l)
@@ -110,6 +111,57 @@ int onCurrentDesktop(const std::vector<HWND>& wins, HWND* here)
     return result;
 }
 
+// "desktop-<id of the virtual desktop the user is on>", empty when Windows doesn't say. Explorer keeps the
+// current desktop's id in the registry (per logon session on Windows 10); the foreground window's desktop
+// is the fallback. The self-test names its fake desktops with KEX_SELFTEST_DESKTOP_ID.
+std::wstring currentDesktopKey()
+{
+    wchar_t env[48] = {};
+    if (::GetEnvironmentVariableW(L"KEX_SELFTEST_DESKTOP_ID", env, 48)) return std::wstring(L"desktop-") + env;
+    GUID id{};
+    bool found = false;
+    DWORD session = 0;
+    ::ProcessIdToSessionId(::GetCurrentProcessId(), &session);
+    const std::wstring keys[] = {
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\SessionInfo\\" + std::to_wstring(session) + L"\\VirtualDesktops",
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VirtualDesktops" };
+    for (const std::wstring& k : keys)
+    {
+        DWORD size = sizeof(id);
+        if (::RegGetValueW(HKEY_CURRENT_USER, k.c_str(), L"CurrentVirtualDesktop", RRF_RT_REG_BINARY, nullptr, &id, &size) == ERROR_SUCCESS
+            && size == sizeof(id) && id != GUID_NULL) { found = true; break; }
+    }
+    if (!found)
+    {
+        HRESULT init = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        IVirtualDesktopManager* vdm = nullptr;
+        if (SUCCEEDED(::CoCreateInstance(kCLSID_VirtualDesktopManager, nullptr, CLSCTX_ALL, kIID_IVirtualDesktopManager, reinterpret_cast<void**>(&vdm))) && vdm)
+        {
+            if (HWND fg = ::GetForegroundWindow())
+                found = SUCCEEDED(vdm->GetWindowDesktopId(fg, &id)) && id != GUID_NULL;
+            vdm->Release();
+        }
+        if (SUCCEEDED(init)) ::CoUninitialize();
+    }
+    if (!found) return L"";
+    wchar_t text[40] = {};
+    swprintf(text, 40, L"%08lx-%04hx-%04hx-%02x%02x-%02x%02x%02x%02x%02x%02x", id.Data1, id.Data2, id.Data3, id.Data4[0], id.Data4[1],
+             id.Data4[2], id.Data4[3], id.Data4[4], id.Data4[5], id.Data4[6], id.Data4[7]);
+    return std::wstring(L"desktop-") + text;
+}
+
+// a session file with at least one tab in it
+bool hasSavedTabs(const std::wstring& sessionFile)
+{
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, sessionFile.c_str(), L"rb") != 0 || !f) return false;
+    std::string text;
+    char chunk[4096];
+    for (size_t n; (n = fread(chunk, 1, sizeof(chunk), f)) > 0 && text.size() < (4u << 20); ) text.append(chunk, n);
+    fclose(f);
+    return text.find("<File ") != std::string::npos;
+}
+
 bool perDesktopEnabled(const wchar_t* settingsDir)
 {
     std::wstring ini = std::wstring(settingsDir) + L"\\kex.ini";
@@ -149,6 +201,8 @@ Module* createDesktopSync() { return new DesktopSync(); }
 
 DesktopStats desktopStats() { return s_stats; }
 
+const std::wstring& logFileName() { return g_logName; }
+
 // At NPPN_READY, before the features start: a new instance opens the copy of the first window's tabs.
 void desktopLoadPendingCopy()
 {
@@ -187,9 +241,10 @@ LRESULT desktopServeCopy(HWND sender, const COPYDATASTRUCT* cds)
 } // namespace kex
 
 // Called by a second notepad++.exe from winmain.cpp, before the suite is set up (KexSuiteHost.h).
-HWND kexsuite::desktopHandOff(HWND running, const wchar_t* settingsDir)
+HWND kexsuite::desktopHandOff(HWND running, const wchar_t* settingsDir, wchar_t* desktopKey, int keyLen)
 {
     using namespace kex;
+    if (desktopKey && keyLen > 0) desktopKey[0] = 0;
     if (!running || !settingsDir || !perDesktopEnabled(settingsDir)) return running;
     std::vector<HWND> wins;
     ::EnumWindows(collectNpp, reinterpret_cast<LPARAM>(&wins));
@@ -199,8 +254,19 @@ HWND kexsuite::desktopHandOff(HWND running, const wchar_t* settingsDir)
     if (on < 0) return running;          // cannot tell: Notepad++'s usual behaviour
     if (on > 0) return here;             // one on this desktop: it gets the files
 
-    // Notepad++ is open only on other desktops: this process becomes a new Notepad++ here, starting
-    // with a copy of the tabs of the first one.
+    // Notepad++ is open only on other desktops: this process becomes a new Notepad++ here, with this
+    // desktop's own session. When this desktop has none yet, it starts with a copy of the first one's tabs.
+    const std::wstring key = currentDesktopKey();
+    g_logName = L"kex-" + (key.empty() ? std::wstring(L"desktop") : key) + L".log";
+    if (!key.empty() && desktopKey && static_cast<int>(key.size()) < keyLen)
+    {
+        wcscpy_s(desktopKey, keyLen, key.c_str());
+        if (hasSavedTabs(std::wstring(settingsDir) + L"\\session-" + key + L".xml"))
+        {
+            g_handOffNote = L"no Notepad++ on this desktop: new window with this desktop's own session (" + key + L")";
+            return nullptr;
+        }
+    }
     HWND source = wins.front();
     ULONGLONG oldest = processStartTime(source);
     for (HWND h : wins)
@@ -228,7 +294,7 @@ HWND kexsuite::desktopHandOff(HWND running, const wchar_t* settingsDir)
     {
         g_pendingCopy = dir;
         g_handOffNote = L"no Notepad++ on this desktop: new window with " + std::to_wstring(static_cast<long long>(result) - 1)
-                      + L" tab(s) copied from pid " + std::to_wstring(pid);
+                      + L" tab(s) copied from pid " + std::to_wstring(pid) + L" (session " + (key.empty() ? std::wstring(L"none") : key) + L")";
     }
     else
     {

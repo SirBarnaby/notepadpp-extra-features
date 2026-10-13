@@ -49,3 +49,31 @@
 // wParam: a KEX Preferences page (0 "KEX Editing", 1 "KEX Tabs", 2 "KEX Windows", 3 "KEX Highlighting",
 // 4 "KEX Quick Note"). Opens Settings > Preferences on that page. LRESULT: TRUE.
 #define NPPM_KEX_SHOWPREFPAGE         (KEX_USER + 14)
+
+// Commands of the KEX features. They are added to a menu of the feature's, Settings > Shortcut Mapper
+// lists them under Plugin commands (plugin "KEX") where their keys can be changed, and their keys go
+// before Notepad++'s own, as the feature's keys did before.
+struct KexCommand {
+	int internalId;          // stable number, so Shortcut Mapper changes (shortcuts.xml) find it again
+	const wchar_t* name;
+	void (*run)();
+	bool ctrl, alt, shift;
+	unsigned char key;       // default key, 0 = none
+};
+struct KexCommandList {
+	const KexCommand* items;
+	int count;
+	int* ids;                // receives each command's menu command id
+	int position;            // where in the menu they go (-1: at the end)
+};
+// wParam: HMENU to add the commands to, lParam: KexCommandList*. LRESULT: TRUE.
+#define NPPM_KEX_ADDCOMMANDS          (KEX_USER + 15)
+// wParam: a command id from NPPM_KEX_ADDCOMMANDS, lParam: TRUE gives the command its key, FALSE takes it
+// away (while its feature is off, so the key does what it does without KEX). LRESULT: TRUE.
+#define NPPM_KEX_ENABLECOMMAND        (KEX_USER + 16)
+// Opens Settings > Shortcut Mapper on Plugin commands, showing the KEX commands. LRESULT: TRUE.
+#define NPPM_KEX_SHOWSHORTCUTS        (KEX_USER + 17)
+// lParam: MSG*. For a message loop of its own: runs Notepad++'s shortcuts (its menu commands, the
+// plugins' and KEX's) as its main loop does. LRESULT: TRUE when the message was a shortcut (then don't
+// dispatch it).
+#define NPPM_KEX_TRANSLATEACCEL       (KEX_USER + 18)

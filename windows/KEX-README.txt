@@ -26,6 +26,12 @@ Two ways to use it
    downloads it and installs it the next time Notepad++ is closed, with a notification.
    Log: %LOCALAPPDATA%\KEX-Notepad++\update.log
 
+   The task runs with admin rights, so it only installs a build signed with the KEX key (each
+   GitHub build signs its zip; the matching public key is inside Install-KEX.ps1). Its script and
+   downloads are kept in %ProgramFiles%\KEX-Notepad++, which only administrators can change. If
+   the repository loses its signing key (the KEX_SIGNING_KEY secret under Settings > Secrets and
+   variables > Actions), builds are published unsigned and the task skips them with a notification.
+
 Four views
 ----------
   * Right-click a tab > Move/Clone to Other View works as before; View > Move/Clone Current
@@ -54,8 +60,10 @@ feature has its on/off tick and its settings next to it; changes apply at once.
     file) on a virtual desktop that has no Notepad++ window opens a new window there instead of
     switching you back to the old one. The new window starts with the same tabs in the same
     views, the same active tabs, carets and scroll positions, and a copy of every untitled tab;
-    files show what is saved on disk. After that the windows are independent, like Notepad++'s
-    own multi-instance mode: the first window keeps saving your session, the others don't.
+    files show what is saved on disk. After that the windows are independent: each desktop's
+    window keeps its own session and crash backup (session-desktop-<id>.xml and
+    backup\desktop-<id>\ in Notepad++'s settings folder) and its own log, so starting Notepad++
+    on that desktop again brings back its tabs and unsaved text.
     Windows never move between desktops. On a desktop that already has one, Notepad++ behaves
     as usual.
   * Falling letters: deleted text falls off the screen, CS2D style.
@@ -66,7 +74,9 @@ feature has its on/off tick and its settings next to it; changes apply at once.
     on the page change that), Ctrl+W and
     Ctrl+Shift+W extend / shrink the selection, Ctrl+/ comment, Ctrl+D duplicate, Ctrl+Y delete
     line, Shift+Alt+Up/Down move line, Alt+Left/Right switch tabs, Shift+Enter new line below.
-    "All shortcuts..." on the page lists them. Untick "Also the keys Notepad++ uses" to keep
+    They are real commands: Settings > KEX Editing > JetBrains Commands lists them with their
+    keys, and Settings > Shortcut Mapper > Plugin commands (plugin KEX) changes any key ("Change
+    keys..." on the page opens it there). Untick "Also the keys Notepad++ uses" to keep
     Notepad++'s own Ctrl+Y (redo), Ctrl+W (close), Ctrl+R, F11 and Ctrl+Num +/- (zoom).
   * Quick note (KEX Quick Note, Ctrl+Alt+M by default): a small borderless note fades in at the
     centre of the screen over whatever you're doing, even with Notepad++ minimised. Press it again
@@ -75,8 +85,8 @@ feature has its on/off tick and its settings next to it; changes apply at once.
     settings folder) and is there next time. Options: line numbers, word wrap, current line
     highlight, always on top, and opening where you left it. With a Notepad++ on several desktops,
     the first window answers the hotkey and opens the note on the desktop you're on.
-  * F12 hover tabs: in F12 (post-it) mode, touching the top edge of any view shows a floating
-    strip with that view's tabs.
+  * F12 hover tabs: in F12 (post-it) mode, touching the top edge of any view shows that view's
+    own tab bar over the text, with its close buttons, right-click menu and dragging.
   * Glass text area (KEX Windows, off by default): Windows' own blur shows through the
     background of the text, live, so it follows the window as you move it. Menus, toolbar, tabs
     and title bar stay solid. Style: Blur (default) or Acrylic (Windows' frosted texture, much
@@ -91,7 +101,8 @@ feature has its on/off tick and its settings next to it; changes apply at once.
   * Live token styles (KEX Highlighting): Search > Style All Occurrences of Token (also in the
     right-click menu) keeps following the text: occurrences you type or paste later get the style
     too, and one you edit into something else loses it. The same submenu has Bold, Italic and
-    Clear This Token. Ctrl+Shift+H (changeable) pops the same choices up at the caret. Clear Style
+    Clear This Token. Ctrl+Shift+H (Token Style Menu in Shortcut Mapper) pops the same choices
+    up at the caret. Clear Style
     > Clear all Styles clears them. Bold and italic work in every language, plain text included.
     Match case and whole word follow Notepad++'s Highlighting page;
     the colours are Mark Style 1-5 in the Style Configurator. The styled tokens of each file are

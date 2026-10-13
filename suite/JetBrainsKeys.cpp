@@ -1,9 +1,14 @@
-// JetBrainsKeys.cpp - "JetBrains shortcuts": the IntelliJ editor keys in Notepad++'s editing views.
-// A WH_GETMESSAGE hook on the GUI thread sees each key before Notepad++'s accelerators and
-// Scintilla do; a key in the table is swallowed there and its action runs right after (posted, so
-// it keeps its place before any keys typed after it). Other keys and other windows are untouched.
+// JetBrainsKeys.cpp - "JetBrains shortcuts": the IntelliJ editor keys in Notepad++.
+// Each key is a real Notepad++ command of KEX's (Settings > KEX Editing > JetBrains Commands), so
+// Settings > Shortcut Mapper lists them under Plugin commands (plugin "KEX"), where any of them can get
+// another key or none, and Notepad++ warns about clashes. The KEX patch puts these keys before
+// Notepad++'s own. Switching the feature off takes the keys away (the menu items still work); with
+// "Also the keys Notepad++ uses" off, the commands whose default key Notepad++ uses for something else
+// leave that key to Notepad++.
 #include "KexSuite.h"
+#include <array>
 #include <cwctype>
+#include <utility>
 
 namespace kex {
 
@@ -17,60 +22,53 @@ enum Act {
 };
 
 struct Binding {
+    int id;                 // the command's internal id: never reuse or renumber (shortcuts.xml keeps keys by it)
     UINT vk; int mods; Act act; UINT cmd;
     bool npp;               // Notepad++ already uses this key for something else
-    const wchar_t* keys; const wchar_t* what;
+    const wchar_t* keys; const wchar_t* name;
 };
 
 const Binding kBindings[] = {
-    { 'J', A, A_NEXT_OCCURRENCE, 0, false, L"Alt+J", L"select the next occurrence" },
-    { 'J', A | S, A_CMD, IDM_EDIT_MULTISELECTUNDO, false, L"Shift+Alt+J", L"unselect the last occurrence" },
-    { 'J', C | A | S, A_ALL_OCCURRENCES, 0, false, L"Ctrl+Shift+Alt+J", L"select all occurrences" },
-    { 'W', C, A_GROW_SELECTION, 0, true, L"Ctrl+W", L"extend selection (word, string, brackets, line, all)" },
-    { 'W', C | S, A_SHRINK_SELECTION, 0, true, L"Ctrl+Shift+W", L"shrink selection" },
-    { VK_OEM_2, C, A_CMD, IDM_EDIT_BLOCK_COMMENT, false, L"Ctrl+/", L"comment / uncomment line" },
-    { VK_DIVIDE, C, A_CMD, IDM_EDIT_BLOCK_COMMENT, false, L"Ctrl+Num /", L"comment / uncomment line" },
-    { VK_OEM_2, C | S, A_CMD, IDM_EDIT_STREAM_COMMENT, false, L"Ctrl+Shift+/", L"block comment" },
-    { 'D', C, A_DUPLICATE, 0, false, L"Ctrl+D", L"duplicate line or selection" },
-    { 'Y', C, A_DELETE_LINE, 0, true, L"Ctrl+Y", L"delete line (redo is Ctrl+Shift+Z)" },
-    { VK_UP, A | S, A_CMD, IDM_EDIT_LINE_UP, true, L"Shift+Alt+Up", L"move line up" },
-    { VK_DOWN, A | S, A_CMD, IDM_EDIT_LINE_DOWN, true, L"Shift+Alt+Down", L"move line down" },
-    { VK_LEFT, A, A_CMD, IDM_VIEW_TAB_PREV, false, L"Alt+Left", L"previous tab" },
-    { VK_RIGHT, A, A_CMD, IDM_VIEW_TAB_NEXT, false, L"Alt+Right", L"next tab" },
-    { VK_F4, C, A_CMD, IDM_FILE_CLOSE, false, L"Ctrl+F4", L"close tab" },
-    { 'J', C | S, A_CMD, IDM_EDIT_JOIN_LINES, false, L"Ctrl+Shift+J", L"join lines" },
-    { 'U', C | S, A_TOGGLE_CASE, 0, false, L"Ctrl+Shift+U", L"toggle case" },
-    { 'M', C | S, A_CMD, IDM_SEARCH_GOTOMATCHINGBRACE, false, L"Ctrl+Shift+M", L"go to matching brace" },
-    { 'R', C, A_CMD, IDM_SEARCH_REPLACE, true, L"Ctrl+R", L"replace" },
-    { VK_RETURN, S, A_LINE_AFTER, 0, false, L"Shift+Enter", L"start a new line below" },
-    { VK_RETURN, C | A, A_LINE_BEFORE, 0, false, L"Ctrl+Alt+Enter", L"start a new line above" },
-    { VK_SUBTRACT, C, A_CMD, IDM_VIEW_FOLD_CURRENT, true, L"Ctrl+Num -", L"fold" },
-    { VK_ADD, C, A_CMD, IDM_VIEW_UNFOLD_CURRENT, true, L"Ctrl+Num +", L"unfold" },
-    { VK_SUBTRACT, C | S, A_CMD, IDM_VIEW_FOLDALL, false, L"Ctrl+Shift+Num -", L"fold all" },
-    { VK_ADD, C | S, A_CMD, IDM_VIEW_UNFOLDALL, false, L"Ctrl+Shift+Num +", L"unfold all" },
-    { VK_F12, C, A_CMD, IDM_VIEW_FUNC_LIST, false, L"Ctrl+F12", L"file structure (Function List)" },
-    { VK_F11, 0, A_CMD, IDM_SEARCH_TOGGLE_BOOKMARK, true, L"F11", L"toggle bookmark" },
+    { 1, 'J', A, A_NEXT_OCCURRENCE, 0, false, L"Alt+J", L"Select Next Occurrence" },
+    { 2, 'J', A | S, A_CMD, IDM_EDIT_MULTISELECTUNDO, false, L"Shift+Alt+J", L"Unselect Occurrence" },
+    { 3, 'J', C | A | S, A_ALL_OCCURRENCES, 0, false, L"Ctrl+Shift+Alt+J", L"Select All Occurrences" },
+    { 4, 'W', C, A_GROW_SELECTION, 0, true, L"Ctrl+W", L"Extend Selection" },
+    { 5, 'W', C | S, A_SHRINK_SELECTION, 0, true, L"Ctrl+Shift+W", L"Shrink Selection" },
+    { 6, VK_OEM_2, C, A_CMD, IDM_EDIT_BLOCK_COMMENT, false, L"Ctrl+/", L"Comment with Line Comment" },
+    { 7, VK_DIVIDE, C, A_CMD, IDM_EDIT_BLOCK_COMMENT, false, L"Ctrl+Num /", L"Comment with Line Comment (numpad key)" },
+    { 8, VK_OEM_2, C | S, A_CMD, IDM_EDIT_STREAM_COMMENT, false, L"Ctrl+Shift+/", L"Comment with Block Comment" },
+    { 9, 'D', C, A_DUPLICATE, 0, false, L"Ctrl+D", L"Duplicate Line or Selection" },
+    { 10, 'Y', C, A_DELETE_LINE, 0, true, L"Ctrl+Y", L"Delete Line" },
+    { 11, VK_UP, A | S, A_CMD, IDM_EDIT_LINE_UP, true, L"Shift+Alt+Up", L"Move Line Up" },
+    { 12, VK_DOWN, A | S, A_CMD, IDM_EDIT_LINE_DOWN, true, L"Shift+Alt+Down", L"Move Line Down" },
+    { 13, VK_LEFT, A, A_CMD, IDM_VIEW_TAB_PREV, false, L"Alt+Left", L"Select Previous Tab" },
+    { 14, VK_RIGHT, A, A_CMD, IDM_VIEW_TAB_NEXT, false, L"Alt+Right", L"Select Next Tab" },
+    { 15, VK_F4, C, A_CMD, IDM_FILE_CLOSE, false, L"Ctrl+F4", L"Close Tab" },
+    { 16, 'J', C | S, A_CMD, IDM_EDIT_JOIN_LINES, false, L"Ctrl+Shift+J", L"Join Lines" },
+    { 17, 'U', C | S, A_TOGGLE_CASE, 0, false, L"Ctrl+Shift+U", L"Toggle Case" },
+    { 18, 'M', C | S, A_CMD, IDM_SEARCH_GOTOMATCHINGBRACE, false, L"Ctrl+Shift+M", L"Move Caret to Matching Brace" },
+    { 19, 'R', C, A_CMD, IDM_SEARCH_REPLACE, true, L"Ctrl+R", L"Replace" },
+    { 20, VK_RETURN, S, A_LINE_AFTER, 0, false, L"Shift+Enter", L"Start New Line" },
+    { 21, VK_RETURN, C | A, A_LINE_BEFORE, 0, false, L"Ctrl+Alt+Enter", L"Start New Line Before Current" },
+    { 22, VK_SUBTRACT, C, A_CMD, IDM_VIEW_FOLD_CURRENT, true, L"Ctrl+Num -", L"Collapse" },
+    { 23, VK_ADD, C, A_CMD, IDM_VIEW_UNFOLD_CURRENT, true, L"Ctrl+Num +", L"Expand" },
+    { 24, VK_SUBTRACT, C | S, A_CMD, IDM_VIEW_FOLDALL, false, L"Ctrl+Shift+Num -", L"Collapse All" },
+    { 25, VK_ADD, C | S, A_CMD, IDM_VIEW_UNFOLDALL, false, L"Ctrl+Shift+Num +", L"Expand All" },
+    { 26, VK_F12, C, A_CMD, IDM_VIEW_FUNC_LIST, false, L"Ctrl+F12", L"File Structure (Function List)" },
+    { 27, VK_F11, 0, A_CMD, IDM_SEARCH_TOGGLE_BOOKMARK, true, L"F11", L"Toggle Bookmark" },
 };
-const int kBindingCount = static_cast<int>(sizeof(kBindings) / sizeof(kBindings[0]));
-const UINT WM_KEX_RUN = WM_APP + 77;
+constexpr int kBindingCount = static_cast<int>(sizeof(kBindings) / sizeof(kBindings[0]));
 JetBrainsStats s_stats;
-
-int currentMods()
-{
-    int m = 0;
-    if (::GetKeyState(VK_CONTROL) < 0) m |= C;
-    if (::GetKeyState(VK_SHIFT) < 0) m |= S;
-    if (::GetKeyState(VK_MENU) < 0) m |= A;
-    return m;
-}
+int g_cmdIds[kBindingCount] = {};   // the commands' Notepad++ command ids, once added
 
 struct Range { intptr_t a = 0, b = 0; };
 
 class JetBrainsKeys;
 JetBrainsKeys* s_keys = nullptr;
 
-class JetBrainsKeys : public Module, public MsgWindow {
+class JetBrainsKeys : public Module {
 public:
+    JetBrainsKeys() { s_keys = this; }   // the menu items work whether or not the keys are on
     const wchar_t* key() const override { return L"JetBrainsKeys"; }
     const wchar_t* title() const override { return L"JetBrains shortcuts"; }
 
@@ -79,106 +77,71 @@ public:
         _all = settings.getInt(key(), L"AlsoNotepadKeys", 1) != 0;
         _caseMode = settings.getInt(key(), L"OccurrenceCase", 0);
         _wordMode = settings.getInt(key(), L"OccurrenceWords", 0);
+        if (_on) applyKeys();
     }
 
     bool selfCheck(std::wstring& why) override
     {
-        // every Notepad++ command the table sends has to be in the main menu
-        HMENU mm = reinterpret_cast<HMENU>(nppMsg(NPPM_GETMENUHANDLE, NPPMAINMENU, 0));
-        const UINT extra[] = { IDM_EDIT_MULTISELECTNEXT, IDM_EDIT_MULTISELECTNEXTMATCHCASE, IDM_EDIT_MULTISELECTNEXTWHOLEWORD,
-                               IDM_EDIT_MULTISELECTNEXTMATCHCASEWHOLEWORD, IDM_EDIT_MULTISELECTALL, IDM_EDIT_MULTISELECTALLMATCHCASE,
-                               IDM_EDIT_MULTISELECTALLWHOLEWORD, IDM_EDIT_MULTISELECTALLMATCHCASEWHOLEWORD, IDM_EDIT_UPPERCASE, IDM_EDIT_LOWERCASE };
-        std::vector<UINT> ids(extra, extra + sizeof(extra) / sizeof(extra[0]));
-        for (const Binding& b : kBindings) if (b.act == A_CMD) ids.push_back(b.cmd);
-        for (UINT id : ids)
-            if (!mm || ::GetMenuState(mm, id, MF_BYCOMMAND) == static_cast<UINT>(-1))
-            {
-                wchar_t b[96]; swprintf(b, 96, L"menu command %u not found in this Notepad++", id);
-                why = b; return false;
-            }
+        if (!g_cmdIds[0]) { why = L"the JetBrains commands could not be added to Notepad++"; return false; }
         return true;
     }
 
     bool enable() override
     {
+        _on = true;
         loadOptions();
-        if (!createMsgWindow(L"KexJetBrainsKeys")) return false;
-        _hook = ::SetWindowsHookExW(WH_GETMESSAGE, hookProc, nullptr, ::GetCurrentThreadId());
-        if (!_hook) { log(L"JetBrains shortcuts: SetWindowsHookEx failed (%lu)", ::GetLastError()); return false; }
-        s_keys = this;
+        applyKeys();
         return true;
     }
 
     void disable() override
     {
-        if (_hook) { ::UnhookWindowsHookEx(_hook); _hook = nullptr; }
-        if (s_keys == this) s_keys = nullptr;
-        destroyMsgWindow();
+        _on = false;
+        applyKeys();
         _history.clear();
-        _swallowAltUp = false;
     }
 
-    static std::wstring list(bool all)
+    // which commands have their key: all while the feature is on, except, with "Also the keys
+    // Notepad++ uses" off, those still on a default key that Notepad++ uses
+    void applyKeys()
     {
-        std::wstring s;
-        for (const Binding& b : kBindings)
+        for (int i = 0; i < kBindingCount; ++i)
         {
-            s += b.keys; s += L"\t"; s += b.what;
-            if (b.npp && !all) s += L"   (off: Notepad++ keeps this key)";
-            s += L"\n";
+            if (!g_cmdIds[i]) continue;
+            bool keyed = _on;
+            if (keyed && !_all && kBindings[i].npp)
+            {
+                ShortcutKey sk{};
+                const bool has = nppMsg(NPPM_GETSHORTCUTBYCMDID, static_cast<WPARAM>(g_cmdIds[i]), reinterpret_cast<LPARAM>(&sk)) != 0;
+                const int mods = (sk._isCtrl ? C : 0) | (sk._isShift ? S : 0) | (sk._isAlt ? A : 0);
+                keyed = !has || !(sk._key == kBindings[i].vk && mods == kBindings[i].mods);
+            }
+            nppMsg(NPPM_KEX_ENABLECOMMAND, static_cast<WPARAM>(g_cmdIds[i]), keyed ? TRUE : FALSE);
         }
-        return s;
     }
 
-protected:
-    LRESULT onMessage(UINT m, WPARAM w, LPARAM l) override
+    // a command, from its key or its menu item: on the focused editing view, or else the current one
+    void runCommand(int index)
     {
-        if (m == WM_KEX_RUN)
+        if (index < 0 || index >= kBindingCount) return;
+        HWND focus = ::GetFocus();
+        HWND s = views.viewOf(focus) >= 0 ? focus : views.sci(views.current());
+        const Binding& b = kBindings[index];
+        // Enter pressed in another box of the window (a docked panel, the incremental search): it stays Enter there
+        if ((b.act == A_LINE_AFTER || b.act == A_LINE_BEFORE) && s != focus && focus && ::GetKeyState(VK_RETURN) < 0)
         {
-            try { run(static_cast<int>(w), reinterpret_cast<HWND>(l)); }
-            catch (...) { log(L"JetBrains shortcuts: exception in action %d", static_cast<int>(w)); }
-            return 0;
+            ::SendMessageW(focus, WM_KEYDOWN, VK_RETURN, 1);
+            ::SendMessageW(focus, WM_CHAR, L'\r', 1);
+            return;
         }
-        return MsgWindow::onMessage(m, w, l);
+        if (!s) return;
+        ++s_stats.handled;
+        s_stats.last = b.keys;
+        try { run(index, s); }
+        catch (...) { log(L"JetBrains shortcuts: exception in %ls", b.name); }
     }
 
 private:
-    static LRESULT CALLBACK hookProc(int code, WPARAM w, LPARAM l)
-    {
-        if (code == HC_ACTION && w == PM_REMOVE && s_keys)
-        {
-            MSG* msg = reinterpret_cast<MSG*>(l);
-            try { s_keys->onKey(msg); } catch (...) {}
-        }
-        return ::CallNextHookEx(nullptr, code, w, l);
-    }
-
-    void onKey(MSG* msg)
-    {
-        const UINT m = msg->message;
-        if (m == WM_SYSKEYUP || m == WM_KEYUP)
-        {
-            // Alt released after an Alt shortcut: keep Windows from opening the menu bar
-            if (_swallowAltUp && msg->wParam == VK_MENU) { _swallowAltUp = false; msg->message = WM_NULL; }
-            return;
-        }
-        if (m != WM_KEYDOWN && m != WM_SYSKEYDOWN) return;
-        const UINT vk = static_cast<UINT>(msg->wParam);
-        if (vk == VK_CONTROL || vk == VK_SHIFT || vk == VK_MENU) return;
-        const int mods = currentMods();
-        const Binding* hit = nullptr;
-        for (int i = 0; i < kBindingCount; ++i)
-            if (kBindings[i].vk == vk && kBindings[i].mods == mods && (_all || !kBindings[i].npp)) { hit = &kBindings[i]; break; }
-        if (!hit) return;
-        if (views.viewOf(msg->hwnd) == -1) return;   // only Notepad++'s editing views
-        const int index = static_cast<int>(hit - kBindings);
-        msg->message = WM_NULL;                       // nothing else sees the key
-        if (mods & A) _swallowAltUp = true;
-        ::PostMessageW(hwnd(), WM_KEX_RUN, static_cast<WPARAM>(index), reinterpret_cast<LPARAM>(msg->hwnd));
-        ++s_stats.handled;
-        s_stats.last = hit->keys;
-    }
-
     void command(UINT id) { nppMsg(WM_COMMAND, id, 0); }
 
     // Alt+J matches what Smart Highlighting shows, unless the KEX Editing page picks otherwise:
@@ -194,7 +157,6 @@ private:
 
     void run(int index, HWND s)
     {
-        if (index < 0 || index >= kBindingCount || !::IsWindow(s)) return;
         const Binding& b = kBindings[index];
         switch (b.act)
         {
@@ -364,8 +326,7 @@ private:
         sci(s, SCI_SETSEL, prev.a, prev.b);
     }
 
-    HHOOK _hook = nullptr;
-    bool _all = true, _swallowAltUp = false, _wholeWord = true, _matchCase = false;
+    bool _on = false, _all = true, _wholeWord = true, _matchCase = false;
     int _caseMode = 0, _wordMode = 0;
     struct Hist { HWND wnd; std::vector<Range> ranges; };
     struct HistMap {
@@ -377,10 +338,38 @@ private:
     HWND _lastWnd = nullptr;
 };
 
+template<int I> void runBinding() { if (s_keys) s_keys->runCommand(I); }
+template<int... I> std::array<void (*)(), sizeof...(I)> makeRunners(std::integer_sequence<int, I...>) { return { { &runBinding<I>... } }; }
+
 } // namespace
 
 Module* createJetBrainsKeys() { return new JetBrainsKeys(); }
 JetBrainsStats jetBrainsStats() { return s_stats; }
-std::wstring jetBrainsKeyList() { return JetBrainsKeys::list(settings.getInt(L"JetBrainsKeys", L"AlsoNotepadKeys", 1) != 0); }
+
+// Settings > KEX Editing > JetBrains Commands: the commands, added once (Notepad++ keeps them until it closes)
+void addJetBrainsCommands(HMENU parent, int position)
+{
+    if (g_cmdIds[0] || !parent) return;
+    static const std::array<void (*)(), kBindingCount> runners = makeRunners(std::make_integer_sequence<int, kBindingCount>());
+    std::vector<KexCommand> cmds;
+    for (int i = 0; i < kBindingCount; ++i)
+    {
+        const Binding& b = kBindings[i];
+        cmds.push_back(KexCommand{ b.id, b.name, runners[i], (b.mods & C) != 0, (b.mods & A) != 0, (b.mods & S) != 0, static_cast<unsigned char>(b.vk) });
+    }
+    HMENU sub = ::CreatePopupMenu();
+    KexCommandList list{ cmds.data(), kBindingCount, g_cmdIds, -1 };
+    if (!nppMsg(NPPM_KEX_ADDCOMMANDS, reinterpret_cast<WPARAM>(sub), reinterpret_cast<LPARAM>(&list)))
+    {
+        ::DestroyMenu(sub);
+        g_cmdIds[0] = 0;
+        log(L"JetBrains shortcuts: Notepad++ did not take the commands");
+        return;
+    }
+    ::InsertMenuW(parent, static_cast<UINT>(position), MF_BYPOSITION | MF_POPUP, reinterpret_cast<UINT_PTR>(sub), L"JetBrains Commands");
+    if (s_keys) s_keys->applyKeys();
+}
+
+int jetBrainsCommandId(int index) { return (index >= 0 && index < kBindingCount) ? g_cmdIds[index] : 0; }
 
 } // namespace kex

@@ -29,14 +29,14 @@ Notepad++ KEX is Notepad++ with extra features compiled in: four editor views, t
 - **Snap-out windows**: drag a tab out of Notepad++ and its view gets its own window.
 - **Smooth caret**: the caret glides instead of jumping.
 - **Falling letters**: deleted text falls off the screen.
-- **JetBrains keys**: <kbd>Alt</kbd>+<kbd>J</kbd>, <kbd>Ctrl</kbd>+<kbd>W</kbd>, <kbd>Ctrl</kbd>+<kbd>/</kbd>, <kbd>Ctrl</kbd>+<kbd>D</kbd>, <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> and more.
+- **JetBrains keys**: <kbd>Alt</kbd>+<kbd>J</kbd>, <kbd>Ctrl</kbd>+<kbd>W</kbd>, <kbd>Ctrl</kbd>+<kbd>/</kbd>, <kbd>Ctrl</kbd>+<kbd>D</kbd>, <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> and more. Rebind any of them in *Shortcut Mapper*.
 - **Live token styles**: styled words stay styled as you type. Bold and italic too.
 - **Quick note**: <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd> opens a note over any app.
-- **Per-desktop windows**: each virtual desktop gets its own Notepad++ with the same tabs.
-- **F12 hover tabs**: in F12 mode, the tabs appear when you touch the top of a view.
+- **Per-desktop windows**: each virtual desktop gets its own Notepad++ with the same tabs, its own session and crash backup.
+- **F12 hover tabs**: in F12 mode, the tab bar appears when you touch the top of a view.
 - **Glass**: Windows' live blur behind the text. Off by default.
 - **On/off switches**: one per feature, in the KEX submenus at the bottom of the *Settings* menu.
-- **Automatic updates**: a KEX build follows every Notepad++ release.
+- **Automatic updates**: a KEX build follows every Notepad++ release. Builds are signed, and the updater refuses unsigned ones.
 
 ## See it in action
 
@@ -88,13 +88,13 @@ Run `Uninstall-KEX.cmd`. It restores the official `notepad++.exe` and removes th
 ## FAQ
 
 **What happens when Notepad++ releases a new version?**  
-A daily build checks for new Notepad++ releases and publishes a matching KEX build. With automatic updates on, it's installed the next time Notepad++ closes. Notepad++'s own updater is disabled so it can't replace the KEX build. If a release breaks the patch, no build is published and you stay on your current version.
+A daily build checks for new Notepad++ releases and publishes a matching KEX build. With automatic updates on, it's installed the next time Notepad++ closes. Notepad++'s own updater is disabled so it can't replace the KEX build. If a release breaks the patch, no build is published and you stay on your current version. Every build is signed, and the update task only installs a build whose signature checks out.
 
 **Do my plugins still work?**  
 Yes, in views 1 and 2. In views 3 and 4, a plugin's commands are blocked unless the plugin exports `kexAware()` (see [`include/KexApi.h`](include/KexApi.h)).
 
 **How do I get <kbd>Ctrl</kbd>+<kbd>Y</kbd> (redo) back?**  
-*Settings* > *KEX Editing* > *Preferences...*, untick *Also the keys Notepad++ uses*. This restores <kbd>Ctrl</kbd>+<kbd>Y</kbd>, <kbd>Ctrl</kbd>+<kbd>W</kbd>, <kbd>Ctrl</kbd>+<kbd>R</kbd>, <kbd>F11</kbd> and the zoom keys.
+*Settings* > *KEX Editing* > *Preferences...*, untick *Also the keys Notepad++ uses*. This restores <kbd>Ctrl</kbd>+<kbd>Y</kbd>, <kbd>Ctrl</kbd>+<kbd>W</kbd>, <kbd>Ctrl</kbd>+<kbd>R</kbd>, <kbd>F11</kbd> and the zoom keys. To change a single key instead, open *Settings* > *Shortcut Mapper* > *Plugin commands* and edit the KEX entry.
 
 **Glass doesn't show up.**  
 Turn it on under *Settings* > *KEX Windows*, and turn on Windows' *Transparency effects* (*Settings* > *Personalization* > *Colors*). On Windows 10, *Acrylic* can lag while you move the window; *Blur* is lighter.

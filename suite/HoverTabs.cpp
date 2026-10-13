@@ -1,23 +1,19 @@
-// HoverTabs.cpp - in F12 post-it mode, hovering a thin zone along the top edge of any view shows a
-// floating tab strip with that view's tabs, over the top of that view (nothing is pushed down).
+// HoverTabs.cpp - in F12 post-it mode, hovering a thin zone along the top edge of any view shows that
+// view's own tab bar over the top of the view (nothing is pushed down), and hides it again when the
+// mouse leaves. It is Notepad++'s real tab bar: close buttons, the right-click menu, dragging (and so
+// tab snapping and lifting), tab colours, tooltips and dark mode all work as they do outside F12.
+//
+// Post-it mode hides the tab bars by letting each view cover its own (Notepad++ keeps laying the tab
+// bar out above the view either way, see DocTabView::reSizeTo); showing it is bringing it above the view.
 #include "KexSuite.h"
-#include <cmath>
 
 namespace kex {
 
 namespace {
 
 const UINT_PTR TIMER_POLL = 1;
+const UINT WM_HT_REPLACE = WM_APP + 1;
 TabsStats s_stats;
-
-struct Tab { std::wstring name; bool dirty = false; bool active = false; RECT rc{}; };
-
-COLORREF mix(COLORREF a, COLORREF b, double t)
-{
-    return RGB(static_cast<int>(GetRValue(a) + (GetRValue(b) - GetRValue(a)) * t),
-               static_cast<int>(GetGValue(a) + (GetGValue(b) - GetGValue(a)) * t),
-               static_cast<int>(GetBValue(a) + (GetBValue(b) - GetBValue(a)) * t));
-}
 
 class HoverTabs : public Module, public MsgWindow {
 public:
@@ -32,19 +28,13 @@ public:
 
     bool selfCheck(std::wstring& why) override
     {
-        HMENU mm = reinterpret_cast<HMENU>(nppMsg(NPPM_GETMENUHANDLE, NPPMAINMENU, 0));
-        if (!mm || ::GetMenuState(mm, IDM_VIEW_POSTIT, MF_BYCOMMAND) == static_cast<UINT>(-1))
-        { why = L"View > Post-It (IDM_VIEW_POSTIT) not found in the main menu"; return false; }
-        // We read tab names and unsaved markers from Notepad++'s tab control (BufferID in TCITEM.lParam).
-        if (!views.patched() && !views.locateTabBar(0))
-        { why = L"Notepad++'s tab bar could not be identified (internal layout changed)"; return false; }
+        if (!views.tabBar(0)) { why = L"Notepad++'s tab bar was not found"; return false; }
         return true;
     }
 
     bool enable() override
     {
         if (!createMsgWindow(L"KexHoverTabs")) return false;
-        if (!createStrip()) return false;
         _pollMs = 60;
         ::SetTimer(hwnd(), TIMER_POLL, _pollMs, nullptr);
         return true;
@@ -52,9 +42,8 @@ public:
 
     void disable() override
     {
+        hideBar();
         if (hwnd()) ::KillTimer(hwnd(), TIMER_POLL);
-        if (_strip) { ::DestroyWindow(_strip); _strip = nullptr; }
-        if (_font) { ::DeleteObject(_font); _font = nullptr; }
         destroyMsgWindow();
         s_stats = TabsStats();
     }
@@ -66,49 +55,28 @@ public:
         {
         case NPPN_BUFFERACTIVATED: case NPPN_FILEOPENED: case NPPN_FILECLOSED: case NPPN_DOCORDERCHANGED:
         case NPPN_FILESAVED: case SCN_SAVEPOINTLEFT: case SCN_SAVEPOINTREACHED: case NPPN_FILERENAMED:
-            refresh();
+            ::PostMessageW(hwnd(), WM_HT_REPLACE, 0, 0);   // after Notepad++ has updated the tabs (a new row, a new name)
             break;
         }
     }
 
     void clickTab(int i)
     {
-        if (i < 0 || i >= static_cast<int>(_tabs.size())) return;
+        if (i < 0 || i >= views.nbFiles(_view)) return;
         views.activate(_view, i);
-        HWND s = views.sci(_view);
-        if (s) ::SetFocus(s);
-        log(L"hover tabs: activated tab %d in view %d", i, _view);
-        refresh();
+        if (HWND s = views.sci(_view)) ::SetFocus(s);
+        updateStats();
     }
 
 protected:
     LRESULT onMessage(UINT m, WPARAM w, LPARAM l) override
     {
         if (m == WM_TIMER && w == TIMER_POLL) { poll(); return 0; }
+        if (m == WM_HT_REPLACE) { if (_shown) { place(); updateStats(); } return 0; }
         return MsgWindow::onMessage(m, w, l);
     }
 
 private:
-    bool createStrip()
-    {
-        static bool reg = false;
-        if (!reg)
-        {
-            WNDCLASSW wc{};
-            wc.lpfnWndProc = stripProc; wc.hInstance = hInst; wc.lpszClassName = L"KexSuiteTabStrip";
-            wc.hCursor = ::LoadCursor(nullptr, IDC_HAND);
-            reg = ::RegisterClassW(&wc) != 0 || ::GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
-        }
-        _strip = ::CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, L"KexSuiteTabStrip", L"KEX tabs",
-            WS_POPUP, 0, 0, 10, 10, npp._nppHandle, nullptr, hInst, this);
-        if (!_strip) return false;
-        ::SetWindowLongPtrW(_strip, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-        NONCLIENTMETRICSW ncm{}; ncm.cbSize = sizeof(ncm);
-        ::SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
-        _font = ::CreateFontIndirectW(&ncm.lfMessageFont);
-        return true;
-    }
-
     void poll()
     {
         HWND n = npp._nppHandle;
@@ -116,28 +84,38 @@ private:
         // outside F12 mode only watch for it to start, a few times a second
         const UINT wantMs = postIt ? 60 : 400;
         if (wantMs != _pollMs) { _pollMs = wantMs; ::SetTimer(hwnd(), TIMER_POLL, _pollMs, nullptr); }
-        if (!postIt) { hideStrip(); return; }
+        if (!postIt) { hideBar(); return; }
         POINT pt; ::GetCursorPos(&pt);
-        int zv = zoneView(pt);
+        const int zv = zoneView(pt);
         bool inZone = zv >= 0;
         if (inZone)
         {
             HWND under = kexsuite::windowFromPoint(pt);   // sees through the glass text area
             HWND root = under ? ::GetAncestor(under, GA_ROOT) : nullptr;
-            if (root != n && under != _strip) inZone = false;   // another window covers the edge
+            if (root != n) inZone = false;                 // another window covers the edge
         }
         if (!_shown)
         {
-            if (inZone) showStrip(zv);
+            if (inZone) showBar(zv);
             return;
         }
-        RECT sr; ::GetWindowRect(_strip, &sr);
-        ::InflateRect(&sr, 6, 6);
-        bool overStrip = ::PtInRect(&sr, pt) != FALSE;
-        if (inZone && zv != _view && !overStrip) { _view = zv; refresh(); }   // moved to another view's edge
-        if (inZone || overStrip) _leftAt = 0;
+        if (!::IsWindow(_bar)) { hideBar(); return; }
+        RECT br; ::GetWindowRect(_bar, &br);
+        ::InflateRect(&br, 6, 6);
+        const bool overBar = ::PtInRect(&br, pt) != FALSE;
+        const bool keep = busy();
+        if (inZone && zv != _view && !overBar && !keep) { hideBar(); showBar(zv); return; }   // another view's edge
+        if (inZone || overBar || keep) _leftAt = 0;
         else if (_leftAt == 0) _leftAt = nowMs();
-        else if (nowMs() - _leftAt > _hideDelay) hideStrip();
+        else if (nowMs() - _leftAt > _hideDelay) hideBar();
+    }
+
+    // a tab being dragged, or a menu open (the tabs' right-click menu): the bar stays
+    bool busy() const
+    {
+        if (::GetCapture() == _bar) return true;
+        GUITHREADINFO gi{}; gi.cbSize = sizeof(gi);
+        return ::GetGUIThreadInfo(::GetCurrentThreadId(), &gi) && (gi.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE)) != 0;
     }
 
     // The view whose top edge the mouse is on (-1 if none). Views in the top row also count the strip
@@ -147,14 +125,14 @@ private:
         HWND n = npp._nppHandle;
         RECT wr; ::GetWindowRect(n, &wr);
         int best = -1; LONG bestDx = LONG_MAX;
-        int focused = views.current();
+        const int focused = views.current();
         for (int v = 0; v < views.count(); ++v)
         {
             HWND s = views.sci(v);
             if (!s || !views.visible(v) || views.host(v) != n || !::IsWindowVisible(s)) continue;
             RECT r; ::GetWindowRect(s, &r);
-            bool topRow = r.top - wr.top < 40;
-            LONG top = topRow ? std::min(r.top - 2, wr.top - 2) : r.top - 2;
+            const bool topRow = r.top - wr.top < 40;
+            const LONG top = topRow ? std::min(r.top - 2, wr.top - 2) : r.top - 2;
             if (pt.y < top || pt.y >= r.top + _zone) continue;
             LONG dx = pt.x < r.left ? r.left - pt.x : pt.x >= r.right ? pt.x - r.right + 1 : 0;
             if (dx == 0) return v;
@@ -166,97 +144,66 @@ private:
         return best;
     }
 
-    void collect()
+    // the tab bar's height for its rows of tabs, worked out as Notepad++ does (TabBar::reSizeTo)
+    int barHeight() const
     {
-        if (_view < 0 || _view >= views.count() || !views.sci(_view)) _view = views.current();
-        _tabs.clear();
-        int nb = views.nbFiles(_view);
-        int cur = views.currentIndex(_view);
-        HWND tb = views.tabBar(_view);
-        for (int i = 0; i < nb && i < 500; ++i)
-        {
-            Tab t;
-            t.active = (i == cur);
-            bool fromTab = false;
-            if (tb)
-            {
-                wchar_t buf[MAX_PATH * 2] = {};
-                TCITEMW it{}; it.mask = TCIF_TEXT | TCIF_IMAGE; it.pszText = buf; it.cchTextMax = MAX_PATH * 2 - 1;
-                if (::SendMessageW(tb, TCM_GETITEMW, i, reinterpret_cast<LPARAM>(&it)))
-                {
-                    std::wstring s = buf, o;
-                    for (size_t k = 0; k < s.size(); ++k) { o += s[k]; if (s[k] == L'&' && k + 1 < s.size() && s[k + 1] == L'&') ++k; }
-                    t.name = o;
-                    t.dirty = (it.iImage == 1);   // DocTabView: UNSAVED_IMG_INDEX
-                    fromTab = true;
-                }
-            }
-            if (!fromTab)
-            {
-                t.name = fileNameOf(bufferPath(views.bufferId(_view, i)));
-                if (t.active) t.dirty = sci(views.sci(_view), SCI_GETMODIFY) != 0;
-            }
-            _tabs.push_back(t);
-        }
+        RECT item{};
+        if (!::SendMessageW(_bar, TCM_GETITEMRECT, 0, reinterpret_cast<LPARAM>(&item))) return 0;
+        const int rows = std::max(1, static_cast<int>(::SendMessageW(_bar, TCM_GETROWCOUNT, 0, 0)));
+        const int marge = rows >= 2 ? (rows - 2) * 3 : 0;
+        return rows * static_cast<int>(item.bottom - item.top) + marge + ::GetSystemMetrics(SM_CYEDGE);
     }
 
-    void layout()
+    // over the top of the view, above it
+    void place()
     {
-        HWND n = npp._nppHandle;
         HWND s = views.sci(_view);
-        RECT area;
-        if (s && views.host(_view) == n) ::GetWindowRect(s, &area);
-        else ::GetWindowRect(n, &area);
-        RECT wr; ::GetWindowRect(n, &wr);
-        int width = std::max(120, static_cast<int>(area.right - area.left));
-        HDC dc = ::GetDC(_strip);
-        HGDIOBJ of = ::SelectObject(dc, _font);
-        TEXTMETRICW tm; ::GetTextMetricsW(dc, &tm);
-        int th = tm.tmHeight + 10, pad = 12, gap = 3, x = 4, y = 4;
-        for (Tab& t : _tabs)
-        {
-            SIZE sz{}; std::wstring label = (t.dirty ? L"● " : L"") + t.name;
-            ::GetTextExtentPoint32W(dc, label.c_str(), static_cast<int>(label.size()), &sz);
-            int w = std::min(static_cast<int>(sz.cx) + 2 * pad, 260);
-            if (x + w > width - 4 && x > 4) { x = 4; y += th + gap; }
-            t.rc = RECT{ x, y, x + w, y + th };
-            x += w + gap;
-        }
-        ::SelectObject(dc, of);
-        ::ReleaseDC(_strip, dc);
-        int height = y + th + 5;
-        int top = std::max(area.top, wr.top);
-        ::SetWindowPos(_strip, HWND_TOPMOST, area.left, top, width, height, SWP_NOACTIVATE);
-        s_stats.strip = RECT{ area.left, top, area.left + width, top + height };
+        if (!::IsWindow(_bar) || !s) return;
+        RECT r; ::GetWindowRect(s, &r);
+        ::MapWindowPoints(nullptr, ::GetParent(_bar), reinterpret_cast<POINT*>(&r), 2);
+        const int h = barHeight();
+        if (h <= 0) return;
+        ::SetWindowPos(_bar, HWND_TOP, r.left, r.top, r.right - r.left, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        ::RedrawWindow(_bar, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
     }
 
-    void refresh()
+    void showBar(int v)
     {
-        if (!_shown) return;
-        collect();
-        layout();
-        ::InvalidateRect(_strip, nullptr, FALSE);
-        updateStats();
-    }
-
-    void showStrip(int v)
-    {
+        HWND bar = views.tabBar(v);
+        HWND s = views.sci(v);
+        if (!bar || !s || ::GetParent(bar) != ::GetParent(s)) return;
         _view = v;
-        collect();
+        _bar = bar;
+        _sci = s;
+        ::GetWindowRect(_bar, &_barWas);
+        ::MapWindowPoints(nullptr, ::GetParent(_bar), reinterpret_cast<POINT*>(&_barWas), 2);
+        _barWasVisible = ::IsWindowVisible(_bar) != FALSE;
+        // the view must not paint over the bar while the bar is above it
+        _sciStyle = ::GetWindowLongPtrW(_sci, GWL_STYLE);
+        ::SetWindowLongPtrW(_sci, GWL_STYLE, _sciStyle | WS_CLIPSIBLINGS);
         _shown = true;
         _leftAt = 0;
-        layout();
-        ::ShowWindow(_strip, SW_SHOWNOACTIVATE);
-        ::InvalidateRect(_strip, nullptr, FALSE);
+        place();
         updateStats();
-        log(L"hover tabs: shown (%d tabs, view %d)", static_cast<int>(_tabs.size()), _view);
+        log(L"hover tabs: tab bar of view %d shown", _view + 1);
     }
 
-    void hideStrip()
+    void hideBar()
     {
         if (!_shown) return;
         _shown = false;
-        ::ShowWindow(_strip, SW_HIDE);
+        if (::IsWindow(_bar))
+        {
+            // back under the view, where Notepad++ had it
+            ::SetWindowPos(_bar, _sci, _barWas.left, _barWas.top, _barWas.right - _barWas.left, _barWas.bottom - _barWas.top,
+                           SWP_NOACTIVATE | (_barWasVisible ? 0 : SWP_HIDEWINDOW));
+        }
+        if (::IsWindow(_sci))
+        {
+            ::SetWindowLongPtrW(_sci, GWL_STYLE, _sciStyle);
+            ::RedrawWindow(_sci, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+        }
+        _bar = _sci = nullptr;
         s_stats.stripVisible = false;
         log(L"hover tabs: hidden");
     }
@@ -264,105 +211,34 @@ private:
     void updateStats()
     {
         s_stats.stripVisible = _shown;
-        s_stats.tabCount = static_cast<int>(_tabs.size());
         s_stats.view = _view;
-        s_stats.activeIndex = -1;
         s_stats.tabRects.clear(); s_stats.dirty.clear();
-        RECT sr; ::GetWindowRect(_strip, &sr);
-        for (size_t i = 0; i < _tabs.size(); ++i)
+        s_stats.tabCount = 0;
+        s_stats.activeIndex = -1;
+        if (!_shown || !_bar) return;
+        ::GetWindowRect(_bar, &s_stats.strip);
+        s_stats.tabCount = static_cast<int>(::SendMessageW(_bar, TCM_GETITEMCOUNT, 0, 0));
+        s_stats.activeIndex = static_cast<int>(::SendMessageW(_bar, TCM_GETCURSEL, 0, 0));
+        for (int i = 0; i < s_stats.tabCount; ++i)
         {
-            RECT r = _tabs[i].rc; ::OffsetRect(&r, sr.left, sr.top);
+            RECT r{};
+            ::SendMessageW(_bar, TCM_GETITEMRECT, i, reinterpret_cast<LPARAM>(&r));
+            ::MapWindowPoints(_bar, nullptr, reinterpret_cast<POINT*>(&r), 2);
             s_stats.tabRects.push_back(r);
-            s_stats.dirty.push_back(_tabs[i].dirty ? 1 : 0);
-            if (_tabs[i].active) s_stats.activeIndex = static_cast<int>(i);
+            TCITEMW it{}; it.mask = TCIF_IMAGE;
+            ::SendMessageW(_bar, TCM_GETITEMW, i, reinterpret_cast<LPARAM>(&it));
+            s_stats.dirty.push_back(it.iImage == 1 ? 1 : 0);   // DocTabView: UNSAVED_IMG_INDEX
         }
     }
 
-    void paint(HDC dc)
-    {
-        RECT rc; ::GetClientRect(_strip, &rc);
-        HDC mem = ::CreateCompatibleDC(dc);
-        HBITMAP bmp = ::CreateCompatibleBitmap(dc, rc.right, rc.bottom);
-        HGDIOBJ ob = ::SelectObject(mem, bmp);
-        COLORREF bg = static_cast<COLORREF>(nppMsg(NPPM_GETEDITORDEFAULTBACKGROUNDCOLOR));
-        COLORREF fg = static_cast<COLORREF>(nppMsg(NPPM_GETEDITORDEFAULTFOREGROUNDCOLOR));
-        COLORREF accent = ::GetSysColor(COLOR_HIGHLIGHT);
-        COLORREF stripBg = mix(bg, fg, 0.10), tabBg = mix(bg, fg, 0.04), activeBg = mix(bg, accent, 0.35);
-        HBRUSH b = ::CreateSolidBrush(stripBg); ::FillRect(mem, &rc, b); ::DeleteObject(b);
-        HPEN edge = ::CreatePen(PS_SOLID, 1, mix(bg, fg, 0.30));
-        HGDIOBJ op = ::SelectObject(mem, edge);
-        ::MoveToEx(mem, 0, rc.bottom - 1, nullptr); ::LineTo(mem, rc.right, rc.bottom - 1);
-        HGDIOBJ of = ::SelectObject(mem, _font);
-        ::SetBkMode(mem, TRANSPARENT);
-        for (size_t i = 0; i < _tabs.size(); ++i)
-        {
-            const Tab& t = _tabs[i];
-            COLORREF c = t.active ? activeBg : (static_cast<int>(i) == _hot ? mix(tabBg, accent, 0.15) : tabBg);
-            HBRUSH tb = ::CreateSolidBrush(c);
-            HGDIOBJ obr = ::SelectObject(mem, tb);
-            HPEN tp = ::CreatePen(PS_SOLID, 1, t.active ? mix(bg, accent, 0.8) : mix(bg, fg, 0.25));
-            HGDIOBJ otp = ::SelectObject(mem, tp);
-            ::RoundRect(mem, t.rc.left, t.rc.top, t.rc.right, t.rc.bottom, 7, 7);
-            ::SelectObject(mem, otp); ::DeleteObject(tp);
-            ::SelectObject(mem, obr); ::DeleteObject(tb);
-            RECT tr = t.rc; ::InflateRect(&tr, -10, 0);
-            if (t.dirty)
-            {
-                ::SetTextColor(mem, RGB(226, 84, 36));
-                RECT dr = tr;
-                ::DrawTextW(mem, L"●", 1, &dr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-                SIZE ds; ::GetTextExtentPoint32W(mem, L"● ", 2, &ds);
-                tr.left += ds.cx;
-            }
-            ::SetTextColor(mem, fg);
-            ::DrawTextW(mem, t.name.c_str(), -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-        }
-        ::SelectObject(mem, of);
-        ::SelectObject(mem, op); ::DeleteObject(edge);
-        ::BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
-        ::SelectObject(mem, ob); ::DeleteObject(bmp); ::DeleteDC(mem);
-    }
-
-    int hitTest(int x, int y) const
-    {
-        POINT p{ x, y };
-        for (size_t i = 0; i < _tabs.size(); ++i) if (::PtInRect(&_tabs[i].rc, p)) return static_cast<int>(i);
-        return -1;
-    }
-
-    static LRESULT CALLBACK stripProc(HWND h, UINT m, WPARAM w, LPARAM l)
-    {
-        auto* self = reinterpret_cast<HoverTabs*>(::GetWindowLongPtrW(h, GWLP_USERDATA));
-        if (!self) return ::DefWindowProcW(h, m, w, l);
-        try
-        {
-            switch (m)
-            {
-            case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
-            case WM_ERASEBKGND: return 1;
-            case WM_PAINT: { PAINTSTRUCT ps; HDC dc = ::BeginPaint(h, &ps); self->paint(dc); ::EndPaint(h, &ps); return 0; }
-            case WM_MOUSEMOVE:
-            {
-                int hot = self->hitTest(static_cast<short>(LOWORD(l)), static_cast<short>(HIWORD(l)));
-                if (hot != self->_hot) { self->_hot = hot; ::InvalidateRect(h, nullptr, FALSE); }
-                return 0;
-            }
-            case WM_LBUTTONUP:
-                self->clickTab(self->hitTest(static_cast<short>(LOWORD(l)), static_cast<short>(HIWORD(l))));
-                return 0;
-            }
-        }
-        catch (...) {}
-        return ::DefWindowProcW(h, m, w, l);
-    }
-
-    HWND _strip = nullptr;
-    HFONT _font = nullptr;
+    HWND _bar = nullptr, _sci = nullptr;
+    RECT _barWas{};
+    bool _barWasVisible = false;
+    LONG_PTR _sciStyle = 0;
     bool _shown = false;
     double _leftAt = 0;
-    int _zone = 6, _hideDelay = 350, _view = 0, _hot = -1;
+    int _zone = 6, _hideDelay = 350, _view = 0;
     UINT _pollMs = 60;
-    std::vector<Tab> _tabs;
 };
 
 HoverTabs* s_mod = nullptr;

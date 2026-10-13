@@ -13,6 +13,13 @@
 # new Notepad++ release, it downloads that build and the official signed installer of the same
 # release, waits until Notepad++ is closed, runs the official installer, then puts the KEX build on
 # top. Log: %LOCALAPPDATA%\KEX-Notepad++\update.log
+#
+# The task runs with administrator rights, so it only installs a KEX build whose signature matches
+# the KEX public key below (the GitHub build signs each zip with the matching private key, kept as
+# the repository secret KEX_SIGNING_KEY), and the official installer only when it is signed by
+# Notepad++. Its own copy of this script, the repository name and the downloads live in
+# %ProgramFiles%\KEX-Notepad++, which only administrators can change, so no program running
+# without admin rights can alter what the task runs or swap a file between check and install.
 param([switch]$Uninstall, [switch]$Check, [string]$Target, [switch]$Yes)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -21,6 +28,10 @@ $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $State = Join-Path $env:LOCALAPPDATA 'KEX-Notepad++'
 $Log = Join-Path $State 'update.log'
 $TaskName = 'KEX Notepad++ update check'
+$Protected = Join-Path $env:ProgramFiles 'KEX-Notepad++'   # admin-only: the task's script, repository name and downloads
+$Download = Join-Path $Protected 'download'
+# RSA-3072 public key (modulus; exponent 65537) that KEX builds are signed with
+$KexPublicKey = '5NG59vNAeoAfEd6wwImyTjmnrgGghpV4dk8YFIm+tOLUM2rNqnWM2pLkp4qfvhfta6x2xoTC0QfdWy3L3I7eylNBk7ed8tSPPmZdhnz9oIXPG5lVjoXPadhlX3icGN5y5djzYYgiCXZEJ/Veg/v8Z0A4M/wMP1Xoq7vORngfBn/auinqYcTc5lqgda5Cz4ff6tQhyAOKpHRYz0V621AuzEAnF7zBgR/seGrfCIGV/WXXo/UjIFSoXeTuVCe6NeiO4g8Mc4UsRPC5GcTyl1vgRVocGH5UcMPQA5HFA8vipj+dRZMxndtPRRMrH/FiEIjpm4pqi+jUlLduiWVgZSOyDGw9m/Fp4dZ5wlRzWPVgCGiqG3qc4WgX4bhm6dlkbU52J3i6dI7WuDYkxkrBnRnTcxjRhGwLq8Saf0u/V72vyfz34us6DV/VzFdJXgMDs5Lplc40O3AnLOXUbX2Qp5kKMW/xlPg/OAJ9WeiRHsxrbNYxNTgFUQtNS4VOUdx9ZuBR'
 $Upstream = 'https://api.github.com/repos/notepad-plus-plus/notepad-plus-plus'
 
 function Log($m) {
@@ -86,7 +97,33 @@ function Get-Headers([switch]$Auth) {
     return $h
 }
 
-function Get-Repo { return (Get-Content (Join-Path $State 'kex-repo.txt') -Raw).Trim() }
+function Get-Repo {
+    foreach ($dir in $Protected, $State) {   # $State: set up before the files moved to $Protected
+        $f = Join-Path $dir 'kex-repo.txt'
+        if (Test-Path $f) { return (Get-Content $f -Raw).Trim() }
+    }
+    return ''
+}
+
+# true when $sigFile is a valid signature of $file by the KEX signing key (RSA, SHA-256, PKCS#1 v1.5)
+function Test-KexSignature($file, $sigFile) {
+    if (-not (Test-Path $sigFile)) { return $false }
+    $p = New-Object System.Security.Cryptography.RSAParameters
+    $p.Modulus = [Convert]::FromBase64String($KexPublicKey)
+    $p.Exponent = [byte[]](1, 0, 1)
+    $rsa = New-Object System.Security.Cryptography.RSACng
+    try {
+        $rsa.ImportParameters($p)
+        return $rsa.VerifyData([IO.File]::ReadAllBytes($file), [IO.File]::ReadAllBytes($sigFile),
+            [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    }
+    finally { $rsa.Dispose() }
+}
+
+function New-DownloadFolder {
+    Remove-Item $Download -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $Download | Out-Null
+}
 
 function Get-Asset($asset, $file, [switch]$Auth) {
     $h = Get-Headers -Auth:$Auth
@@ -168,7 +205,8 @@ function Install-Package($pkg, $npp) {
         $rel = Invoke-RestMethod "$Upstream/releases/tags/$tag" -Headers (Get-Headers) -UseBasicParsing
         $asset = $rel.assets | Where-Object { $_.name -match '^npp\.[\d.]+\.Installer\.x64\.exe$' } | Select-Object -First 1
         if (-not $asset) { throw "The official Notepad++ $tag release has no x64 installer." }
-        $installer = Join-Path $env:TEMP $asset.name
+        New-Item -ItemType Directory -Force -Path $Download | Out-Null
+        $installer = Join-Path $Download $asset.name   # not %TEMP%: nothing without admin rights may swap it after the check
         Log "Downloading the official $($asset.name)..."
         Get-Asset $asset $installer
         $sig = Get-AuthenticodeSignature $installer
@@ -199,10 +237,31 @@ function Install-Package($pkg, $npp) {
     Log "Installed Notepad++ $want with KEX into $npp."
 }
 
+# The task runs $Protected\Install-KEX.ps1 with admin rights every day at noon
+function Register-UpdateTask($npp) {
+    $script = Join-Path $Protected 'Install-KEX.ps1'
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`" -Check -Target `"$npp`""
+    $trigger = New-ScheduledTaskTrigger -Daily -At '12:00'
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 23) -MultipleInstances IgnoreNew
+    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+    # copies from before the move to $Protected
+    Remove-Item (Join-Path $State 'Install-KEX.ps1'), (Join-Path $State 'kex-repo.txt') -ErrorAction SilentlyContinue
+}
+
+# Puts this script and the repository name where only administrators can change them
+function Install-TaskFiles($scriptFile, $repoFile) {
+    New-Item -ItemType Directory -Force -Path $Protected | Out-Null
+    $dest = Join-Path $Protected 'Install-KEX.ps1'
+    if ((Resolve-Path $scriptFile).Path -ne $dest) { Copy-Item $scriptFile $dest -Force }
+    if ($repoFile -and (Resolve-Path $repoFile).Path -ne (Join-Path $Protected 'kex-repo.txt')) {
+        Copy-Item $repoFile (Join-Path $Protected 'kex-repo.txt') -Force
+    }
+}
+
 function Enable-AutoUpdate($npp) {
     New-Item -ItemType Directory -Force -Path $State | Out-Null
-    Copy-Item $PSCommandPath (Join-Path $State 'Install-KEX.ps1') -Force
-    Copy-Item (Join-Path $Here 'kex-repo.txt') (Join-Path $State 'kex-repo.txt') -Force
+    Install-TaskFiles $PSCommandPath (Join-Path $Here 'kex-repo.txt')
     $repo = Get-Repo
     if (-not $repo) { throw 'This build has no kex-repo.txt, so it has nowhere to check for updates.' }
     try { Invoke-RestMethod "https://api.github.com/repos/$repo" -Headers (Get-Headers -Auth) -UseBasicParsing | Out-Null }
@@ -211,22 +270,25 @@ function Enable-AutoUpdate($npp) {
         Read-Host 'Token' -AsSecureString | ConvertFrom-SecureString | Set-Content (Join-Path $State 'token.dat')
         Invoke-RestMethod "https://api.github.com/repos/$repo" -Headers (Get-Headers -Auth) -UseBasicParsing | Out-Null
     }
-    $script = Join-Path $State 'Install-KEX.ps1'
-    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`" -Check -Target `"$npp`""
-    $trigger = New-ScheduledTaskTrigger -Daily -At '12:00'
-    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 23) -MultipleInstances IgnoreNew
-    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+    Register-UpdateTask $npp
     Log "Automatic updates on: checks $repo daily (Task Scheduler: '$TaskName')."
 }
 
 function Do-Check {
     $npp = Find-Npp
     $exe = Join-Path $npp 'notepad++.exe'
+    # a task set up by an older version runs a copy in %LOCALAPPDATA%: move it to $Protected first
+    if ((Split-Path -Parent $PSCommandPath) -ne $Protected) {
+        $oldRepo = Join-Path $State 'kex-repo.txt'
+        Install-TaskFiles $PSCommandPath $(if (Test-Path $oldRepo) { $oldRepo } else { $null })
+        Register-UpdateTask $npp
+        Log "Moved the update task's files to $Protected."
+    }
     $repo = Get-Repo
     $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers (Get-Headers -Auth) -UseBasicParsing
     $asset = $rel.assets | Where-Object { $_.name -like 'Notepad++-*-KEX.zip' } | Select-Object -First 1
     if (-not $asset) { Log "The latest release of $repo has no KEX zip."; return }
+    $sigAsset = $rel.assets | Where-Object { $_.name -eq "$($asset.name).sig" } | Select-Object -First 1
     $want = Norm $rel.tag_name
     $stamp = "$($asset.id)/$($asset.updated_at)"
     $have = Get-Version $exe
@@ -245,16 +307,36 @@ function Do-Check {
         return
     }
 
+    # with no public key in this script (a build made before the repository had its signing key) the
+    # signature is not checked; once a signed build is installed, every later one has to be signed
+    $signed = $KexPublicKey -ne ''
+    if ($signed -and -not $sigAsset) {
+        if ($st.warned -ne "unsigned $stamp") {
+            Notify "Notepad++ KEX $want wasn't installed: the release has no signature. Add the signing key to the repository (see KEX-README.txt)."
+            $st.warned = "unsigned $stamp"; Save-State $st
+        }
+        return
+    }
+
     Log "Downloading $($asset.name)..."
-    $zip = Join-Path $State $asset.name
-    $unpacked = Join-Path $State 'new'
-    Remove-Item $unpacked -Recurse -Force -ErrorAction SilentlyContinue
+    New-DownloadFolder
+    $zip = Join-Path $Download $asset.name
+    $unpacked = Join-Path $Download 'new'
     Get-Asset $asset $zip -Auth
+    if ($signed) {
+        Get-Asset $sigAsset "$zip.sig" -Auth
+        if (-not (Test-KexSignature $zip "$zip.sig")) {
+            Remove-Item $Download -Recurse -Force -ErrorAction SilentlyContinue
+            throw "$($asset.name) isn't signed with the KEX key, so it wasn't installed."
+        }
+        Log 'Signature checked: the build was signed with the KEX key.'
+    }
+    else { Log 'No signing key in this script yet: installing without a signature check.' }
     Expand-Archive $zip $unpacked -Force
     $pkg = (Get-ChildItem $unpacked -Directory | Select-Object -First 1).FullName
     Install-Package $pkg $npp
-    Copy-Item (Join-Path $pkg 'Install-KEX.ps1') (Join-Path $State 'Install-KEX.ps1') -Force   # newer copy of this script
-    Remove-Item $zip, $unpacked -Recurse -Force -ErrorAction SilentlyContinue
+    Install-TaskFiles (Join-Path $pkg 'Install-KEX.ps1') $null   # this script's newer copy, from the signed zip
+    Remove-Item $Download -Recurse -Force -ErrorAction SilentlyContinue
     $st.installed = $stamp; $st.warned = ''; Save-State $st
     Notify "Updated to Notepad++ KEX $want."
 }
@@ -276,7 +358,7 @@ function Do-Uninstall {
     }
     Remove-Item $pluginDir -Recurse -Force -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-    Remove-Item $State -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $State, $Protected -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host 'KEX removed. Notepad++ is back to normal.' -ForegroundColor Green
 }
 
@@ -311,7 +393,7 @@ try {
             $answer = if ($Yes) { 'y' } else { Read-Host 'Install new Notepad++ releases with KEX automatically? [Y/n]' }
             if ($answer -notmatch '^[nN]') { Enable-AutoUpdate $npp }
         }
-        Write-Host 'Done. Start Notepad++ as usual; the KEX settings are under Settings > KEX Features.' -ForegroundColor Green
+        Write-Host 'Done. Start Notepad++ as usual; the KEX settings are in the KEX group at the bottom of the Settings menu.' -ForegroundColor Green
     }
 }
 catch {

@@ -36,6 +36,21 @@ void log(const wchar_t* fmt, ...);
 
 // ---- small helpers ----------------------------------------------------------------------------
 inline LRESULT sci(HWND h, UINT m, WPARAM w = 0, LPARAM l = 0) { return ::SendMessageW(h, m, w, l); }
+
+// Scintilla's direct function: a call without a window message, so without the views' subclass chain.
+// For many calls in a row (a whole visible delete, a token pass); keep one for the length of that work.
+struct SciDirect {
+    HWND h = nullptr; SciFnDirect fn = nullptr; sptr_t p = 0;
+    explicit SciDirect(HWND w);
+    sptr_t operator()(UINT m, uptr_t w = 0, sptr_t l = 0) const { return fn ? fn(p, m, w, l) : static_cast<sptr_t>(::SendMessageW(h, m, w, l)); }
+};
+
+int dpiOf(HWND h);                                   // the window's DPI (its monitor's), 96 when unknown
+int dpiAt(POINT pt);                                 // the DPI of the monitor at pt
+COLORREF mixColour(COLORREF a, COLORREF b, double t); // a, moved t (0..1) of the way to b
+bool isCloaked(HWND h);                              // on another virtual desktop (or otherwise cloaked by DWM)
+extern const CLSID kCLSID_VirtualDesktopManager;     // shobjidl.h's, which MinGW's headers may lack
+extern const IID kIID_IVirtualDesktopManager;
 inline LRESULT nppMsg(UINT m, WPARAM w = 0, LPARAM l = 0) { return ::SendMessageW(npp._nppHandle, m, w, l); }
 std::wstring bufferPath(intptr_t bufferId);
 std::wstring fileNameOf(const std::wstring& path);
@@ -56,7 +71,7 @@ private:
     HWND _hwnd = nullptr;
 };
 
-// ---- views: the two-view plugin API, or the KEX four-view API when the core patch is present ----
+// ---- views: the KEX core's four-view API (KexApi.h) ----
 class Views {
 public:
     void init();                       // call at NPPN_READY
@@ -64,7 +79,7 @@ public:
     int patchVersion() const { return _patchVersion; }
     int count() const { return _count; }
     HWND sci(int v) const;             // that view's Scintilla (nullptr if none)
-    HWND tabBar(int v) const;          // that view's tab control (patched: KEX msg; else located once)
+    HWND tabBar(int v) const;          // that view's tab control
     int current() const;               // focused view
     bool visible(int v) const;
     int nbFiles(int v) const;
@@ -74,11 +89,9 @@ public:
     HWND host(int v) const;            // top-level window hosting the view
     int viewOf(HWND sciHwnd) const;    // -1 if not an editing view
     std::vector<HWND> hostWindows() const;   // unique top-level hosts other than the main window
-    HWND locateTabBar(int v) const;    // unpatched heuristic (exposed for the self-check)
 private:
     bool _patched = false;
     int _count = 2, _patchVersion = 0;
-    mutable HWND _tabCache[4] = {};
 };
 extern Views views;
 
@@ -175,14 +188,15 @@ struct LettersStats { int lastSpawned = 0; int lastCandidates = 0; int totalSpaw
                       RECT overlay{}; bool overlayVisible = false; int skippedUndo = 0; int skippedAnimOff = 0; int skippedGlobal = 0; };
 LettersStats lettersStats();
 void lettersFreezeAfter(int ms);   // <0 = run normally
-struct CaretStats { int carets = 0; RECT overlay{}; bool visible = false; HWND target = nullptr; int lastStyleSaved = -1;
+// what Scintilla's smooth caret drew in the focused view at its last paint (KexScintilla.h)
+struct CaretStats { int carets = 0; bool visible = false; HWND target = nullptr;
                     float mainX = 0, mainY = 0, mainH = 0; bool block = false;
-                    int pushes = 0;   // times the caret window was redrawn
-                    double workMs = 0, computeMs = 0, pushMs = 0;   // time in the caret's code, its caret maths, its redraws
+                    int pushes = 0;   // paints that drew the caret
+                    double workMs = 0;   // time Scintilla spent working out and drawing carets
 };
 CaretStats caretStats();
 void caretTestFreeze(double glideFraction, bool solidBlink);   // fraction <0 = off
-int caretOriginalStyle(HWND sciHwnd);
+bool smoothCaretOn(HWND sciHwnd);   // the smooth caret is on in this view
 struct HotkeyStats { bool registered = false; bool byOtherNpp = false; DWORD lastError = 0; UINT mods = 0, vk = 0; int presses = 0; std::wstring text; bool noteOpen = false; };
 HotkeyStats hotkeyStats();
 void hotkeyPress();              // run the same code path as WM_HOTKEY
@@ -199,7 +213,8 @@ struct SnapStats { bool visible = false; RECT target{}; RECT window{}; int alpha
 SnapStats snapStats();
 struct JetBrainsStats { int handled = 0; int grows = 0; std::wstring last; };
 JetBrainsStats jetBrainsStats();
-std::wstring jetBrainsKeyList();   // the table, one "keys<TAB>action" line each
+void addJetBrainsCommands(HMENU parent, int position);   // Settings > KEX Editing > JetBrains Commands
+int jetBrainsCommandId(int index);  // Notepad++'s command id of binding `index` (0 before they are added)
 struct GlassStats { bool active = false; COLORREF key = 0; int hosts = 0; int remaps = 0; int placements = 0; int clicks = 0; int wheels = 0;
                     int dragSolids = 0; bool dragSolidNow = false; int accent = 0; int accentFailures = 0; int rendererSwitches = 0;
                     HWND lastTarget = nullptr; std::wstring state; };
@@ -207,7 +222,7 @@ GlassStats glassStats();
 std::wstring glassInfo();          // the line under the glass settings
 void glassTestDragEnter();         // what a drag entering the glass does
 struct TokenStats { int wrapperCalls = 0; int liveWrappers = 0; int docs = 0; int lexCalls = 0; int variantsMade = 0; int collisions = 0;
-                    int fullPasses = 0; int menus = 0; int augmented = 0; bool hooked = false; std::wstring menuKey; std::wstring last; };
+                    int fullPasses = 0; int menus = 0; int augmented = 0; bool menuKeyOn = false; std::wstring menuKey; std::wstring last; };
 TokenStats tokenStats();
 int tokenCommandId(int which);     // our menu commands: 0 Bold, 1 Italic, 2 Clear This Token
 std::wstring tokenStoreFile();     // kex-tokens.txt
@@ -215,7 +230,8 @@ std::wstring tokenInfo();          // the line on the KEX Highlighting page
 int tokenRuleCount(HWND view);     // tokens styled in the document of that view
 int tokenVariantBase(HWND view, int style, int* flags);   // lexer style behind a bold/italic variant, -1 if not one
 bool tokenDocWrapped(HWND view);   // the document's lexer goes through the suite
-bool tokenMenuKeyApply(UINT mods, UINT vk);
+void addTokenCommands(HMENU parent, int position);       // Settings > KEX Highlighting > Token Style Menu
+int tokenMenuCommandId();
 
 // Desktop provider (real IVirtualDesktopManager or the fake used by the self-test)
 class DesktopProvider {
@@ -242,5 +258,6 @@ std::wstring guidStr(const GUID& g);
 bool guidFromStr(const std::wstring& s, GUID* g);
 struct DesktopStats { bool newWindow = false; int copiedTabs = -1; int served = 0; std::wstring lastAction; };
 DesktopStats desktopStats();
+const std::wstring& logFileName();   // kex.log, or kex-desktop-<id>.log in a window for another desktop
 
 } // namespace kex

@@ -3,11 +3,60 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cwchar>
+#include <dwmapi.h>
 
 namespace kex {
 
 Views views;
 Settings settings;
+
+// ---------------------------------------------------------------------------------------------
+// small shared helpers
+
+SciDirect::SciDirect(HWND w) : h(w)
+{
+    if (!h) return;
+    fn = reinterpret_cast<SciFnDirect>(::SendMessageW(h, SCI_GETDIRECTFUNCTION, 0, 0));
+    p = static_cast<sptr_t>(::SendMessageW(h, SCI_GETDIRECTPOINTER, 0, 0));
+}
+
+int dpiOf(HWND h)
+{
+    typedef UINT(WINAPI * GetDpiForWindowFn)(HWND);
+    static const GetDpiForWindowFn fn = reinterpret_cast<GetDpiForWindowFn>(::GetProcAddress(::GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+    if (fn && h) { const UINT d = fn(h); if (d) return static_cast<int>(d); }
+    HDC dc = ::GetDC(h);
+    const int d = dc ? ::GetDeviceCaps(dc, LOGPIXELSY) : 96;
+    if (dc) ::ReleaseDC(h, dc);
+    return d > 0 ? d : 96;
+}
+
+int dpiAt(POINT pt)
+{
+    typedef HRESULT(WINAPI * GetDpiForMonitorFn)(HMONITOR, int, UINT*, UINT*);
+    static HMODULE shcore = ::LoadLibraryW(L"shcore.dll");
+    static const GetDpiForMonitorFn fn = shcore ? reinterpret_cast<GetDpiForMonitorFn>(::GetProcAddress(shcore, "GetDpiForMonitor")) : nullptr;
+    UINT x = 0, y = 0;
+    if (fn && SUCCEEDED(fn(::MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), 0 /* MDT_EFFECTIVE_DPI */, &x, &y)) && y) return static_cast<int>(y);
+    return dpiOf(nullptr);
+}
+
+COLORREF mixColour(COLORREF a, COLORREF b, double t)
+{
+    return RGB(static_cast<int>(GetRValue(a) + (GetRValue(b) - GetRValue(a)) * t),
+               static_cast<int>(GetGValue(a) + (GetGValue(b) - GetGValue(a)) * t),
+               static_cast<int>(GetBValue(a) + (GetBValue(b) - GetBValue(a)) * t));
+}
+
+bool isCloaked(HWND h)
+{
+    DWORD c = 0;
+    return h && SUCCEEDED(::DwmGetWindowAttribute(h, DWMWA_CLOAKED, &c, sizeof(c))) && c != 0;
+}
+
+// {AA509086-5CA9-4C25-8F95-589D3C07B48A}, {A5CD92FF-29BE-454C-8D04-D82879FB3F1B}
+const CLSID kCLSID_VirtualDesktopManager = { 0xaa509086, 0x5ca9, 0x4c25, { 0x8f, 0x95, 0x58, 0x9d, 0x3c, 0x07, 0xb4, 0x8a } };
+const IID kIID_IVirtualDesktopManager = { 0xa5cd92ff, 0x29be, 0x454c, { 0x8d, 0x04, 0xd8, 0x28, 0x79, 0xfb, 0x3f, 0x1b } };
 
 // ---------------------------------------------------------------------------------------------
 // logging
@@ -26,7 +75,7 @@ void log(const wchar_t* fmt, ...)
     }
     if (!g_log && !settings.dir().empty())
     {
-        std::wstring p = settings.dir() + L"\\kex.log";
+        std::wstring p = settings.dir() + L"\\" + logFileName();   // kex.log, or the other desktop's own
         g_log = _wfopen(p.c_str(), L"w, ccs=UTF-8");
     }
     if (g_log)
@@ -198,82 +247,50 @@ std::vector<std::wstring> Settings::sectionNames() const
 
 void Views::init()
 {
+    // the suite is built into the KEX Notepad++, so the four-view messages are always there
     LRESULT r = nppMsg(NPPM_KEX_GETINFO);
     _patched = r != 0;
-    if (_patched)
-    {
-        _count = LOWORD(r);
-        _patchVersion = HIWORD(r);
-        if (_count < 2) _count = 2;
-        if (_count > 4) _count = 4;
-    }
-    else
-    {
-        _count = 2;
-        _patchVersion = 0;
-    }
-    for (auto& t : _tabCache) t = nullptr;
+    _count = std::max(2, std::min(4, static_cast<int>(LOWORD(r))));
+    _patchVersion = HIWORD(r);
 }
 
 HWND Views::sci(int v) const
 {
     if (v < 0 || v >= _count) return nullptr;
-    if (_patched) return reinterpret_cast<HWND>(nppMsg(NPPM_KEX_GETVIEWSCINTILLA, v));
-    return v == 0 ? npp._scintillaMainHandle : npp._scintillaSecondHandle;
+    return reinterpret_cast<HWND>(nppMsg(NPPM_KEX_GETVIEWSCINTILLA, v));
 }
 
-int Views::current() const
-{
-    if (_patched) return static_cast<int>(nppMsg(NPPM_KEX_GETCURRENTVIEW));
-    return static_cast<int>(nppMsg(NPPM_GETCURRENTVIEW));
-}
+int Views::current() const { return static_cast<int>(nppMsg(NPPM_KEX_GETCURRENTVIEW)); }
 
 bool Views::visible(int v) const
 {
-    if (v < 0 || v >= _count) return false;
-    if (_patched) return nppMsg(NPPM_KEX_ISVIEWVISIBLE, v) != 0;
-    if (v == 0) return ::IsWindowVisible(npp._scintillaMainHandle) != FALSE;
-    return nppMsg(NPPM_GETCURRENTDOCINDEX, 0, SUB_VIEW) != -1;
+    return v >= 0 && v < _count && nppMsg(NPPM_KEX_ISVIEWVISIBLE, v) != 0;
 }
 
 int Views::nbFiles(int v) const
 {
-    if (v < 0 || v >= _count) return 0;
-    if (_patched) return static_cast<int>(nppMsg(NPPM_KEX_GETNBVIEWFILES, v));
-    return static_cast<int>(nppMsg(NPPM_GETNBOPENFILES, 0, v == 0 ? PRIMARY_VIEW : SECOND_VIEW));
+    return (v < 0 || v >= _count) ? 0 : static_cast<int>(nppMsg(NPPM_KEX_GETNBVIEWFILES, v));
 }
 
 intptr_t Views::bufferId(int v, int idx) const
 {
-    if (v < 0 || v >= _count || idx < 0) return 0;
-    if (_patched) return static_cast<intptr_t>(nppMsg(NPPM_KEX_GETVIEWBUFFERID, v, idx));
-    LRESULT r = nppMsg(NPPM_GETBUFFERIDFROMPOS, idx, v);
-    return r == -1 ? 0 : static_cast<intptr_t>(r);
+    return (v < 0 || v >= _count || idx < 0) ? 0 : static_cast<intptr_t>(nppMsg(NPPM_KEX_GETVIEWBUFFERID, v, idx));
 }
 
 int Views::currentIndex(int v) const
 {
-    if (v < 0 || v >= _count) return -1;
-    if (_patched) return static_cast<int>(nppMsg(NPPM_KEX_GETVIEWCURRENTINDEX, v));
-    return static_cast<int>(nppMsg(NPPM_GETCURRENTDOCINDEX, 0, v));
+    return (v < 0 || v >= _count) ? -1 : static_cast<int>(nppMsg(NPPM_KEX_GETVIEWCURRENTINDEX, v));
 }
 
 void Views::activate(int v, int idx) const
 {
-    if (v < 0 || v >= _count || idx < 0) return;
-    if (_patched) nppMsg(NPPM_KEX_ACTIVATEDOC, v, idx);
-    else nppMsg(NPPM_ACTIVATEDOC, v, idx);
+    if (v >= 0 && v < _count && idx >= 0) nppMsg(NPPM_KEX_ACTIVATEDOC, v, idx);
 }
 
 HWND Views::host(int v) const
 {
-    if (_patched)
-    {
-        HWND h = reinterpret_cast<HWND>(nppMsg(NPPM_KEX_GETVIEWHOSTWINDOW, v));
-        if (h) return h;
-        HWND s = sci(v);
-        if (s) return ::GetAncestor(s, GA_ROOT);
-    }
+    if (HWND h = reinterpret_cast<HWND>(nppMsg(NPPM_KEX_GETVIEWHOSTWINDOW, v))) return h;
+    if (HWND s = sci(v)) return ::GetAncestor(s, GA_ROOT);
     return npp._nppHandle;
 }
 
@@ -288,7 +305,6 @@ int Views::viewOf(HWND h) const
 std::vector<HWND> Views::hostWindows() const
 {
     std::vector<HWND> out;
-    if (!_patched) return out;
     for (int v = 0; v < _count; ++v)
     {
         HWND h = host(v);
@@ -297,62 +313,9 @@ std::vector<HWND> Views::hostWindows() const
     return out;
 }
 
-namespace {
-struct TabFind { std::vector<HWND> tabs; };
-BOOL CALLBACK collectTabs(HWND h, LPARAM p)
-{
-    wchar_t cls[64] = {};
-    ::GetClassNameW(h, cls, 63);
-    if (!wcscmp(cls, WC_TABCONTROLW)) reinterpret_cast<TabFind*>(p)->tabs.push_back(h);
-    return TRUE;
-}
-LPARAM tabParam(HWND tab, int i)
-{
-    TCITEMW it{}; it.mask = TCIF_PARAM;
-    if (!::SendMessageW(tab, TCM_GETITEMW, i, reinterpret_cast<LPARAM>(&it))) return 0;
-    return it.lParam;
-}
-}
-
-HWND Views::locateTabBar(int v) const
-{
-    // Notepad++ stores each tab's BufferID in TCITEM.lParam (DocTabView::addBuffer), so the view's
-    // tab control is the SysTabControl32 whose items match that view's buffer list.
-    int nb = nbFiles(v);
-    if (nb <= 0) return nullptr;
-    TabFind f;
-    ::EnumChildWindows(npp._nppHandle, collectTabs, reinterpret_cast<LPARAM>(&f));
-    HWND best = nullptr; long bestDist = LONG_MAX;
-    RECT sr{}; HWND s = sci(v); if (s) ::GetWindowRect(s, &sr);
-    for (HWND t : f.tabs)
-    {
-        int cnt = static_cast<int>(::SendMessageW(t, TCM_GETITEMCOUNT, 0, 0));
-        if (cnt != nb) continue;
-        bool match = true;
-        for (int i = 0; i < cnt && i < 16; ++i)
-            if (tabParam(t, i) != static_cast<LPARAM>(bufferId(v, i))) { match = false; break; }
-        if (!match) continue;
-        RECT tr; ::GetWindowRect(t, &tr);
-        long d = labs((tr.left + tr.right) / 2 - (sr.left + sr.right) / 2) + labs(tr.top - sr.top);
-        if (d < bestDist) { bestDist = d; best = t; }
-    }
-    return best;
-}
-
 HWND Views::tabBar(int v) const
 {
-    if (v < 0 || v >= _count) return nullptr;
-    if (_patched) return reinterpret_cast<HWND>(nppMsg(NPPM_KEX_GETVIEWTABBAR, v));
-    HWND c = _tabCache[v];
-    if (c && ::IsWindow(c))
-    {
-        int nb = nbFiles(v);
-        if (static_cast<int>(::SendMessageW(c, TCM_GETITEMCOUNT, 0, 0)) == nb &&
-            (nb == 0 || tabParam(c, 0) == static_cast<LPARAM>(bufferId(v, 0))))
-            return c;
-    }
-    _tabCache[v] = locateTabBar(v);
-    return _tabCache[v];
+    return (v < 0 || v >= _count) ? nullptr : reinterpret_cast<HWND>(nppMsg(NPPM_KEX_GETVIEWTABBAR, v));
 }
 
 } // namespace kex

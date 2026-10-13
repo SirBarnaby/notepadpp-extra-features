@@ -230,9 +230,8 @@ static void onReady()
 {
     g_ready = true;
     views.init();
-    log(L"Notepad++ version word 0x%08lx, KEX views: %ls (count %d, patch v%d), Wine: %ls",
-        static_cast<long>(nppMsg(NPPM_GETNPPVERSION, 1, 0)), views.patched() ? L"patched" : L"standard two-view API",
-        views.count(), views.patchVersion(), underWine ? L"yes" : L"no");
+    log(L"Notepad++ version word 0x%08lx, KEX views: %d (patch v%d), Wine: %ls",
+        static_cast<long>(nppMsg(NPPM_GETNPPVERSION, 1, 0)), views.count(), views.patchVersion(), underWine ? L"yes" : L"no");
     g_core.createMsgWindow(L"KexSuiteCore");
     if (::SetWindowSubclass(npp._nppHandle, mainSubclass, kSubclassId, 0)) g_subclassed = true;
     else log(L"could not subclass the Notepad++ main window");

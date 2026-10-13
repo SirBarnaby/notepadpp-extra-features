@@ -373,16 +373,18 @@ private:
 
     void capture(HWND s, Sci_Position pos, Sci_Position len)
     {
+        // a big visible delete means many calls per character: Scintilla's direct function, no messages
+        const SciDirect ds(s);
         RECT client; ::GetClientRect(s, &client);
         int margins = 0;
-        int nm = static_cast<int>(sci(s, SCI_GETMARGINS));
-        for (int i = 0; i < nm; ++i) margins += static_cast<int>(sci(s, SCI_GETMARGINWIDTHN, i));
-        Sci_Position firstVis = sci(s, SCI_GETFIRSTVISIBLELINE);
-        Sci_Position onScreen = sci(s, SCI_LINESONSCREEN);
-        Sci_Position firstDoc = sci(s, SCI_DOCLINEFROMVISIBLE, firstVis);
-        Sci_Position lastDoc = sci(s, SCI_DOCLINEFROMVISIBLE, firstVis + onScreen + 1);
-        Sci_Position visStart = sci(s, SCI_POSITIONFROMLINE, firstDoc);
-        Sci_Position visEnd = sci(s, SCI_GETLINEENDPOSITION, lastDoc);
+        int nm = static_cast<int>(ds(SCI_GETMARGINS));
+        for (int i = 0; i < nm; ++i) margins += static_cast<int>(ds(SCI_GETMARGINWIDTHN, i));
+        Sci_Position firstVis = ds(SCI_GETFIRSTVISIBLELINE);
+        Sci_Position onScreen = ds(SCI_LINESONSCREEN);
+        Sci_Position firstDoc = ds(SCI_DOCLINEFROMVISIBLE, firstVis);
+        Sci_Position lastDoc = ds(SCI_DOCLINEFROMVISIBLE, firstVis + onScreen + 1);
+        Sci_Position visStart = ds(SCI_POSITIONFROMLINE, firstDoc);
+        Sci_Position visEnd = ds(SCI_GETLINEENDPOSITION, lastDoc);
         Sci_Position a = std::max(pos, visStart), b = std::min(pos + len, visEnd);
         s_lastCandidates = 0; s_lastSpawned = 0;
         if (a >= b) return;
@@ -390,22 +392,25 @@ private:
 
         std::string text(static_cast<size_t>(b - a) + 1, '\0');
         Sci_TextRangeFull tr{ { a, b }, &text[0] };
-        sci(s, SCI_GETTEXTRANGEFULL, 0, reinterpret_cast<LPARAM>(&tr));
+        ds(SCI_GETTEXTRANGEFULL, 0, reinterpret_cast<LPARAM>(&tr));
         text.resize(static_cast<size_t>(b - a));
-        int cp = static_cast<int>(sci(s, SCI_GETCODEPAGE));
+        int cp = static_cast<int>(ds(SCI_GETCODEPAGE));
         UINT winCp = cp == SC_CP_UTF8 ? CP_UTF8 : (cp == 0 ? CP_ACP : static_cast<UINT>(cp));
 
+        const bool wrapped = ds(SCI_GETWRAPMODE) != SC_WRAP_NONE;
         std::vector<Cand> cands;
-        Sci_Position lineA = sci(s, SCI_LINEFROMPOSITION, a), lineB = sci(s, SCI_LINEFROMPOSITION, b);
+        Sci_Position lineA = ds(SCI_LINEFROMPOSITION, a), lineB = ds(SCI_LINEFROMPOSITION, b);
         size_t i = 0;
         for (Sci_Position line = lineA; line <= lineB; ++line)
         {
-            Sci_Position ls = std::max(a, static_cast<Sci_Position>(sci(s, SCI_POSITIONFROMLINE, line)));
-            Sci_Position le = std::min(b, static_cast<Sci_Position>(sci(s, SCI_GETLINEENDPOSITION, line)));
-            Sci_Position next = std::min(b, static_cast<Sci_Position>(sci(s, SCI_POSITIONFROMLINE, line + 1)));
-            if (!sci(s, SCI_GETLINEVISIBLE, line)) { i = static_cast<size_t>(next - a); continue; }
+            Sci_Position ls = std::max(a, static_cast<Sci_Position>(ds(SCI_POSITIONFROMLINE, line)));
+            Sci_Position le = std::min(b, static_cast<Sci_Position>(ds(SCI_GETLINEENDPOSITION, line)));
+            Sci_Position next = std::min(b, static_cast<Sci_Position>(ds(SCI_POSITIONFROMLINE, line + 1)));
+            if (!ds(SCI_GETLINEVISIBLE, line)) { i = static_cast<size_t>(next - a); continue; }
             i = static_cast<size_t>(ls - a);
             int prevX = 0; bool havePrev = false; Cand* prev = nullptr;
+            // unwrapped, the whole line has one y
+            const int lineY = wrapped ? 0 : static_cast<int>(ds(SCI_POINTYFROMPOSITION, 0, ls));
             while (static_cast<Sci_Position>(i) + a < le)
             {
                 unsigned char c = static_cast<unsigned char>(text[i]);
@@ -414,8 +419,8 @@ private:
                 else if (c >= 0x80 && ::IsDBCSLeadByteEx(winCp, c)) n = 2;
                 if (i + n > text.size()) n = static_cast<int>(text.size() - i);
                 Sci_Position p = a + static_cast<Sci_Position>(i);
-                int x = static_cast<int>(sci(s, SCI_POINTXFROMPOSITION, 0, p));
-                int y = static_cast<int>(sci(s, SCI_POINTYFROMPOSITION, 0, p));
+                int x = static_cast<int>(ds(SCI_POINTXFROMPOSITION, 0, p));
+                int y = wrapped ? static_cast<int>(ds(SCI_POINTYFROMPOSITION, 0, p)) : lineY;
                 if (prev && havePrev && prev->y == y && x > prevX) prev->w = x - prevX;
                 prev = nullptr; havePrev = false;
                 bool blank = (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c < 0x20);
@@ -426,7 +431,7 @@ private:
                     bool onScreenH = x >= margins - 2 && x < client.right && y >= -40 && y < client.bottom;
                     if (wn > 0 && onScreenH)
                     {
-                        Cand cd{ p, x, y, 0, std::wstring(wbuf, wn), static_cast<int>(sci(s, SCI_GETSTYLEINDEXAT, p)) };
+                        Cand cd{ p, x, y, 0, std::wstring(wbuf, wn), static_cast<int>(ds(SCI_GETSTYLEINDEXAT, p)) };
                         cands.push_back(cd);
                         prev = &cands.back(); prevX = x; havePrev = true;
                     }
@@ -437,8 +442,8 @@ private:
             {
                 // last char of the line segment: measure it with the end of line position
                 Sci_Position p2 = a + static_cast<Sci_Position>(i);
-                int x2 = static_cast<int>(sci(s, SCI_POINTXFROMPOSITION, 0, p2));
-                int y2 = static_cast<int>(sci(s, SCI_POINTYFROMPOSITION, 0, p2));
+                int x2 = static_cast<int>(ds(SCI_POINTXFROMPOSITION, 0, p2));
+                int y2 = static_cast<int>(ds(SCI_POINTYFROMPOSITION, 0, p2));
                 prev->w = (y2 == prev->y && x2 > prev->x) ? x2 - prev->x : 0;
             }
             i = static_cast<size_t>(next - a);
@@ -523,15 +528,6 @@ private:
         s_totalSpawned += s_lastSpawned;
         _pending.push_back(std::move(batch));
         if (!_posted && hwnd()) { _posted = true; ::PostMessageW(hwnd(), WM_KEX_SPAWN, 0, 0); }
-    }
-
-    static int dpiOf(HWND h)
-    {
-        typedef UINT(WINAPI * GetDpiForWindowFn)(HWND);
-        static GetDpiForWindowFn fn = reinterpret_cast<GetDpiForWindowFn>(::GetProcAddress(::GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
-        if (fn) { UINT d = fn(h); if (d) return static_cast<int>(d); }
-        HDC dc = ::GetDC(h); int d = ::GetDeviceCaps(dc, LOGPIXELSY); ::ReleaseDC(h, dc);
-        return d ? d : 96;
     }
 
     static FontSpec fontFor(HWND s, int style, int zoom, int dpi)

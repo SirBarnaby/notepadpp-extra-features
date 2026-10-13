@@ -28,10 +28,6 @@ bool guidFromStr(const std::wstring& s, GUID* g)
 
 namespace {
 
-// {AA509086-5CA9-4C25-8F95-589D3C07B48A}
-const CLSID kCLSID_VirtualDesktopManager = { 0xaa509086, 0x5ca9, 0x4c25, { 0x8f, 0x95, 0x58, 0x9d, 0x3c, 0x07, 0xb4, 0x8a } };
-// {A5CD92FF-29BE-454C-8D04-D82879FB3F1B}
-const IID kIID_IVirtualDesktopManager = { 0xa5cd92ff, 0x29be, 0x454c, { 0x8d, 0x04, 0xd8, 0x28, 0x79, 0xfb, 0x3f, 0x1b } };
 
 bool isNullGuid(const GUID& g) { static const GUID z{}; return memcmp(&g, &z, sizeof(GUID)) == 0; }
 

@@ -64,28 +64,28 @@ PASS P8 a number typed on the page is saved and the feature restarted with it
 PASS P9 Preferences closes
 INFO deleting the selection on line 11 (58 chars, 50 visible non-blank)
 PASS F1 Delete key on a selection: 50 letters spawned, expected 50
-PASS F2 overlay alive with 50 letters, bounding box (98,265)-(457,334) (Notepad++ window (20,16)-(980,676))
+PASS F2 overlay alive with 50 letters, bounding box (98,266)-(457,334) (Notepad++ window (20,16)-(980,676))
 PASS F3 overlay is layered, click-through, non-activating, topmost (exstyle 0x80800a8)
 PASS F4 focus stays in the editor while letters fall
 SHOT 7 falling-letters-selection
-PASS F5 all letters fell off the screen and the overlay hid itself (frames rendered so far: 191)
+PASS F5 all letters fell off the screen and the overlay hid itself (frames rendered so far: 182)
 PASS F6 Backspace x3: 3 letters spawned
 SHOT 8 falling-letters-backspace
 PASS F7 Edit > Cut of "Particle": 8 letters spawned
 PASS F8 undo of typed text does not rain letters (skipped undo deletes: 1)
 PASS F9 deleting off-screen lines spawns nothing
-PASS F10 Select All + Delete of 3000 lines: 2205 visible letters grouped into 175 falling pieces (cap 200); total time incl. 200 ms wait 1921 ms
+PASS F10 Select All + Delete of 3000 lines: 2205 visible letters grouped into 175 falling pieces (cap 200); total time incl. 200 ms wait 201 ms
 SHOT 9 falling-letters-huge-delete
 PASS F11 Replace All (text replaced) spawned 0 letters; NPPN_GLOBALMODIFIED seen 1 time(s)
 PASS F12 Windows animation effects off: no letters (respected by default)
 PASS F13a c.txt cloned into the second view
 PASS F13 second view: 10 letters spawned from "second line"
 SHOT 10 falling-letters-second-view
-PASS C1 Scintilla's caret hidden only in the view the smooth caret is drawn in (view1 original=0x1 now=0x1; view2 original=0x1 now=0x0; )
-INFO caret glide from (68.0,30.0) to (143.0,120.0): 14ms:(83.4,48.8) 27ms:(109.1,79.9) 43ms:(126.7,101.4) 56ms:(137.3,114.3) 71ms:(141.3,119.2) 86ms:(142.0,120.0) 102ms:(142.0,120.0) 115ms:(142.0,120.0) 129ms:(142.0,120.0) 143ms:(142.0,120.0) 157ms:(142.0,120.0) 171ms:(142.0,120.0) 
-PASS C2 caret glides through 5 intermediate positions and lands on the target (142.0,120.0)
+PASS C1 smooth caret on in Scintilla in both views, Notepad++'s caret style untouched (view1 on=1 style=0x1; view2 on=1 style=0x1; )
+INFO caret glide from (68.0,30.0) to (143.0,120.0): 13ms:(68.0,30.0) 27ms:(107.7,78.3) 45ms:(129.1,104.3) 59ms:(129.1,104.3) 73ms:(139.6,117.1) 87ms:(142.0,119.9) 101ms:(142.0,120.0) 116ms:(142.0,120.0) 130ms:(142.0,120.0) 145ms:(142.0,120.0) 159ms:(142.0,120.0) 174ms:(142.0,120.0) 
+PASS C2 caret glides through 4 intermediate positions and lands on the target (142.0,120.0)
 SHOT 11 caret-glide-frozen-midway
-PASS C3 custom caret visible, overlay (110,267)-(114,284)
+PASS C3 smooth caret visible at (83,150), 15 px high
 SHOT 12 caret-normal
 PASS C4 rectangular selection over 5 lines: 5 carets drawn
 SHOT 13 caret-rectangular-selection
@@ -95,9 +95,9 @@ PASS C6 zoom +5: caret height 22 = line height 22
 PASS C7 scroll by 3 lines: caret moved 45 px at once (3 lines = 45 px)
 PASS C8 caret hides on focus loss and comes back on focus
 PASS C9 second view focused: caret drawn in view 2
-PASS C10 external caret style change adopted (0x2) and hidden again
+PASS C10 caret style set to block in Notepad++: the smooth caret is a block too (15 px high)
   [kex] Smooth caret: disabled
-PASS C11 caret off from Preferences: style restored exactly (view1 0x1, view2 0x1), overlay destroyed
+PASS C11 caret off from Preferences: Scintilla's own caret again in both views, caret style untouched (0x1)
 SHOT 15 caret-disabled-scintilla-caret-back
   [kex] Smooth caret: enabled
 PASS C12 caret back on from Preferences
@@ -113,33 +113,37 @@ PASS D4 the new window has the same tabs in every view, the same active tabs and
 PASS D5 a.cpp's caret is where it was in the first window (109, expected 109)
 PASS D6 untitled tab new 1 copied: text "desk note", caret 12, unmodified (0), title "new 1 - Notepad++ KEX [Administrator]"
 PASS D7 the copy's temporary folder was removed (C:\users\root\Temp\KEX-Notepad++\desktop-copy-1368) and this window kept a.cpp active
-INFO started notepad++.exe d2.txt with KEX_SELFTEST_OTHER_DESKTOP=1 (pid 1920): 1
-  [kex] per-desktop: copied 6 tab(s) for a new window on another desktop (pid 1920)
+PASS D7b the new window backed up typed text into its own folder (1 file(s) in backup\desktop-00000000-0000-0000-0000-0000000000a1) and saved its own session
+INFO started notepad++.exe d2.txt with KEX_SELFTEST_OTHER_DESKTOP=1 (pid 1988): 1
+  [kex] per-desktop: copied 6 tab(s) for a new window on another desktop (pid 1988)
 PASS D8 notepad++.exe d2.txt on a desktop without Notepad++: the copied tabs, then d2.txt last and active (6 of 6) ( view1:6/6 active 6 view2:1/1 active 1 view3:0/0 active 0 view4:0/0 active 0, focus view 1)
+INFO started notepad++.exe with KEX_SELFTEST_OTHER_DESKTOP=1 (pid 884): 1
+PASS D9 Notepad++ started again on that desktop: its own session came back with the backed-up text ("typed on desktop A, then N")
+PASS D10 that window logs to its own kex-desktop-<id>.log (1243 bytes), so it doesn't overwrite kex.log
 PASS H1 global hotkey Ctrl+Alt+M registered
 INFO started notepad.exe as 'another program': 1
 INFO Notepad++ minimized=1, foreground is the other program: 1
   [kex] WM_HOTKEY received
-  [kex] quick note: opened at 320,190 640x420, previous window 0000000000030802
+  [kex] quick note: opened at 320,190 640x420, previous window 000000000004098C
 INFO SendInput Ctrl+Alt+M -> WM_HOTKEY delivered: yes
 PASS Q1 hotkey from another program while Notepad++ is minimized: quick note (320,190)-(960,610) centred on the screen (off by 0,0; WM_HOTKEY from real key events: yes)
 PASS Q2 the note is in front with the typing focus; Notepad++ stays minimized
 SHOT 17 quick-note
 PASS Q3 typing goes into the note: "note"
   [kex] WM_HOTKEY received
-  [kex] quick note: closed, focus back to 0000000000030802
+  [kex] quick note: closed, focus back to 000000000004098C
 PASS Q4 hotkey again: note gone, focus back to the other program, text saved to Z:\root\ci-out\test\npp\kex-quicknote.txt ("note"; WM_HOTKEY: yes)
   [kex] WM_HOTKEY received
-  [kex] quick note: opened at 320,190 640x420, previous window 0000000000030802
+  [kex] quick note: opened at 320,190 640x420, previous window 000000000004098C
 PASS Q5 reopened with the text kept, caret at the end: "note"
-  [kex] quick note: closed, focus back to 0000000000030802
+  [kex] quick note: closed, focus back to 000000000004098C
 PASS Q6 Esc hides the note and gives the focus back
   [kex] WM_HOTKEY received
-  [kex] quick note: opened at 320,190 640x420, previous window 0000000000030802
+  [kex] quick note: opened at 320,190 640x420, previous window 000000000004098C
   [kex] WM_HOTKEY received
 PASS Q7 hotkey while the note is open but not in front: brought to front, not hidden
   [kex] WM_HOTKEY received
-  [kex] quick note: closed, focus back to 0000000000030802
+  [kex] quick note: closed, focus back to 000000000004098C
 PASS Q8 and the next press hides it
   [kex] WM_HOTKEY received
   [kex] quick note: opened at 320,190 640x420, previous window 0000000000010140
@@ -153,22 +157,22 @@ PASS Q11 "Open where I left it": it comes back at (60,50)-(700,470)
   [kex] WM_HOTKEY received
   [kex] quick note: closed, focus back to 0000000000010140
 PASS T0 in F12 post-it mode
-  [kex] hover tabs: shown (4 tabs, view 0)
-PASS T1 hovering the top edge shows the floating strip (20,16)-(496,48): 4 tabs (view has 4), active tab 3
+  [kex] hover tabs: tab bar of view 1 shown
+PASS T1 hovering the top edge shows the tab bar (20,16)-(496,40): 4 tabs (view has 4), active tab 3
 PASS T2 unsaved marker shown on 3 tab(s)
-PASS T3 strip floats over the text; the editor is not pushed down (editor top 16, strip 16..48)
+PASS T3 tab bar over the text; the editor is not pushed down (editor top 16, tab bar 16..40)
+PASS T3b it is Notepad++'s real tab bar (window under the first tab 0000000000010158, tab bar 0000000000010158)
 SHOT 18 f12-hover-tabs
-  [kex] hover tabs: activated tab 0 in view 0
 PASS T4 click on tab 0 switched the document to d.txt (real mouse click)
   [kex] hover tabs: hidden
-PASS T5 strip hides when the mouse leaves
+PASS T5 the tab bar hides when the mouse leaves, under the view again (window there 000000000001014C, view 000000000001014C)
 PASS T6 outside post-it mode the hot zone does nothing
   [kex] Falling letters: disabled
 PASS E1 Falling letters off from Preferences: unticked and remembered, render thread and overlay gone
   [kex] Falling letters: enabled
 PASS E2 Falling letters back on from Preferences
   [kex] Smooth caret: disabled
-PASS E1 Smooth caret off from Preferences: unticked and remembered, caret style back to 0x1 (original 0x1)
+PASS E1 Smooth caret off from Preferences: unticked and remembered, Scintilla's own caret again, caret style 0x1 (was 0x1)
   [kex] Smooth caret: enabled
 PASS E2 Smooth caret back on from Preferences
   [kex] Quick note (global hotkey): disabled
@@ -202,11 +206,11 @@ PASS K1 c.txt cloned into view 3 (bottom left)
 PASS K2 view 3: deleting a line spawned 15 letters (expected 15)
 PASS K3 view 3 focused: smooth caret drawn there (target 0000000000010152, view 3 0000000000010152, visible 1, focus 0000000000010152, carets 1, main 54,0)
 SHOT 19 kex-view3-letters
-  [kex] hover tabs: shown (1 tabs, view 2)
-PASS K5 F12: hovering the top of view 3 shows view 3's tabs over view 3 (strip (20,350)-(496,382), view 3 (20,350)-(496,676), view 3)
+  [kex] hover tabs: tab bar of view 3 shown
+PASS K5 F12: hovering the top of view 3 shows view 3's tabs over view 3 (strip (20,350)-(496,374), view 3 (20,350)-(496,676), view 3)
 SHOT 20 kex-view3-hover-tabs
   [kex] hover tabs: hidden
-PASS K4 view 3 snapped out: caret drawn in its own window, overlay (139,484)-(142,501) inside (64,412)-(552,766)
+PASS K4 view 3 snapped out: caret drawn in its own window at (68,15), inside view 3 (0,0)-(455,288)
 SHOT 21 kex-view3-snapped-out-caret
 PASS J1 Alt+J from the caret selects the word, then each next occurrence: "value", 3 selections
 PASS J2 Shift+Alt+J drops the last one (2 left); releasing Alt does not open the menu bar
@@ -225,6 +229,9 @@ PASS J12 "Also the keys Notepad++ uses" off: Ctrl+Y left to Notepad++, Alt+J sti
   [kex] JetBrains shortcuts: disabled
   [kex] JetBrains shortcuts: enabled
 PASS J13 switched off, Alt+J does nothing; back on afterwards (22 keys handled in all)
+  [kex] JetBrains shortcuts: disabled
+  [kex] JetBrains shortcuts: enabled
+PASS J14 Settings > KEX Editing > JetBrains Commands has the 27 commands, Shortcut Mapper has Alt+J for "Select Next Occurrence	Alt+J"; off: "Select Next Occurrence"
 PASS N0 one view with 5 tabs to drag from
 INFO drag b.py from view 1: tab 2 at (213,103), cursor (213,103) over SysTabControl32, capture SysTabControl32, current view 1
 PASS N1 dragging b.py to the right edge previews the right half: (504,90)-(976,646) (view (24,90)-(976,646), preview window (508,94)-(971,641))
@@ -317,7 +324,7 @@ PASS L15 Clear This Token takes the colour, bold and italic off every "alpha" an
 PASS L16 kex-tokens.txt remembers "beta" for k.cpp (128 bytes)
   [kex] Live token styles: 2 styled tokens restored for C:\kexsuite-test\k.cpp
 PASS L17 closed and opened again, k.cpp has its styled tokens back: "beta" coloured, "gamma" bold  [k.cpp, 2 rules, wrapped 1, beta x1 value 19284, gamma x1 style 255 base 11 flags 1, lexed to 204 of 204]
-PASS L18 KEX Highlighting page: "Running", menu key Ctrl+Shift+H, "Menu key Ctrl+Shift+H in the editing views. 2 tokens are styled in this file."
+PASS L18 KEX Highlighting page: "Running", menu key Ctrl+Shift+H (Settings > KEX Highlighting > "Token Style Menu	Ctrl+Shift+H"), "Menu key Ctrl+Shift+H. 2 tokens are styled in this file."
 SHOT 28 preferences-kex-highlighting
   [kex] Live token styles: disabled
 PASS L19 switched off: the colours and the bold are gone 
@@ -335,34 +342,34 @@ PASS L23 plain .txt: Bold off leaves it italic, Clear This Token makes it plain 
   [kex] Tab snapping: disabled
   [kex] JetBrains shortcuts: disabled
   [kex] Live token styles: disabled
-INFO PERF all KEX features on: 30.075 ms per key, 1.50% CPU idle; all off: 19.590 ms per key, 0.50% CPU idle
-INFO PERF smooth caret: window redrawn 3.56 times per key while typing, 2.0 times a second while idle; one redraw costs 1.290 ms (0.667 ms CPU) here and makes the text repaint 0.00 times
-INFO PERF text repaints per key: 1.10 with the features on, 1.00 with them off
-INFO PERF smooth caret's own code per key: 4.660 ms, of it 0.103 ms working out caret positions and 4.507 ms redrawing its window
+INFO PERF all KEX features on: 24.370 ms per key, 1.00% CPU idle; all off: 21.015 ms per key, 1.50% CPU idle
+INFO PERF smooth caret: drawn in 1.12 paints per key while typing, 0.0 a second while idle (glide and blink fades)
+INFO PERF text repaints per key: 1.12 with the features on, 1.00 with them off
+INFO PERF smooth caret's own code in Scintilla per key: 0.176 ms
   [kex] Falling letters: enabled
-INFO PERF only Falling letters                    19.149 ms per key (-0.441), 0.50% CPU idle (-0.00)
+INFO PERF only Falling letters                    20.334 ms per key (-0.681), 1.00% CPU idle (-0.50)
   [kex] Falling letters: disabled
   [kex] Smooth caret: enabled
-INFO PERF only Smooth caret                       28.434 ms per key (+8.844), 1.50% CPU idle (+1.00)
+INFO PERF only Smooth caret                       21.061 ms per key (+0.046), 1.00% CPU idle (-0.50)
   [kex] Smooth caret: disabled
   [kex] hotkey Ctrl+Alt+M: registered (error 0)
   [kex] Quick note (global hotkey): enabled
-INFO PERF only Quick note (global hotkey)         21.048 ms per key (+1.458), 0.50% CPU idle (-0.00)
+INFO PERF only Quick note (global hotkey)         21.903 ms per key (+0.888), 1.00% CPU idle (-0.50)
   [kex] Quick note (global hotkey): disabled
   [kex] F12 hover tabs: enabled
-INFO PERF only F12 hover tabs                     21.129 ms per key (+1.539), 1.00% CPU idle (+0.50)
+INFO PERF only F12 hover tabs                     20.157 ms per key (-0.858), 1.50% CPU idle (+0.00)
   [kex] F12 hover tabs: disabled
   [kex] A Notepad++ for each desktop: enabled
-INFO PERF only A Notepad++ for each desktop       21.249 ms per key (+1.659), 1.00% CPU idle (+0.50)
+INFO PERF only A Notepad++ for each desktop       20.609 ms per key (-0.406), 1.50% CPU idle (-0.00)
   [kex] A Notepad++ for each desktop: disabled
   [kex] Tab snapping: enabled
-INFO PERF only Tab snapping                       21.461 ms per key (+1.871), 0.00% CPU idle (-0.50)
+INFO PERF only Tab snapping                       20.246 ms per key (-0.769), 1.00% CPU idle (-0.50)
   [kex] Tab snapping: disabled
   [kex] JetBrains shortcuts: enabled
-INFO PERF only JetBrains shortcuts                21.222 ms per key (+1.632), 1.00% CPU idle (+0.50)
+INFO PERF only JetBrains shortcuts                19.789 ms per key (-1.225), 1.00% CPU idle (-0.50)
   [kex] JetBrains shortcuts: disabled
   [kex] Live token styles: enabled
-INFO PERF only Live token styles                  21.123 ms per key (+1.533), 1.00% CPU idle (+0.50)
+INFO PERF only Live token styles                  23.858 ms per key (+2.843), 1.00% CPU idle (-0.50)
   [kex] Live token styles: disabled
   [kex] Falling letters: enabled
   [kex] Smooth caret: enabled
@@ -373,6 +380,6 @@ INFO PERF only Live token styles                  21.123 ms per key (+1.533), 1.
   [kex] Tab snapping: enabled
   [kex] JetBrains shortcuts: enabled
   [kex] Live token styles: enabled
-PASS PERF1 the features' own work adds 5.894 ms per key and 0.87% CPU while idle; caret redraws 3.56 per key, 2.0 a second idle (total 30.075 vs 19.590 ms per key, 1.50% vs 0.50% idle)
-RESULT 177 passed, 0 failed
+PASS PERF1 the features' own work adds 3.355 ms per key and -0.50% CPU while idle; caret redraws 1.12 per key, 0.0 a second idle (total 24.370 vs 21.015 ms per key, 1.00% vs 1.50% idle)
+RESULT 182 passed, 0 failed
 DONE

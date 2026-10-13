@@ -40,7 +40,7 @@ BEGIN
     COMBOBOX        IDC_J_CASE, 54, 169, 104, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "Whole words:", -1, 168, 171, 46, 8
     COMBOBOX        IDC_J_WORDS, 216, 169, 148, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    PUSHBUTTON      "All shortcuts...", IDC_J_LIST, 376, 168, 70, 13
+    PUSHBUTTON      "Change keys...", IDC_J_LIST, 376, 168, 70, 13
 
     LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
 END
@@ -100,8 +100,8 @@ BEGIN
     AUTOCHECKBOX    "Style All Occurrences of Token also styles the ones you type later, and can make them bold or italic", IDC_K_EN, 12, 15, 352, 10
     LTEXT           "", IDC_K_STATUS, 370, 16, 78, 9
     LTEXT           "Menu key:", -1, 12, 33, 36, 8
-    CONTROL         "", IDC_K_KEY, "msctls_hotkey32", WS_BORDER | WS_TABSTOP, 50, 31, 84, 12
-    LTEXT           "", IDC_K_KEYSTATUS, 140, 33, 150, 9
+    LTEXT           "", IDC_K_KEY, 50, 33, 84, 9
+    PUSHBUTTON      "Change keys...", IDC_K_KEYMAP, 140, 31, 70, 13
     AUTOCHECKBOX    "Remember the styled tokens of each file", IDC_K_REMEMBER, 296, 32, 152, 10
     LTEXT           "Right-click a word > Style All Occurrences of Token, or press the menu key, to give it one of the five styles, bold or italic. Text you type or paste later is styled too. Match case and whole word follow the Highlighting page; the colours are Mark Style 1-5 in the Style Configurator.", -1, 12, 50, 436, 28
     LTEXT           "", IDC_K_INFO, 12, 86, 436, 9

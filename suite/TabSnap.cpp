@@ -19,21 +19,6 @@ const BYTE LIFT_ALPHA = 225;
 const double LIFT_SCALE = 1.06;
 SnapStats s_stats;
 
-COLORREF blend(COLORREF a, COLORREF b, double t)
-{
-    return RGB(static_cast<int>(GetRValue(a) + (GetRValue(b) - GetRValue(a)) * t),
-               static_cast<int>(GetGValue(a) + (GetGValue(b) - GetGValue(a)) * t),
-               static_cast<int>(GetBValue(a) + (GetBValue(b) - GetBValue(a)) * t));
-}
-
-int dpiFor(HWND h)
-{
-    typedef UINT(WINAPI * GetDpiForWindowFn)(HWND);
-    static GetDpiForWindowFn fn = reinterpret_cast<GetDpiForWindowFn>(::GetProcAddress(::GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
-    int dpi = (fn && h) ? static_cast<int>(fn(h)) : 96;
-    return dpi > 0 ? dpi : 96;
-}
-
 RECT lerpRect(const RECT& a, const RECT& b, double t)
 {
     auto l = [t](LONG x, LONG y) { return static_cast<LONG>(x + (y - x) * t + (y >= x ? 0.5 : -0.5)); };
@@ -126,10 +111,19 @@ public:
     void frame()
     {
         if (!_shown) return;
+        // Esc while the tab is lifted (also before any snap preview shows): let go of the tab, as the preview does
+        if (!_dropping && (::GetAsyncKeyState(VK_ESCAPE) & 0x8000) && _bar && ::GetCapture() == _bar)
+        {
+            ::ReleaseCapture();   // the tab bar sees its capture end and drops nothing
+            drop(false);
+            ++s_stats.cancels;
+            log(L"tab lift: drag cancelled with Esc");
+            return;
+        }
         double t = _animate ? std::min(1.0, (nowMs() - _start) / LIFT_MS) : 1.0;
         const double e = 1 - (1 - t) * (1 - t) * (1 - t);   // ease out
         const double scale = 1 + (LIFT_SCALE - 1) * e;
-        const int lift = static_cast<int>(::MulDiv(3, dpiFor(_wnd), 96) * e + 0.5);
+        const int lift = static_cast<int>(::MulDiv(3, dpiOf(_wnd), 96) * e + 0.5);
         int alpha = static_cast<int>(LIFT_ALPHA * (_animate ? std::min(1.0, t * 1.5) : 1.0));
         if (_dropping)
         {
@@ -261,7 +255,7 @@ public:
     {
         if (!_wnd) return;
         if (!rc) { hide(); return; }
-        const int inset = ::MulDiv(5, dpiFor(npp._nppHandle), 96);   // a little margin, like Windows' snap zones
+        const int inset = ::MulDiv(5, dpiOf(npp._nppHandle), 96);   // a little margin, like Windows' snap zones
         RECT to = *rc;
         if (to.right - to.left > 4 * inset && to.bottom - to.top > 4 * inset) ::InflateRect(&to, -inset, -inset);
         s_stats.target = *rc;
@@ -346,9 +340,9 @@ public:
         {
             PAINTSTRUCT ps; HDC dc = ::BeginPaint(h, &ps);
             RECT rc; ::GetClientRect(h, &rc);
-            const int dpi = dpiFor(h);
+            const int dpi = dpiOf(h);
             const COLORREF accent = ::GetSysColor(COLOR_HIGHLIGHT);
-            HBRUSH fill = ::CreateSolidBrush(blend(accent, RGB(255, 255, 255), 0.45));
+            HBRUSH fill = ::CreateSolidBrush(mixColour(accent, RGB(255, 255, 255), 0.45));
             HPEN pen = ::CreatePen(PS_INSIDEFRAME, std::max(2, ::MulDiv(3, dpi, 96)), accent);
             HGDIOBJ ob = ::SelectObject(dc, fill), op = ::SelectObject(dc, pen);
             const int r = ::MulDiv(12, dpi, 96);
@@ -373,7 +367,7 @@ private:
             ::SetWindowPos(_wnd, HWND_TOPMOST, rc.left, rc.top, w, h, SWP_NOACTIVATE | (resized ? 0 : SWP_NOSIZE));
             if (resized)
             {
-                const int r = ::MulDiv(12, dpiFor(_wnd), 96);
+                const int r = ::MulDiv(12, dpiOf(_wnd), 96);
                 ::SetWindowRgn(_wnd, ::CreateRoundRectRgn(0, 0, w + 1, h + 1, r, r), TRUE);
                 ::InvalidateRect(_wnd, nullptr, FALSE);
             }

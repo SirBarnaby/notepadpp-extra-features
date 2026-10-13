@@ -61,6 +61,6 @@
 #define IDC_K_EN           1900
 #define IDC_K_STATUS       1901
 #define IDC_K_KEY          1902
-#define IDC_K_KEYSTATUS    1903
+#define IDC_K_KEYMAP       1903
 #define IDC_K_REMEMBER     1904
 #define IDC_K_INFO         1905

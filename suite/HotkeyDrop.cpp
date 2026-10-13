@@ -33,20 +33,6 @@ std::wstring keyName(UINT vk)
     return b;
 }
 
-int systemDpi()
-{
-    HDC dc = ::GetDC(nullptr);
-    int dpi = dc ? ::GetDeviceCaps(dc, LOGPIXELSY) : 96;
-    if (dc) ::ReleaseDC(nullptr, dc);
-    return dpi > 0 ? dpi : 96;
-}
-
-bool isCloaked(HWND h)
-{
-    DWORD c = 0;
-    return SUCCEEDED(::DwmGetWindowAttribute(h, DWMWA_CLOAKED, &c, sizeof(c))) && c != 0;
-}
-
 class QuickNote : public Module, public MsgWindow {
 public:
     const wchar_t* key() const override { return L"HotkeyDropDown"; }   // INI section kept from the drop-down
@@ -183,7 +169,7 @@ private:
         MONITORINFO mi{ sizeof(mi) };
         ::GetMonitorInfoW(::MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi);
         RECT wa = mi.rcWork;
-        int dpi = systemDpi();
+        int dpi = dpiAt(pt);   // the monitor it opens on (Notepad++ is per-monitor DPI aware)
         int w = std::min<int>(::MulDiv(_w96, dpi, 96), wa.right - wa.left - 40);
         int h = std::min<int>(::MulDiv(_h96, dpi, 96), wa.bottom - wa.top - 40);
         int x = wa.left + (wa.right - wa.left - w) / 2;
@@ -192,7 +178,12 @@ private:
         {
             // where it was left, if that is still on a screen
             POINT tl{ _x, _y }, br{ _x + w - 1, _y + h - 1 };
-            if (::MonitorFromPoint(tl, MONITOR_DEFAULTTONULL) && ::MonitorFromPoint(br, MONITOR_DEFAULTTONULL)) { x = _x; y = _y; }
+            if (::MonitorFromPoint(tl, MONITOR_DEFAULTTONULL) && ::MonitorFromPoint(br, MONITOR_DEFAULTTONULL))
+            {
+                x = _x; y = _y;
+                const int there = dpiAt(tl);
+                if (there != dpi) { w = ::MulDiv(w, there, dpi); h = ::MulDiv(h, there, dpi); }
+            }
         }
 
         std::wstring caption = L"Quick note  (" + s_stats.text + L" or Esc to hide)";
@@ -243,7 +234,7 @@ private:
         if (!_note || _closing) return;
         save();
         RECT r{}; ::GetWindowRect(_note, &r);
-        int dpi = systemDpi();
+        int dpi = dpiOf(_note);
         settings.setInt(key(), L"Width", ::MulDiv(r.right - r.left, 96, dpi));
         settings.setInt(key(), L"Height", ::MulDiv(r.bottom - r.top, 96, dpi));
         settings.setInt(key(), L"X", r.left);
@@ -286,7 +277,7 @@ private:
         if (_alphaTo == 0) destroyNote(false);
     }
 
-    int frame() const { return ::MulDiv(FRAME96, systemDpi(), 96); }
+    int frame() const { return ::MulDiv(FRAME96, dpiOf(_note), 96); }
 
     void layout()
     {
@@ -313,7 +304,7 @@ private:
         ::FrameRect(dc, &rc, lb);
         ::DeleteObject(lb);
         // a short grip in the middle of the top edge says "drag here"
-        const int f = frame(), gw = ::MulDiv(36, systemDpi(), 96);
+        const int f = frame(), gw = ::MulDiv(36, dpiOf(_note), 96);
         RECT g{ (rc.right - gw) / 2, f / 2 - 1, (rc.right + gw) / 2, f / 2 + 1 };
         HBRUSH gb = ::CreateSolidBrush(mix(back, fore, 30));
         ::FillRect(dc, &g, gb);
@@ -485,8 +476,17 @@ private:
         case WM_GETMINMAXINFO:
         {
             auto* mmi = reinterpret_cast<MINMAXINFO*>(l);
-            mmi->ptMinTrackSize.x = ::MulDiv(200, systemDpi(), 96);
-            mmi->ptMinTrackSize.y = ::MulDiv(100, systemDpi(), 96);
+            mmi->ptMinTrackSize.x = ::MulDiv(200, dpiOf(h), 96);
+            mmi->ptMinTrackSize.y = ::MulDiv(100, dpiOf(h), 96);
+            return 0;
+        }
+        case WM_DPICHANGED:
+        {
+            // moved to a monitor with another scale: Windows' suggested size, and the edge to match
+            const RECT* r = reinterpret_cast<const RECT*>(l);
+            ::SetWindowPos(h, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+            self->layout();
+            ::InvalidateRect(h, nullptr, TRUE);
             return 0;
         }
         case WM_ACTIVATE: if (LOWORD(w) != WA_INACTIVE && self->_sci) ::SetFocus(self->_sci); return 0;

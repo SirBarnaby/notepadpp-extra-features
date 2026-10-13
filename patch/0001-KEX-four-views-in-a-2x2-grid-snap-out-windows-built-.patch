@@ -1,4 +1,4 @@
-From bf626c85927800ff46718a3a666d670fccdcd5c4 Mon Sep 17 00:00:00 2001
+From bb432be361c60beb6e9950aa738b0a89bb1d9fd6 Mon Sep 17 00:00:00 2001
 From: KEX patch <noreply@anthropic.com>
 Date: Sun, 11 Oct 2026 15:07:35 +0000
 Subject: [PATCH] KEX: four views in a 2x2 grid, snap-out windows, built-in KEX
@@ -35,13 +35,13 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
 ---
  PowerEditor/gcc/makefile                      |    1 +
- PowerEditor/src/KexViews.cpp                  | 1259 +++++++++++++++++
- PowerEditor/src/MISC/PluginsManager/KexApi.h  |   51 +
- .../src/MISC/PluginsManager/KexSuiteHost.h    |   54 +
- .../MISC/PluginsManager/PluginsManager.cpp    |   52 +-
- .../src/MISC/PluginsManager/PluginsManager.h  |    6 +
- PowerEditor/src/Notepad_plus.cpp              |  503 ++++---
- PowerEditor/src/Notepad_plus.h                |   66 +-
+ PowerEditor/src/KexViews.cpp                  | 1294 +++++++++++++++++
+ PowerEditor/src/MISC/PluginsManager/KexApi.h  |   79 +
+ .../src/MISC/PluginsManager/KexSuiteHost.h    |   56 +
+ .../MISC/PluginsManager/PluginsManager.cpp    |   72 +-
+ .../src/MISC/PluginsManager/PluginsManager.h  |    7 +
+ PowerEditor/src/Notepad_plus.cpp              |  507 ++++---
+ PowerEditor/src/Notepad_plus.h                |   67 +-
  PowerEditor/src/Notepad_plus.rc               |    4 +-
  PowerEditor/src/Notepad_plus_Window.cpp       |    2 +-
  PowerEditor/src/Notepad_plus_Window.h         |    4 +
@@ -49,11 +49,16 @@ Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
  PowerEditor/src/NppCommands.cpp               |  116 +-
  PowerEditor/src/NppIO.cpp                     |  311 ++--
  PowerEditor/src/NppNotification.cpp           |  137 +-
- PowerEditor/src/Parameters.cpp                |   55 +-
- PowerEditor/src/Parameters.h                  |   15 +
+ PowerEditor/src/Parameters.cpp                |   72 +-
+ PowerEditor/src/Parameters.h                  |   21 +
+ PowerEditor/src/ScintillaComponent/Buffer.cpp |    8 +
  .../ScintillaComponent/ScintillaEditView.cpp  |    7 +-
+ .../ScintillaComponent/SmartHighlighter.cpp   |   38 +-
+ .../src/ScintillaComponent/SmartHighlighter.h |    1 +
  .../src/WinControls/AboutDlg/AboutDlg.cpp     |   43 +-
  .../src/WinControls/DockingWnd/Gripper.cpp    |    3 +-
+ .../src/WinControls/Grid/ShortcutMapper.cpp   |    2 +
+ .../src/WinControls/Grid/ShortcutMapper.h     |    1 +
  .../WinControls/Preference/preferenceDlg.cpp  |   42 +
  .../WinControls/Preference/preferenceDlg.h    |   12 +
  .../SplitterContainer/SplitterContainer.cpp   |    2 +
@@ -62,12 +67,21 @@ Claude-Session: https://claude.ai/code/session_0174a8npohQwNFKWumRqHreA
  PowerEditor/src/WinControls/TabBar/TabBar.h   |    9 +
  .../VerticalFileSwitcher.cpp                  |   15 +-
  .../VerticalFileSwitcherListView.cpp          |   12 +-
+ .../src/WinControls/shortcut/shortcut.cpp     |   26 +-
+ .../src/WinControls/shortcut/shortcut.h       |    1 +
  PowerEditor/src/menuCmdID.h                   |   21 +
- PowerEditor/src/winmain.cpp                   |    9 +
- 30 files changed, 2504 insertions(+), 501 deletions(-)
+ PowerEditor/src/winmain.cpp                   |   11 +
+ scintilla/include/KexScintilla.h              |   33 +
+ scintilla/src/EditView.cxx                    |   19 +-
+ scintilla/src/EditView.h                      |   17 +
+ scintilla/src/Editor.cxx                      |  234 ++-
+ scintilla/src/Editor.h                        |   33 +-
+ scintilla/win32/ScintillaWin.cxx              |    4 +-
+ 43 files changed, 3018 insertions(+), 520 deletions(-)
  create mode 100644 PowerEditor/src/KexViews.cpp
  create mode 100644 PowerEditor/src/MISC/PluginsManager/KexApi.h
  create mode 100644 PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
+ create mode 100644 scintilla/include/KexScintilla.h
 
 diff --git a/PowerEditor/gcc/makefile b/PowerEditor/gcc/makefile
 index 3f38aa9..849daf5 100644
@@ -83,10 +97,10 @@ index 3f38aa9..849daf5 100644
  
 diff --git a/PowerEditor/src/KexViews.cpp b/PowerEditor/src/KexViews.cpp
 new file mode 100644
-index 0000000..11a82af
+index 0000000..4e2fde1
 --- /dev/null
 +++ b/PowerEditor/src/KexViews.cpp
-@@ -0,0 +1,1259 @@
+@@ -0,0 +1,1294 @@
 +// This file is part of the KEX four-view patch for Notepad++.
 +//
 +// This program is free software: you can redistribute it and/or modify
@@ -118,12 +132,12 @@ index 0000000..11a82af
 +#include "Notepad_plus_Window.h"
 +#include "NppDarkMode.h"
 +#include "KexApi.h"
++#include "ShortcutMapper.h"
 +
 +using namespace std;
 +
 +static constexpr int KEX_PATCH_VERSION = 1;
 +static constexpr wchar_t KEX_VIEW_WINDOW_CLASS[] = L"KexNppViewWindow";
-+static constexpr UINT_PTR KEX_TITLE_TIMER = 1;
 +static constexpr int KEX_ROTATION_LEFT = 2000;  // SplitterContainer.cpp ROTATION_LEFT
 +static constexpr int KEX_ROTATION_RIGHT = 2001; // SplitterContainer.cpp ROTATION_RIGHT
 +
@@ -199,18 +213,16 @@ index 0000000..11a82af
 +
 +void Notepad_plus::kexSmartHighlight(ScintillaEditView* pView)
 +{
-+	// SmartHighlighter takes one "other" view; give it each visible view in turn
-+	bool done = false;
++	// the focused view once, then every other visible view
++	ScintillaEditView* others[NB_VIEWS] = {};
++	int nb = 0;
 +	for (int v = 0; v < NB_VIEWS; ++v)
 +	{
 +		ScintillaEditView* pOther = kexEditView(v);
-+		if (pOther == pView || !viewVisible(v))
-+			continue;
-+		_smartHighlighter.highlightView(pView, pOther);
-+		done = true;
++		if (pOther != pView && viewVisible(v))
++			others[nb++] = pOther;
 +	}
-+	if (!done)
-+		_smartHighlighter.highlightView(pView, nullptr);
++	_smartHighlighter.kexHighlightViews(pView, others, nb);
 +}
 +
 +bool Notepad_plus::kexIsBufferInAnotherView(BufferID id, int exceptView)
@@ -479,12 +491,18 @@ index 0000000..11a82af
 +		title += buf->getFileName();
 +		title += L" - ";
 +	}
-+	title += L"Notepad++";
++	title += Notepad_plus_Window::getAppName();
 +
 +	wchar_t current[1024]{};
 +	::GetWindowText(frame, current, _countof(current));
 +	if (title != current)
 +		::SetWindowText(frame, title.c_str());
++}
++
++void Notepad_plus::kexUpdateTornOutTitles()
++{
++	for (int v = 0; v < NB_VIEWS; ++v)
++		kexUpdateTornOutTitle(v);
 +}
 +
 +bool Notepad_plus::kexIsOverDockedTabBar(POINT screenPoint)
@@ -591,8 +609,7 @@ index 0000000..11a82af
 +	::SetParent(hEdit, frame);
 +	::SetWindowPos(hEdit, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 +
-+	kexUpdateTornOutTitle(whichOne);
-+	::SetTimer(frame, KEX_TITLE_TIMER, 300, nullptr);
++	kexUpdateTornOutTitle(whichOne); // later on every tab switch, save and rename (setTitle, notifyBufferChanged)
 +
 +	kexLayoutViews(); // takes the view out of the grid; shows the window if the view is visible
 +
@@ -614,7 +631,6 @@ index 0000000..11a82af
 +	const bool wasActive = (::GetForegroundWindow() == frame);
 +
 +	_kexViewWindow[whichOne] = nullptr;
-+	::KillTimer(frame, KEX_TITLE_TIMER);
 +	::SetWindowLongPtr(frame, GWLP_USERDATA, -1);
 +
 +	HWND hTab = kexDocTab(whichOne)->getHSelf();
@@ -768,16 +784,6 @@ index 0000000..11a82af
 +			// closing the window brings the view home, it never closes documents
 +			self->kexSnapBackView(view);
 +			return 0;
-+		}
-+
-+		case WM_TIMER:
-+		{
-+			if (wParam == KEX_TITLE_TIMER)
-+			{
-+				self->kexUpdateTornOutTitle(view);
-+				return 0;
-+			}
-+			break;
 +		}
 +
 +		case WM_ERASEBKGND:
@@ -1300,6 +1306,49 @@ index 0000000..11a82af
 +		case NPPM_KEX_LOADDESKTOPCOPY:
 +			return kexLoadDesktopCopy(reinterpret_cast<const wchar_t*>(lParam));
 +
++		case NPPM_KEX_ADDCOMMANDS:
++		{
++			const KexCommandList* list = reinterpret_cast<const KexCommandList*>(lParam);
++			HMENU menu = reinterpret_cast<HMENU>(wParam);
++			if (!list || !list->items || list->count <= 0 || !::IsMenu(menu))
++				return FALSE;
++			_pluginsManager.kexAddCommands(menu, *list);
++			NppParameters::getInstance().reloadPluginCmds(); // keys the user gave them in Shortcut Mapper
++			_accelerator.updateShortcuts();                  // also shows the keys in the menu
++			return TRUE;
++		}
++
++		case NPPM_KEX_ENABLECOMMAND:
++		{
++			const unsigned long id = static_cast<unsigned long>(wParam);
++			auto& keyless = _accelerator._kexKeyless;
++			const auto it = std::find(keyless.begin(), keyless.end(), id);
++			if (lParam && it != keyless.end())
++				keyless.erase(it);
++			else if (!lParam && it == keyless.end())
++				keyless.push_back(id);
++			else
++				return TRUE;
++			_accelerator.updateShortcuts();
++			return TRUE;
++		}
++
++		case NPPM_KEX_TRANSLATEACCEL:
++		{
++			MSG* msg = reinterpret_cast<MSG*>(lParam);
++			return msg && ::TranslateAccelerator(_pPublicInterface->getHSelf(), _accelerator.getAccTable(), msg) != 0;
++		}
++
++		case NPPM_KEX_SHOWSHORTCUTS:
++		{
++			ShortcutMapper shortcutMapper;
++			shortcutMapper.init(_pPublicInterface->getHinst(), _pPublicInterface->getHSelf(), STATE_PLUGIN);
++			shortcutMapper._kexFilter = L"KEX";
++			shortcutMapper.doDialog(_nativeLangSpeaker.isRTL());
++			shortcutMapper.destroy();
++			return TRUE;
++		}
++
 +		case NPPM_KEX_SHOWPREFPAGE:
 +			command(IDM_SETTING_KEX); // opens Preferences (on the first KEX page)
 +			if (wParam > 0)
@@ -1348,10 +1397,10 @@ index 0000000..11a82af
 +}
 diff --git a/PowerEditor/src/MISC/PluginsManager/KexApi.h b/PowerEditor/src/MISC/PluginsManager/KexApi.h
 new file mode 100644
-index 0000000..c1e14fd
+index 0000000..71ce70f
 --- /dev/null
 +++ b/PowerEditor/src/MISC/PluginsManager/KexApi.h
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,79 @@
 +// KexApi.h - messages added to Notepad++ by the KEX four-view patch.
 +//
 +// The patch gives Notepad++ four editing views (0 = main, 1 = second, 2 = third, 3 = fourth)
@@ -1403,12 +1452,40 @@ index 0000000..c1e14fd
 +// wParam: a KEX Preferences page (0 "KEX Editing", 1 "KEX Tabs", 2 "KEX Windows", 3 "KEX Highlighting",
 +// 4 "KEX Quick Note"). Opens Settings > Preferences on that page. LRESULT: TRUE.
 +#define NPPM_KEX_SHOWPREFPAGE         (KEX_USER + 14)
++
++// Commands of the KEX features. They are added to a menu of the feature's, Settings > Shortcut Mapper
++// lists them under Plugin commands (plugin "KEX") where their keys can be changed, and their keys go
++// before Notepad++'s own, as the feature's keys did before.
++struct KexCommand {
++	int internalId;          // stable number, so Shortcut Mapper changes (shortcuts.xml) find it again
++	const wchar_t* name;
++	void (*run)();
++	bool ctrl, alt, shift;
++	unsigned char key;       // default key, 0 = none
++};
++struct KexCommandList {
++	const KexCommand* items;
++	int count;
++	int* ids;                // receives each command's menu command id
++	int position;            // where in the menu they go (-1: at the end)
++};
++// wParam: HMENU to add the commands to, lParam: KexCommandList*. LRESULT: TRUE.
++#define NPPM_KEX_ADDCOMMANDS          (KEX_USER + 15)
++// wParam: a command id from NPPM_KEX_ADDCOMMANDS, lParam: TRUE gives the command its key, FALSE takes it
++// away (while its feature is off, so the key does what it does without KEX). LRESULT: TRUE.
++#define NPPM_KEX_ENABLECOMMAND        (KEX_USER + 16)
++// Opens Settings > Shortcut Mapper on Plugin commands, showing the KEX commands. LRESULT: TRUE.
++#define NPPM_KEX_SHOWSHORTCUTS        (KEX_USER + 17)
++// lParam: MSG*. For a message loop of its own: runs Notepad++'s shortcuts (its menu commands, the
++// plugins' and KEX's) as its main loop does. LRESULT: TRUE when the message was a shortcut (then don't
++// dispatch it).
++#define NPPM_KEX_TRANSLATEACCEL       (KEX_USER + 18)
 diff --git a/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h b/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
 new file mode 100644
-index 0000000..17f1a7a
+index 0000000..a252497
 --- /dev/null
 +++ b/PowerEditor/src/MISC/PluginsManager/KexSuiteHost.h
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,56 @@
 +// KexSuiteHost.h - the KEX suite (falling letters, smooth caret, quick note, F12 hover tabs, tab
 +// snapping, the same Notepad++ on every virtual desktop, the glass text area, live token styles) is built into notepad++.exe. Its sources
 +// live in PowerEditor/src/KexSuite (kex-patch.sh copies them in from the KEX repository's suite/
@@ -1458,13 +1535,15 @@ index 0000000..17f1a7a
 +
 +// Called by a second notepad++.exe (winmain.cpp) before it hands its command line to the running one.
 +// Returns the window to hand it to: one on the current virtual desktop. Returns nullptr when Notepad++ has
-+// windows only on other desktops: this process then becomes a new Notepad++ that opens with a copy of
-+// their tabs (called before the suite is set up; settingsDir holds kex.ini).
-+HWND desktopHandOff(HWND running, const wchar_t* settingsDir);
++// windows only on other desktops: this process then becomes a new Notepad++ for this desktop, with its
++// own session (desktopKey receives the name for its session file and backup folder, empty when the
++// desktop can't be identified). It opens with that session when the desktop had one, otherwise with a
++// copy of the other window's tabs (called before the suite is set up; settingsDir holds kex.ini).
++HWND desktopHandOff(HWND running, const wchar_t* settingsDir, wchar_t* desktopKey, int keyLen);
 +}
 +#endif
 diff --git a/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp b/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp
-index 0c57e5f..9dbe932 100644
+index 0c57e5f..34c5b9a 100644
 --- a/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp
 +++ b/PowerEditor/src/MISC/PluginsManager/PluginsManager.cpp
 @@ -16,6 +16,7 @@
@@ -1504,7 +1583,34 @@ index 0c57e5f..9dbe932 100644
  
  		const int cmdID = ID_PLUGINS_CMD + static_cast<int>(_pluginsCommands.size() - 1);
  		_pluginInfos[i]->_funcItems[j]._cmdID = cmdID;
-@@ -645,7 +654,7 @@ void PluginsManager::runPluginCommand(size_t i)
+@@ -614,6 +623,26 @@ void PluginsManager::addInMenuFromPMIndex(int i)
+ 	}
+ }
+ 
++// KEX: the commands of the built-in KEX features, registered like a plugin's commands (module "KEX")
++// so Shortcut Mapper lists them and keeps their keys in shortcuts.xml, but in a menu of the feature's.
++void PluginsManager::kexAddCommands(HMENU menu, const KexCommandList& list)
++{
++	vector<PluginCmdShortcut>& pluginCmdSCList = (NppParameters::getInstance()).getPluginCommandList();
++	for (int j = 0; j < list.count; ++j)
++	{
++		const KexCommand& c = list.items[j];
++		_pluginsCommands.push_back(PluginCommand(L"KEX", c.internalId, c.run));
++		_pluginsCommands.back()._kexAware = true;
++		const int cmdID = ID_PLUGINS_CMD + static_cast<int>(_pluginsCommands.size() - 1);
++		if (list.ids)
++			list.ids[j] = cmdID;
++		const string itemName = wstring2string(c.name, CP_UTF8);
++		PluginCmdShortcut pcs(Shortcut(itemName.c_str(), c.ctrl, c.alt, c.shift, c.key), cmdID, "KEX", c.internalId);
++		pluginCmdSCList.push_back(pcs);
++		::InsertMenu(menu, list.position < 0 ? static_cast<UINT>(-1) : static_cast<UINT>(list.position + j), MF_BYPOSITION | MF_STRING, cmdID, c.name);
++	}
++}
++
+ HMENU PluginsManager::initMenu(HMENU hMenu, bool enablePluginAdmin)
+ {
+ 	size_t nbPlugin = _pluginInfos.size();
+@@ -645,7 +674,7 @@ void PluginsManager::runPluginCommand(size_t i)
  {
  	if (i < _pluginsCommands.size())
  	{
@@ -1513,7 +1619,7 @@ index 0c57e5f..9dbe932 100644
  		{
  			try {
  				_pluginsCommands[i]._pFunc();
-@@ -672,7 +681,7 @@ void PluginsManager::runPluginCommand(const wchar_t *pluginName, int commandID)
+@@ -672,7 +701,7 @@ void PluginsManager::runPluginCommand(const wchar_t *pluginName, int commandID)
  	{
  		if (!_wcsicmp(_pluginsCommands[i]._pluginName.c_str(), pluginName))
  		{
@@ -1522,7 +1628,7 @@ index 0c57e5f..9dbe932 100644
  			{
  				try {
  					_pluginsCommands[i]._pFunc();
-@@ -729,6 +738,9 @@ void PluginsManager::notify(const SCNotification *notification)
+@@ -729,6 +758,9 @@ void PluginsManager::notify(const SCNotification *notification)
  		return;
  	_noMoreNotification = notification->nmhdr.code == NPPN_SHUTDOWN;
  
@@ -1532,7 +1638,7 @@ index 0c57e5f..9dbe932 100644
  	for (size_t i = 0, len = _pluginInfos.size() ; i < len ; ++i)
  	{
  		notify(i, notification);
-@@ -736,6 +748,42 @@ void PluginsManager::notify(const SCNotification *notification)
+@@ -736,6 +768,42 @@ void PluginsManager::notify(const SCNotification *notification)
  }
  
  
@@ -1576,7 +1682,7 @@ index 0c57e5f..9dbe932 100644
  {
  	for (size_t i = 0, len = _pluginInfos.size(); i < len ; ++i)
 diff --git a/PowerEditor/src/MISC/PluginsManager/PluginsManager.h b/PowerEditor/src/MISC/PluginsManager/PluginsManager.h
-index 5255325..673ace4 100644
+index 5255325..8ab2af2 100644
 --- a/PowerEditor/src/MISC/PluginsManager/PluginsManager.h
 +++ b/PowerEditor/src/MISC/PluginsManager/PluginsManager.h
 @@ -32,6 +32,7 @@
@@ -1611,17 +1717,18 @@ index 5255325..673ace4 100644
  	}
  
  	bool loadPlugins(const wchar_t* dir = nullptr, const PluginViewList* pluginUpdateInfoList = nullptr, PluginViewList* pluginIncompatibleList = nullptr);
-@@ -110,6 +114,8 @@ public:
+@@ -110,6 +114,9 @@ public:
  
  	void notify(size_t indexPluginInfo, const SCNotification *notification); // to a plugin
  	void notify(const SCNotification *notification); // broadcast
 +	void notifyKexAware(const SCNotification *notification); // KEX: broadcast to plugins that know views 3 and 4
 +	bool kexCanRunCommand(bool isKexAware, const std::wstring& pluginName) const; // KEX
++	void kexAddCommands(HMENU menu, const struct KexCommandList& list); // KEX: the KEX features' commands
  	void relayNppMessages(UINT Message, WPARAM wParam, LPARAM lParam);
  	bool relayPluginMessages(UINT Message, WPARAM wParam, LPARAM lParam);
  
 diff --git a/PowerEditor/src/Notepad_plus.cpp b/PowerEditor/src/Notepad_plus.cpp
-index 4bf5a90..8250250 100644
+index 4bf5a90..c37f094 100644
 --- a/PowerEditor/src/Notepad_plus.cpp
 +++ b/PowerEditor/src/Notepad_plus.cpp
 @@ -136,6 +136,8 @@ static constexpr ToolBarButtonUnit toolBarIcons[]{
@@ -1811,7 +1918,15 @@ index 4bf5a90..8250250 100644
  	}
  
  
-@@ -4366,7 +4405,7 @@ void Notepad_plus::setTitle()
+@@ -4346,6 +4385,7 @@ LangType Notepad_plus::menuID2LangType(int cmdID)
+ 
+ void Notepad_plus::setTitle()
+ {
++	kexUpdateTornOutTitles(); // KEX: the snapped-out views' windows follow tab switches and renames too
+ 	NppParameters& nppParams = NppParameters::getInstance();
+ 	const NppGUI & nppGUI = nppParams.getNppGUI();
+ 	//Get the buffer
+@@ -4366,7 +4406,7 @@ void Notepad_plus::setTitle()
  		result += buf->getFullPathName();
  	}
  	result += L" - ";
@@ -1820,7 +1935,7 @@ index 4bf5a90..8250250 100644
  
  	if (_isAdministrator)
  		result += L" [Administrator]";
-@@ -4390,15 +4429,18 @@ void Notepad_plus::activateNextDoc(bool direction)
+@@ -4390,15 +4430,18 @@ void Notepad_plus::activateNextDoc(bool direction)
  
  	if (curIndex >= nbDoc)
  	{
@@ -1843,7 +1958,7 @@ index 4bf5a90..8250250 100644
  			nbDoc = static_cast<int32_t>(_pDocTab->nbItem());
  		}
  		curIndex = nbDoc - 1;
-@@ -4693,13 +4735,15 @@ void Notepad_plus::dropFiles(HDROP hdrop)
+@@ -4693,13 +4736,15 @@ void Notepad_plus::dropFiles(HDROP hdrop)
  		// Determine in which view the file(s) is (are) dropped
  		POINT p{};
  		::DragQueryPoint(hdrop, &p);
@@ -1864,7 +1979,7 @@ index 4bf5a90..8250250 100644
  		//else
  			// do not change the current Notepad++ edit-view
  
-@@ -4800,38 +4844,14 @@ void Notepad_plus::showView(int whichOne)
+@@ -4800,38 +4845,14 @@ void Notepad_plus::showView(int whichOne)
  	if (viewVisible(whichOne))	//no use making visible view visible
  		return;
  
@@ -1907,7 +2022,7 @@ index 4bf5a90..8250250 100644
  }
  
  void Notepad_plus::hideCurrentView()
-@@ -4841,39 +4861,44 @@ void Notepad_plus::hideCurrentView()
+@@ -4841,39 +4862,44 @@ void Notepad_plus::hideCurrentView()
  
  void Notepad_plus::hideView(int whichOne)
  {
@@ -1973,7 +2088,7 @@ index 4bf5a90..8250250 100644
  }
  
  bool Notepad_plus::loadStyles()
-@@ -4886,9 +4911,9 @@ bool Notepad_plus::canHideView(int whichOne)
+@@ -4886,9 +4912,9 @@ bool Notepad_plus::canHideView(int whichOne)
  {
  	if (!viewVisible(whichOne))
  		return false;	//cannot hide hidden view
@@ -1985,7 +2100,7 @@ index 4bf5a90..8250250 100644
  	Buffer * buf = MainFileManager.getBufferByID(tabToCheck->getBufferByIndex(0));
  	bool canHide = ((tabToCheck->nbItem() == 1) && !buf->isDirty() && buf->isUntitled());
  	return canHide;
-@@ -4896,9 +4921,9 @@ bool Notepad_plus::canHideView(int whichOne)
+@@ -4896,9 +4922,9 @@ bool Notepad_plus::canHideView(int whichOne)
  
  bool Notepad_plus::isEmpty()
  {
@@ -1997,7 +2112,7 @@ index 4bf5a90..8250250 100644
  	
  	Buffer * buf = MainFileManager.getBufferByID(tabToCheck->getBufferByIndex(0));
  	bool isEmpty = ((tabToCheck->nbItem() == 1) && !buf->isDirty() && buf->isUntitled());
-@@ -4907,8 +4932,8 @@ bool Notepad_plus::isEmpty()
+@@ -4907,8 +4933,8 @@ bool Notepad_plus::isEmpty()
  
  void Notepad_plus::loadBufferIntoView(BufferID id, int whichOne, bool dontClose)
  {
@@ -2008,7 +2123,7 @@ index 4bf5a90..8250250 100644
  
  	//check if buffer exists
  	int index = tabToOpen->getIndexByBuffer(id);
-@@ -4946,8 +4971,8 @@ void Notepad_plus::loadBufferIntoView(BufferID id, int whichOne, bool dontClose)
+@@ -4946,8 +4972,8 @@ void Notepad_plus::loadBufferIntoView(BufferID id, int whichOne, bool dontClose)
  
  bool Notepad_plus::removeBufferFromView(BufferID id, int whichOne)
  {
@@ -2019,7 +2134,7 @@ index 4bf5a90..8250250 100644
  
  	//check if buffer exists
  	int index = tabToClose->getIndexByBuffer(id);
-@@ -5030,16 +5055,18 @@ int Notepad_plus::switchEditViewTo(int gid)
+@@ -5030,16 +5056,18 @@ int Notepad_plus::switchEditViewTo(int gid)
  		return gid;
  	}
  
@@ -2042,7 +2157,7 @@ index 4bf5a90..8250250 100644
  
  	_pEditView->beSwitched();
      _pEditView->grabFocus();	//set the focus
-@@ -5066,27 +5093,15 @@ void Notepad_plus::dockUserDlg()
+@@ -5066,27 +5094,15 @@ void Notepad_plus::dockUserDlg()
          _pMainSplitter = new SplitterContainer;
  		_pMainSplitter->init(_pPublicInterface->getHinst(), _pPublicInterface->getHSelf());
  
@@ -2073,7 +2188,7 @@ index 4bf5a90..8250250 100644
  }
  
  void Notepad_plus::undockUserDlg()
-@@ -5094,14 +5109,8 @@ void Notepad_plus::undockUserDlg()
+@@ -5094,14 +5110,8 @@ void Notepad_plus::undockUserDlg()
      // a cause de surchargement de "display"
      ::ShowWindow(_pMainSplitter->getHSelf(), SW_HIDE);
  
@@ -2089,7 +2204,7 @@ index 4bf5a90..8250250 100644
      (ScintillaEditView::getUserDefineDlg())->display();
  }
  
-@@ -5162,27 +5171,24 @@ void Notepad_plus::docOpenInNewInstance(FileTransferMode mode, int x, int y)
+@@ -5162,27 +5172,24 @@ void Notepad_plus::docOpenInNewInstance(FileTransferMode mode, int x, int y)
  	}
  }
  
@@ -2126,7 +2241,7 @@ index 4bf5a90..8250250 100644
  				return;
  		}
  	}
-@@ -5192,11 +5198,10 @@ void Notepad_plus::docGotoAnotherEditView(FileTransferMode mode)
+@@ -5192,11 +5199,10 @@ void Notepad_plus::docGotoAnotherEditView(FileTransferMode mode)
  	BufferID current = _pEditView->getCurrentBufferID();
  	Buffer* buf = MainFileManager.getBufferByID(current);
  
@@ -2140,7 +2255,7 @@ index 4bf5a90..8250250 100644
  	}
  	else	//open the document, also copying the position
  	{
-@@ -5206,22 +5211,21 @@ void Notepad_plus::docGotoAnotherEditView(FileTransferMode mode)
+@@ -5206,22 +5212,21 @@ void Notepad_plus::docGotoAnotherEditView(FileTransferMode mode)
  		//		non-edit view becomes edit view as document from edit view is sent to non edit view
  		//		restoreCurrentPos is called on non-edit view, which will restore the position of
  		//		active document/tab on non-edit view  (whatever position we set in below if condition)
@@ -2168,7 +2283,7 @@ index 4bf5a90..8250250 100644
  	{
  		showView(viewToGo);
  	}
-@@ -5276,28 +5280,14 @@ bool Notepad_plus::activateBuffer(BufferID id, int whichOne, bool forceApplyHili
+@@ -5276,28 +5281,14 @@ bool Notepad_plus::activateBuffer(BufferID id, int whichOne, bool forceApplyHili
  		pBuf->setNeedReload(false);
  	}
  
@@ -2202,7 +2317,7 @@ index 4bf5a90..8250250 100644
  
  	if (reload)
  	{
-@@ -5316,16 +5306,8 @@ void Notepad_plus::performPostReload(int whichOne)
+@@ -5316,16 +5307,8 @@ void Notepad_plus::performPostReload(int whichOne)
  	bool toEnd = (nppGUI._fileAutoDetection & cdGo2end) ? true : false;
  	if (!toEnd)
  		return;
@@ -2221,7 +2336,7 @@ index 4bf5a90..8250250 100644
  }
  
  void Notepad_plus::bookmarkNext(bool forwardScan)
-@@ -5457,36 +5439,31 @@ void Notepad_plus::checkUnicodeMenuItems() const
+@@ -5457,36 +5440,31 @@ void Notepad_plus::checkUnicodeMenuItems() const
  
  void Notepad_plus::showAutoComp()
  {
@@ -2263,7 +2378,7 @@ index 4bf5a90..8250250 100644
  	if (isNext)
  		autoC->callTipClick(2);
  	else
-@@ -5939,12 +5916,16 @@ void Notepad_plus::syncZoom()
+@@ -5939,12 +5917,16 @@ void Notepad_plus::syncZoom()
  	const NppParameters& nppParam = NppParameters::getInstance();
  	const ScintillaViewParams& svp = nppParam.getSVP();
  	if (!svp._zoomSync) return;
@@ -2283,7 +2398,7 @@ index 4bf5a90..8250250 100644
  	_isSyncingZoom = false;
  }
  
-@@ -6000,9 +5981,14 @@ bool Notepad_plus::switchToFile(BufferID id)
+@@ -6000,9 +5982,14 @@ bool Notepad_plus::switchToFile(BufferID id)
  	{
  		iView = currentView();
  	}
@@ -2300,7 +2415,7 @@ index 4bf5a90..8250250 100644
  	}
  
  	if (i != -1)
-@@ -6038,6 +6024,20 @@ void Notepad_plus::getTaskListInfo(TaskListInfo *tli)
+@@ -6038,6 +6025,20 @@ void Notepad_plus::getTaskListInfo(TaskListInfo *tli)
  		int status = b->isMonitoringOn()?tb_monitored:(b->isReadOnly()?tb_ro:(b->isDirty()?tb_unsaved:tb_saved));
  		tli->_tlfsLst.push_back(TaskLstFnStatus(otherView(), i, b->getFullPathName(), status, (void *)bufID, b->getDocColorId()));
  	}
@@ -2321,7 +2436,7 @@ index 4bf5a90..8250250 100644
  }
  
  
-@@ -6426,7 +6426,13 @@ void Notepad_plus::distractionFreeToggle()
+@@ -6426,7 +6427,13 @@ void Notepad_plus::distractionFreeToggle()
  		// restore another view if 2 views mode was on
  		if (_beforeSpecialView._was2ViewModeOn)
  		{
@@ -2336,7 +2451,7 @@ index 4bf5a90..8250250 100644
  			_beforeSpecialView._was2ViewModeOn = false;
  		}
  
-@@ -6448,16 +6454,19 @@ void Notepad_plus::distractionFreeToggle()
+@@ -6448,16 +6455,19 @@ void Notepad_plus::distractionFreeToggle()
  	else // enable it
  	{
  		// check if 2 views mode is on
@@ -2362,7 +2477,7 @@ index 4bf5a90..8250250 100644
  
  		// check if any dockable panel is visible
  		const std::vector<DockingCont*>& container = _dockingManager.getContainerInfo();
-@@ -6588,24 +6597,42 @@ void Notepad_plus::getCurrentOpenedFiles(Session & session, bool includeUntitled
+@@ -6588,24 +6598,42 @@ void Notepad_plus::getCurrentOpenedFiles(Session & session, bool includeUntitled
  {
  	_mainEditView.saveCurrentPos();	//save position so itll be correct in the session
  	_subEditView.saveCurrentPos();	//both views
@@ -2409,7 +2524,7 @@ index 4bf5a90..8250250 100644
  
  			Buffer * buf = MainFileManager.getBufferByID(bufID);
  
-@@ -6793,7 +6820,17 @@ void Notepad_plus::prepareBufferChangedDialog(Buffer * buffer)
+@@ -6793,7 +6821,17 @@ void Notepad_plus::prepareBufferChangedDialog(Buffer * buffer)
  	int index = _pDocTab->getIndexByBuffer(buffer->getID());
  	int iView = currentView();
  	if (index == -1)
@@ -2427,7 +2542,7 @@ index 4bf5a90..8250250 100644
  	activateBuffer(buffer->getID(), iView);	//activate the buffer in the first view possible
  
  	// prevent flickering issue by "manually" clicking and activating the _pEditView
-@@ -6820,6 +6857,13 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
+@@ -6820,6 +6858,13 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
  
  	bool mainActive = (_mainEditView.getCurrentBuffer() == buffer);
  	bool subActive = (_subEditView.getCurrentBuffer() == buffer);
@@ -2441,7 +2556,7 @@ index 4bf5a90..8250250 100644
  
  	//Only event that applies to non-active Buffers
  	if (mask & BufferChangeStatus)
-@@ -6874,9 +6918,9 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
+@@ -6874,9 +6919,9 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
  				buffer->setUnsync(false);
  
  				doReload(buffer->getID(), false);
@@ -2453,7 +2568,7 @@ index 4bf5a90..8250250 100644
  				}
  
  				break;
-@@ -6902,6 +6946,15 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
+@@ -6902,6 +6947,15 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
  					_subEditView.setPositionRestoreNeeded(false);
  					_subEditView.execute(SCI_DOCUMENTEND);
  				}
@@ -2469,7 +2584,7 @@ index 4bf5a90..8250250 100644
  
  				break;
  			}
-@@ -6927,7 +6980,11 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
+@@ -6927,7 +6981,11 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
  					{
  						//close in both views, doing current view last since that has to remain opened
  						bool isSnapshotMode = nppGUI.isSnapshotMode();
@@ -2482,11 +2597,14 @@ index 4bf5a90..8250250 100644
  						doClose(buffer->getID(), currentView(), isSnapshotMode);
  						return;
  					}
-@@ -6965,17 +7022,12 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
+@@ -6965,17 +7023,15 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
  	if (_pDocumentListPanel)
  		_pDocumentListPanel->setItemIconStatus(buffer);
  
 -	if (!mainActive && !subActive)
++	if (mask & (BufferChangeDirty | BufferChangeFilename)) // KEX: a snapped-out view showing it, even unfocused
++		kexUpdateTornOutTitles();
++
 +	// KEX: only the document shown in the current view (any of the four) updates the UI below
 +	if (kexFirstActiveView == -1 || _pEditView->getCurrentBuffer() != buffer)
  	{
@@ -2502,7 +2620,7 @@ index 4bf5a90..8250250 100644
  	if (mask & (BufferChangeDirty|BufferChangeFilename))
  	{
  		if (mask & BufferChangeFilename)
-@@ -6992,10 +7044,11 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
+@@ -6992,10 +7048,11 @@ void Notepad_plus::notifyBufferChanged(Buffer * buffer, int mask)
  	{
  		checkLangsMenu(-1);	//let Notepad++ do search for the item
  		setLangStatus(buffer->getLangType());
@@ -2518,7 +2636,7 @@ index 4bf5a90..8250250 100644
  
  		if (_pFuncList && (!_pFuncList->isClosed()) && _pFuncList->isVisible())
  			_pFuncList->reload(); // sync FL with the current buffer lang
-@@ -7030,15 +7083,10 @@ void Notepad_plus::notifyBufferActivated(BufferID bufid, int view)
+@@ -7030,15 +7087,10 @@ void Notepad_plus::notifyBufferActivated(BufferID bufid, int view)
  	Buffer * buf = MainFileManager.getBufferByID(bufid);
  	buf->increaseRecentTag();
  
@@ -2537,7 +2655,7 @@ index 4bf5a90..8250250 100644
  	}
  
  	if (view != currentView())
-@@ -7417,7 +7465,7 @@ Style * Notepad_plus::getStyleFromName(const wchar_t *styleName)
+@@ -7417,7 +7469,7 @@ Style * Notepad_plus::getStyleFromName(const wchar_t *styleName)
  
  bool Notepad_plus::noOpenedDoc() const
  {
@@ -2546,7 +2664,7 @@ index 4bf5a90..8250250 100644
  		return false;
  	if (_pDocTab->nbItem() == 1)
  	{
-@@ -8724,6 +8772,13 @@ void Notepad_plus::refreshDarkMode(bool resetStyle)
+@@ -8724,6 +8776,13 @@ void Notepad_plus::refreshDarkMode(bool resetStyle)
  
  		::SendMessage(_subEditView.getHSelf(), NPPM_INTERNAL_REFRESHDARKMODE, 0, 0);
  		::SendMessage(_mainEditView.getHSelf(), NPPM_INTERNAL_REFRESHDARKMODE, 0, 0);
@@ -2560,7 +2678,7 @@ index 4bf5a90..8250250 100644
  
  		::SendMessage(_mainDocTab.getHSelf(), NPPM_INTERNAL_REFRESHDARKMODE, 0, 0);
  		::SendMessage(_subDocTab.getHSelf(), NPPM_INTERNAL_REFRESHDARKMODE, 0, 0);
-@@ -9371,6 +9426,11 @@ void Notepad_plus::clearChangesHistory(int iView)
+@@ -9371,6 +9430,11 @@ void Notepad_plus::clearChangesHistory(int iView)
  		pViewToChange = &_subEditView;
  		pAnotherView = &_mainEditView;
  	}
@@ -2572,7 +2690,7 @@ index 4bf5a90..8250250 100644
  
  	Sci_Position pos = static_cast<Sci_Position>(::SendMessage(pViewToChange->getHSelf(), SCI_GETCURRENTPOS, 0, 0));
  	int chFlags = static_cast<int>(::SendMessage(pViewToChange->getHSelf(), SCI_GETCHANGEHISTORY, 0, 0));
-@@ -9382,6 +9442,11 @@ void Notepad_plus::clearChangesHistory(int iView)
+@@ -9382,6 +9446,11 @@ void Notepad_plus::clearChangesHistory(int iView)
  
  	checkUndoState();
  	pAnotherView->redraw(); // Prevent cloned document visual glitch on another view
@@ -2584,7 +2702,7 @@ index 4bf5a90..8250250 100644
  }
  
  // Based on https://github.com/notepad-plus-plus/notepad-plus-plus/issues/12248#issuecomment-1258561261.
-@@ -9570,7 +9635,7 @@ void Notepad_plus::changeReadOnlyUserModeForAllOpenedTabs(const bool ro)
+@@ -9570,7 +9639,7 @@ void Notepad_plus::changeReadOnlyUserModeForAllOpenedTabs(const bool ro)
  		return; // safety for FullReadOnlySavingForbidden mode, refuse to cease the R/O state
  
  	// make R/O changes in both views
@@ -2594,7 +2712,7 @@ index 4bf5a90..8250250 100644
  	{
  		for (size_t i = 0; i < pTabView->nbItem(); ++i)
 diff --git a/PowerEditor/src/Notepad_plus.h b/PowerEditor/src/Notepad_plus.h
-index fefc2bd..725529e 100644
+index fefc2bd..332750c 100644
 --- a/PowerEditor/src/Notepad_plus.h
 +++ b/PowerEditor/src/Notepad_plus.h
 @@ -44,6 +44,7 @@
@@ -2659,7 +2777,7 @@ index fefc2bd..725529e 100644
  
      ContextMenu _tabPopupMenu;
  	ContextMenu _tabPopupDropMenu;
-@@ -457,21 +474,64 @@ private:
+@@ -457,21 +474,65 @@ private:
  		return _activeView;
  	}
  
@@ -2705,6 +2823,7 @@ index fefc2bd..725529e 100644
 +	bool kexSnapBackView(int whichOne, bool relayout = true);
 +	void kexLayoutTornOutView(int whichOne);
 +	void kexUpdateTornOutTitle(int whichOne);
++	void kexUpdateTornOutTitles();
 +	bool kexIsOverDockedTabBar(POINT screenPoint);
 +	bool kexTearOutDoc(FileTransferMode mode, const POINT* where);
 +	void kexDestroyTornOutWindows();
@@ -4401,7 +4520,7 @@ index 8b85774..d475355 100644
  						return FALSE;
  
 diff --git a/PowerEditor/src/Parameters.cpp b/PowerEditor/src/Parameters.cpp
-index c6b1600..cdd9ffe 100644
+index c6b1600..04ef2a3 100644
 --- a/PowerEditor/src/Parameters.cpp
 +++ b/PowerEditor/src/Parameters.cpp
 @@ -337,6 +337,22 @@ static constexpr WinMenuKeyDefinition winKeyDefs[]
@@ -4427,7 +4546,31 @@ index c6b1600..cdd9ffe 100644
  
  	{ VK_NUMPAD1, IDM_VIEW_TAB1,                                true,  false, false, nullptr },
  	{ VK_NUMPAD2, IDM_VIEW_TAB2,                                true,  false, false, nullptr },
-@@ -3428,10 +3444,12 @@ bool NppParameters::getSessionFromXmlTree(const NppXml::Document& pSessionDoc, S
+@@ -3208,6 +3224,23 @@ bool NppParameters::loadSession(Session& session, const wchar_t* sessionFileName
+ 	return loadOkay;
+ }
+ 
++// KEX: called in a Notepad++ started for another virtual desktop (winmain.cpp), after load() read the
++// first window's session.xml: from now on this instance reads and writes session-<key>.xml and keeps
++// its backups in backup\<key>\. Returns false for an unusable key (the caller then runs without session).
++bool NppParameters::kexUseDesktopSession(const std::wstring& key)
++{
++	// "desktop-" and the desktop's id: hex digits and dashes
++	if (key.size() < 9 || key.size() > 60 || key.compare(0, 8, L"desktop-") != 0 || key.find_first_not_of(L"ABCDEFabcdef0123456789-", 8) != std::wstring::npos)
++		return false;
++	_kexDesktopKey = key;
++	_sessionPath = _userPath;
++	pathAppend(_sessionPath, L"session-" + key + L".xml");
++	_session = Session();
++	if (_nppGUI._rememberLastSession && doesFileExist(_sessionPath.c_str()))
++		loadSession(_session, _sessionPath.c_str(), true);
++	return true;
++}
++
+ bool NppParameters::isServerAllowed(const char* path2check, bool bCaseSensitive)
+ {
+ 	if (!path2check || !_pXmlServerWhiteListDoc)
+@@ -3428,10 +3461,12 @@ bool NppParameters::getSessionFromXmlTree(const NppXml::Document& pSessionDoc, S
  
  	WcharMbcsConvertor& wmc = WcharMbcsConvertor::getInstance();
  
@@ -4442,7 +4585,7 @@ index c6b1600..cdd9ffe 100644
  	};
  
  	HINSTANCE hInst = ::GetModuleHandle(nullptr);
-@@ -3448,10 +3466,16 @@ bool NppParameters::getSessionFromXmlTree(const NppXml::Document& pSessionDoc, S
+@@ -3448,10 +3483,16 @@ bool NppParameters::getSessionFromXmlTree(const NppXml::Document& pSessionDoc, S
  			const int index2 = NppXml::intAttribute(viewRoots[k], "activeIndex", -1);
  			if (index2 >= 0)
  			{
@@ -4463,7 +4606,7 @@ index c6b1600..cdd9ffe 100644
  			}
  
  			for (NppXml::Element childNode = NppXml::firstChildElement(viewRoots[k], "File"), nextNode;
-@@ -3647,10 +3671,7 @@ bool NppParameters::getSessionFromXmlTree(const NppXml::Document& pSessionDoc, S
+@@ -3647,10 +3688,7 @@ bool NppParameters::getSessionFromXmlTree(const NppXml::Document& pSessionDoc, S
  							sfi._foldStates.push_back(static_cast<size_t>(lineNumber));
  						}
  					}
@@ -4475,7 +4618,7 @@ index c6b1600..cdd9ffe 100644
  				}
  			}
  		}
-@@ -4863,15 +4884,25 @@ void NppParameters::writeSession(const Session& session, const wchar_t* fileName
+@@ -4863,15 +4901,25 @@ void NppParameters::writeSession(const Session& session, const wchar_t* fileName
  			size_t activeIndex = 0;
  		};
  
@@ -4504,7 +4647,7 @@ index c6b1600..cdd9ffe 100644
  
  			for (const auto& vsFile : viewSessionFiles)
 diff --git a/PowerEditor/src/Parameters.h b/PowerEditor/src/Parameters.h
-index 5db0df6..86a9482 100644
+index 5db0df6..5016871 100644
 --- a/PowerEditor/src/Parameters.h
 +++ b/PowerEditor/src/Parameters.h
 @@ -166,6 +166,21 @@ struct Session
@@ -4529,6 +4672,45 @@ index 5db0df6..86a9482 100644
  };
  
  
+@@ -1724,6 +1739,11 @@ public:
+ 	void saveConfig_xml() const;
+ 
+ 	const std::wstring& getUserPath() const { return _userPath; }
++	// KEX: a Notepad++ started on another virtual desktop keeps its own session and backups
++	// (session-<key>.xml, backup\<key>\) so it restores and backs up like the first window does
++	bool kexUseDesktopSession(const std::wstring& key);
++	std::wstring kexBackupDir() const { return _userPath + L"\\backup\\" + (_kexDesktopKey.empty() ? L"" : _kexDesktopKey + L"\\"); }
++	const std::wstring& kexDesktopKey() const { return _kexDesktopKey; }
+ 
+ 	const std::wstring& getUserDefineLangFolderPath() const { return _userDefineLangsFolderPath; }
+ 
+@@ -1893,6 +1913,7 @@ private:
+ 	std::wstring _tabContextMenuPath;
+ 	std::wstring _serverWhiteListPath;
+ 	std::wstring _sessionPath;
++	std::wstring _kexDesktopKey; // KEX: set in a Notepad++ for another virtual desktop
+ 	std::wstring _nppPath;
+ 	std::wstring _userPath;
+ 	std::wstring _stylerPath;
+diff --git a/PowerEditor/src/ScintillaComponent/Buffer.cpp b/PowerEditor/src/ScintillaComponent/Buffer.cpp
+index 864484c..25236be 100644
+--- a/PowerEditor/src/ScintillaComponent/Buffer.cpp
++++ b/PowerEditor/src/ScintillaComponent/Buffer.cpp
+@@ -1309,6 +1309,14 @@ bool FileManager::backupCurrentBuffer()
+ 					::CreateDirectory(backupFilePath.c_str(), NULL);
+ 				}
+ 
++				// KEX: a Notepad++ on another virtual desktop backs up into its own folder inside "backup"
++				if (backupFilePath != NppParameters::getInstance().kexBackupDir())
++				{
++					backupFilePath = NppParameters::getInstance().kexBackupDir();
++					if (!doesDirectoryExist(backupFilePath.c_str()))
++						::CreateDirectory(backupFilePath.c_str(), NULL);
++				}
++
+ 				backupFilePath += buffer->getFileName();
+ 
+ 				const int temBufLen = 32;
 diff --git a/PowerEditor/src/ScintillaComponent/ScintillaEditView.cpp b/PowerEditor/src/ScintillaComponent/ScintillaEditView.cpp
 index 2462620..d60086f 100644
 --- a/PowerEditor/src/ScintillaComponent/ScintillaEditView.cpp
@@ -4568,6 +4750,83 @@ index 2462620..d60086f 100644
  	return true;
  }
  
+diff --git a/PowerEditor/src/ScintillaComponent/SmartHighlighter.cpp b/PowerEditor/src/ScintillaComponent/SmartHighlighter.cpp
+index e00ff12..aac6a93 100644
+--- a/PowerEditor/src/ScintillaComponent/SmartHighlighter.cpp
++++ b/PowerEditor/src/ScintillaComponent/SmartHighlighter.cpp
+@@ -97,6 +97,12 @@ void SmartHighlighter::highlightViewWithWord(ScintillaEditView * pHighlightView,
+ }
+ 
+ void SmartHighlighter::highlightView(ScintillaEditView * pHighlightView, ScintillaEditView * unfocusView)
++{
++	kexHighlightViews(pHighlightView, &unfocusView, unfocusView ? 1 : 0);
++}
++
++// KEX: the focused view once, then each other visible view (up to three with four views)
++void SmartHighlighter::kexHighlightViews(ScintillaEditView * pHighlightView, ScintillaEditView * const * unfocusViews, int nbUnfocusViews)
+ {
+ 	// Clear marks
+ 	pHighlightView->clearIndicator(SCE_UNIVERSAL_FOUND_STYLE_SMART);
+@@ -106,10 +112,14 @@ void SmartHighlighter::highlightView(ScintillaEditView * pHighlightView, Scintil
+ 	// If nothing selected or smart highlighting disabled, don't mark anything
+ 	if ((!nppGUI._enableSmartHilite) || (pHighlightView->execute(SCI_GETSELECTIONEMPTY) == 1))
+ 	{
+-		if (nppGUI._smartHiliteOnAnotherView && unfocusView && unfocusView->isVisible()
+-			&& unfocusView->getCurrentBufferID() != pHighlightView->getCurrentBufferID())
++		for (int i = 0; i < nbUnfocusViews; ++i)
+ 		{
+-			unfocusView->clearIndicator(SCE_UNIVERSAL_FOUND_STYLE_SMART);
++			ScintillaEditView* unfocusView = unfocusViews[i];
++			if (nppGUI._smartHiliteOnAnotherView && unfocusView && unfocusView->isVisible()
++				&& unfocusView->getCurrentBufferID() != pHighlightView->getCurrentBufferID())
++			{
++				unfocusView->clearIndicator(SCE_UNIVERSAL_FOUND_STYLE_SMART);
++			}
+ 		}
+ 		return;
+ 	}
+@@ -156,16 +166,20 @@ void SmartHighlighter::highlightView(ScintillaEditView * pHighlightView, Scintil
+ 	
+ 	highlightViewWithWord(pHighlightView, text2FindW);
+ 
+-	if (nppGUI._smartHiliteOnAnotherView && unfocusView && unfocusView->isVisible())
+-	{		
+-		// Clear the indicator only when the view is not a clone, or it will clear what we have already hightlighted in the pHighlightView
+-		if (unfocusView->getCurrentBufferID() != pHighlightView->getCurrentBufferID())
+-		{	
+-			unfocusView->clearIndicator(SCE_UNIVERSAL_FOUND_STYLE_SMART);
++	for (int i = 0; i < nbUnfocusViews; ++i)
++	{
++		ScintillaEditView* unfocusView = unfocusViews[i];
++		if (nppGUI._smartHiliteOnAnotherView && unfocusView && unfocusView->isVisible())
++		{
++			// Clear the indicator only when the view is not a clone, or it will clear what we have already hightlighted in the pHighlightView
++			if (unfocusView->getCurrentBufferID() != pHighlightView->getCurrentBufferID())
++			{
++				unfocusView->clearIndicator(SCE_UNIVERSAL_FOUND_STYLE_SMART);
++			}
++
++			// Hightlight the unfocused view even if it's a clone, as it might be in a different area of the document
++			highlightViewWithWord(unfocusView, text2FindW);
+ 		}
+-		
+-		// Hightlight the unfocused view even if it's a clone, as it might be in a different area of the document
+-		highlightViewWithWord(unfocusView, text2FindW);
+ 	}
+ }
+ 
+diff --git a/PowerEditor/src/ScintillaComponent/SmartHighlighter.h b/PowerEditor/src/ScintillaComponent/SmartHighlighter.h
+index f94c23c..6094889 100644
+--- a/PowerEditor/src/ScintillaComponent/SmartHighlighter.h
++++ b/PowerEditor/src/ScintillaComponent/SmartHighlighter.h
+@@ -25,6 +25,7 @@ class SmartHighlighter {
+ public:
+ 	explicit SmartHighlighter(FindReplaceDlg * pFRDlg);
+ 	void highlightView(ScintillaEditView * pHighlightView, ScintillaEditView * unfocusView);
++	void kexHighlightViews(ScintillaEditView * pHighlightView, ScintillaEditView * const * unfocusViews, int nbUnfocusViews); // KEX
+ 	void highlightViewWithWord(ScintillaEditView * pHighlightView, const std::wstring & word2Hilite);
+ 
+ private:
 diff --git a/PowerEditor/src/WinControls/AboutDlg/AboutDlg.cpp b/PowerEditor/src/WinControls/AboutDlg/AboutDlg.cpp
 index 1b798b4..b5a5f38 100644
 --- a/PowerEditor/src/WinControls/AboutDlg/AboutDlg.cpp
@@ -4657,6 +4916,31 @@ index c9789c6..cc8ce09 100644
  
  	for (size_t iCont = 0, len = vCont.size(); iCont < len; ++iCont)
  	{
+diff --git a/PowerEditor/src/WinControls/Grid/ShortcutMapper.cpp b/PowerEditor/src/WinControls/Grid/ShortcutMapper.cpp
+index c8ff0d3..bcd2458 100644
+--- a/PowerEditor/src/WinControls/Grid/ShortcutMapper.cpp
++++ b/PowerEditor/src/WinControls/Grid/ShortcutMapper.cpp
+@@ -667,6 +667,8 @@ intptr_t CALLBACK ShortcutMapper::run_dlgProc(UINT message, WPARAM wParam, LPARA
+ 			_szMinDialog.cy = rect.bottom - rect.top;
+ 
+ 			_dialogInitDone = true;
++			if (!_kexFilter.empty()) // KEX
++				::SetDlgItemText(_hSelf, IDC_BABYGRID_FILTER, _kexFilter.c_str());
+ 
+ 			return TRUE;
+ 		}
+diff --git a/PowerEditor/src/WinControls/Grid/ShortcutMapper.h b/PowerEditor/src/WinControls/Grid/ShortcutMapper.h
+index 20a9879..8d06668 100644
+--- a/PowerEditor/src/WinControls/Grid/ShortcutMapper.h
++++ b/PowerEditor/src/WinControls/Grid/ShortcutMapper.h
+@@ -56,6 +56,7 @@ public:
+ 	bool isFilterValid(Shortcut sc);
+ 	bool isFilterValid(PluginCmdShortcut sc);
+ 	bool isFilterValid(ScintillaKeyMap sc);
++	std::wstring _kexFilter; // KEX: text put in the filter box when the dialog opens
+ 
+ protected:
+ 	void resizeDialogElements();
 diff --git a/PowerEditor/src/WinControls/Preference/preferenceDlg.cpp b/PowerEditor/src/WinControls/Preference/preferenceDlg.cpp
 index 8dbc75c..c028e18 100644
 --- a/PowerEditor/src/WinControls/Preference/preferenceDlg.cpp
@@ -5000,6 +5284,76 @@ index 3010685..a0bdd46 100644
  	ListView_InsertItem(_hSelf, &item);
  	int colIndex = 0;
  	if (isExtColumn)
+diff --git a/PowerEditor/src/WinControls/shortcut/shortcut.cpp b/PowerEditor/src/WinControls/shortcut/shortcut.cpp
+index bb8bea8..c12f771 100644
+--- a/PowerEditor/src/WinControls/shortcut/shortcut.cpp
++++ b/PowerEditor/src/WinControls/shortcut/shortcut.cpp
+@@ -18,6 +18,7 @@
+ #include <memory>
+ #include <algorithm>
+ #include <array>
++#include <cstring>
+ #include "shortcut.h"
+ #include "Parameters.h"
+ #include "ScintillaEditView.h"
+@@ -728,6 +729,20 @@ void Accelerator::updateShortcuts()
+ 	vector<ACCEL> findReplaceAcc;
+ 	int offset = 0;
+ 	size_t i = 0;
++	// KEX: the KEX features' commands first, so their keys win over Notepad++'s own as the features'
++	// keys always did (Shortcut Mapper shows the clash; giving either command another key settles it)
++	auto isKex = [](const PluginCmdShortcut& c) { return std::strcmp(c.getModuleName(), "KEX") == 0; };
++	for (i = 0; i < nbPluginCmd; ++i)
++	{
++		if (isKex(pluginCommands[i]) && pluginCommands[i].isEnabled() &&
++			std::find(_kexKeyless.begin(), _kexKeyless.end(), pluginCommands[i].getID()) == _kexKeyless.end())
++		{
++			_pAccelArray[offset].cmd = (WORD)(pluginCommands[i].getID());
++			_pAccelArray[offset].fVirt = pluginCommands[i].getAcceleratorModifiers();
++			_pAccelArray[offset].key = pluginCommands[i].getKeyCombo()._key;
++			++offset;
++		}
++	}
+ 	//no validation performed, it might be that invalid shortcuts are being used by default. Allows user to 'hack', might be a good thing
+ 	for (i = 0; i < nbMenu; ++i)
+ 	{
+@@ -774,7 +789,7 @@ void Accelerator::updateShortcuts()
+ 
+ 	for (i = 0; i < nbPluginCmd; ++i)
+ 	{
+-		if (pluginCommands[i].isEnabled())
++		if (pluginCommands[i].isEnabled() && !isKex(pluginCommands[i]))
+ 		{
+ 			_pAccelArray[offset].cmd = (WORD)(pluginCommands[i].getID());
+ 			_pAccelArray[offset].fVirt = pluginCommands[i].getAcceleratorModifiers();
+@@ -861,6 +876,15 @@ void Accelerator::updateFullMenu()
+ 	vector<PluginCmdShortcut> pcommands = nppParam.getPluginCommandList();
+ 	for (size_t i = 0; i < pcommands.size(); ++i)
+ 	{
++		// KEX: a command of a switched-off KEX feature has no key, so its menu item shows none
++		if (std::find(_kexKeyless.begin(), _kexKeyless.end(), pcommands[i].getID()) != _kexKeyless.end())
++		{
++			const unsigned long id = pcommands[i].getID();
++			const UINT state = ::GetMenuState(_hAccelMenu, id, MF_BYCOMMAND);
++			::ModifyMenu(_hAccelMenu, id, MF_BYCOMMAND | ((state & MF_CHECKED) ? MF_CHECKED : MF_UNCHECKED) | ((state & MF_DISABLED) ? MF_DISABLED : MF_ENABLED),
++				id, string2wstring(pcommands[i].getMenuName(), CP_UTF8).c_str());
++			continue;
++		}
+ 		updateMenuItemByCommand(pcommands[i]);
+ 	}
+ 
+diff --git a/PowerEditor/src/WinControls/shortcut/shortcut.h b/PowerEditor/src/WinControls/shortcut/shortcut.h
+index 3b9b661..1a9f772 100644
+--- a/PowerEditor/src/WinControls/shortcut/shortcut.h
++++ b/PowerEditor/src/WinControls/shortcut/shortcut.h
+@@ -372,6 +372,7 @@ public:
+ 
+ 	void updateShortcuts();
+ 	void updateFullMenu();
++	std::vector<unsigned long> _kexKeyless; // KEX: commands of KEX features that are switched off
+ 
+ private:
+ 	HMENU _hAccelMenu = nullptr;
 diff --git a/PowerEditor/src/menuCmdID.h b/PowerEditor/src/menuCmdID.h
 index 408b4ac..6559961 100644
 --- a/PowerEditor/src/menuCmdID.h
@@ -5040,32 +5394,517 @@ index 408b4ac..6559961 100644
  #define    IDM_TOOL  (IDM + 8500)
      #define    IDM_TOOL_MD5_GENERATE                    (IDM_TOOL + 1)
 diff --git a/PowerEditor/src/winmain.cpp b/PowerEditor/src/winmain.cpp
-index a675012..4ecedc4 100644
+index a675012..77021db 100644
 --- a/PowerEditor/src/winmain.cpp
 +++ b/PowerEditor/src/winmain.cpp
 @@ -581,6 +581,8 @@ bool isParentProcessThisNotepadPlusPlus()
  std::chrono::steady_clock::time_point g_nppStartTimePoint{};
  
  
-+namespace kexsuite { HWND desktopHandOff(HWND running, const wchar_t* settingsDir); } // KEX: KexSuiteHost.h
++namespace kexsuite { HWND desktopHandOff(HWND running, const wchar_t* settingsDir, wchar_t* desktopKey, int keyLen); } // KEX: KexSuiteHost.h
 +
  int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE /*hPrevInstance*/, _In_ PWSTR pCmdLine, _In_ int /*nShowCmd*/)
  {
  	g_nppStartTimePoint = std::chrono::steady_clock::now();
-@@ -808,6 +810,13 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE /*hPrevInstance
+@@ -808,6 +810,15 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE /*hPrevInstance
  			hNotepad_plus = ::FindWindow(Notepad_plus_Window::getClassName(), NULL);
  		}
  
 +		if (hNotepad_plus) // KEX: a Notepad++ for each virtual desktop - with none on this one, start a new one here
 +		{
-+			hNotepad_plus = kexsuite::desktopHandOff(hNotepad_plus, nppParameters.getUserPath().c_str());
-+			if (!hNotepad_plus)
++			wchar_t desktopKey[64] = {};
++			hNotepad_plus = kexsuite::desktopHandOff(hNotepad_plus, nppParameters.getUserPath().c_str(), desktopKey, 64);
++			// this desktop's own session and backups; without a desktop id, no session as -nosession
++			if (!hNotepad_plus && !(desktopKey[0] && nppParameters.kexUseDesktopSession(desktopKey)))
 +				cmdLineParams._isNoSession = true;
 +		}
 +
          if (hNotepad_plus)
          {
  			// First of all, destroy static object NppParameters
+diff --git a/scintilla/include/KexScintilla.h b/scintilla/include/KexScintilla.h
+new file mode 100644
+index 0000000..7538622
+--- /dev/null
++++ b/scintilla/include/KexScintilla.h
+@@ -0,0 +1,33 @@
++// KexScintilla.h - Notepad++ KEX additions to Scintilla: the smooth caret.
++//
++// Scintilla draws the caret itself, as usual, but glides it to each new position with an ease-out
++// curve and fades it in and out instead of blinking hard. The caret is drawn after the text in the
++// same paint, so it moves in the same frame as the text, including while scrolling.
++#ifndef KEXSCINTILLA_H
++#define KEXSCINTILLA_H
++
++// wParam: glide time in milliseconds (0 = jump), lParam: KEXCARET_* flags. KEXCARET_ON off = Scintilla's
++// normal caret.
++#define SCI_KEX_SETSMOOTHCARET 0x4B43
++#define KEXCARET_ON 0x1
++#define KEXCARET_FADE 0x2              // fade in and out instead of blinking on and off
++#define KEXCARET_OVERTYPE_BLOCK 0x4    // a block caret in overtype mode
++#define KEXCARET_SNAPLINES(n) (((n) & 0xFF) << 8)   // jumps of more lines than this don't glide (0 = 12)
++
++// lParam: KexCaretInfo*, filled with what the last paint drew (for Notepad++ KEX's self-test).
++#define SCI_KEX_GETCARETINFO 0x4B44
++struct KexCaretInfo {
++	int on;              // smooth caret on in this view
++	int visible;         // a caret was drawn at the last paint
++	int carets;          // carets drawn
++	float mainX, mainY, mainH;   // the main caret's rectangle (client coordinates), as drawn
++	int block;           // the main caret is a block
++	int frames;          // paints that drew carets
++	double workMs;       // time spent working out and drawing carets
++};
++
++// Self-test only: wParam = glide fraction to stop at in thousandths (-1 = run normally), lParam = 1 for
++// a solid caret (no blinking).
++#define SCI_KEX_CARETTEST 0x4B45
++
++#endif
+diff --git a/scintilla/src/EditView.cxx b/scintilla/src/EditView.cxx
+index 02ea543..acd201b 100644
+--- a/scintilla/src/EditView.cxx
++++ b/scintilla/src/EditView.cxx
+@@ -1512,8 +1512,10 @@ void EditView::DrawCarets(Surface *surface, const EditModel &model, const ViewSt
+ 			}
+ 			const bool caretBlinkState = (model.caret.active && model.caret.on) || (!additionalCaretsBlink && !mainCaret);
+ 			const bool caretVisibleState = additionalCaretsVisible || mainCaret;
++			// KEX smooth caret: recorded whatever the blink state; the Editor fades it itself
++			const bool kexRecord = kexCollect && !drawDrag;
+ 			if ((xposCaret >= 0) && vsDraw.IsCaretVisible(mainCaret) &&
+-				(drawDrag || (caretBlinkState && caretVisibleState))) {
++				(drawDrag || (caretVisibleState && (kexRecord || caretBlinkState)))) {
+ 				bool canDrawBlockCaret = true;
+ 				bool drawBlockCaret = false;
+ 				XYPOSITION widthOverstrikeCaret;
+@@ -1539,6 +1541,7 @@ void EditView::DrawCarets(Surface *surface, const EditModel &model, const ViewSt
+ 
+ 				xposCaret += xOrigin;
+ 				const ViewStyle::CaretShape caretShape = drawDrag ? ViewStyle::CaretShape::line :
++					(kexRecord && kexOvertypeBlock && model.inOverstrike) ? ViewStyle::CaretShape::block :
+ 					vsDraw.CaretShapeForMode(model.inOverstrike, mainCaret);
+ 				if (drawDrag) {
+ 					/* Dragging text, use a line caret */
+@@ -1566,7 +1569,19 @@ void EditView::DrawCarets(Surface *surface, const EditModel &model, const ViewSt
+ 				const Element elementCaret = mainCaret ? Element::Caret : Element::CaretAdditional;
+ 				const ColourRGBA caretColour = vsDraw.ElementColourForced(elementCaret);
+ 				//assert(caretColour.IsOpaque());
+-				if (drawBlockCaret) {
++				if (kexRecord) {
++					KexCaretTarget t;
++					t.selection = r;
++					t.x = rcCaret.left - xOrigin;
++					t.y = static_cast<XYPOSITION>(model.pcs->DisplayFromDoc(lineDoc) + subLine) * vsDraw.lineHeight + (rcCaret.top - rcLine.top);
++					t.w = rcCaret.Width();
++					t.h = rcCaret.Height();
++					t.colour = caretColour;
++					t.block = caretShape == ViewStyle::CaretShape::block;
++					t.blinks = mainCaret || additionalCaretsBlink;
++					t.main = mainCaret;
++					kexSeen.push_back(t);
++				} else if (drawBlockCaret) {
+ 					DrawBlockCaret(surface, model, vsDraw, ll, subLine, xOrigin, offset, posCaret.Position(), rcCaret, caretColour);
+ 				} else {
+ 					surface->FillRectangleAligned(rcCaret, Fill(caretColour));
+diff --git a/scintilla/src/EditView.h b/scintilla/src/EditView.h
+index 58e9c3d..1fdc72f 100644
+--- a/scintilla/src/EditView.h
++++ b/scintilla/src/EditView.h
+@@ -46,6 +46,17 @@ typedef void (*DrawTabArrowFn)(Surface *surface, PRectangle rcTab, int ymid,
+ 
+ class LineTabstops;
+ 
++// KEX smooth caret: where DrawCarets would have drawn a caret, in document coordinates (x + xOffset,
++// y from the top of the first display line)
++struct KexCaretTarget {
++	size_t selection = 0;
++	XYPOSITION x = 0, y = 0, w = 0, h = 0;
++	ColourRGBA colour;
++	bool block = false;
++	bool blinks = true;
++	bool main = false;
++};
++
+ /**
+ * EditView draws the main text area.
+ */
+@@ -74,6 +85,12 @@ public:
+ 
+ 	bool imeCaretBlockOverride;
+ 
++	// KEX smooth caret: when set, DrawCarets records the carets in kexSeen instead of drawing them, and
++	// the Editor draws them after the text
++	bool kexCollect = false;
++	bool kexOvertypeBlock = false;
++	mutable std::vector<KexCaretTarget> kexSeen;
++
+ 	std::unique_ptr<Surface> pixmapLine;
+ 	std::unique_ptr<Surface> pixmapIndentGuide;
+ 	std::unique_ptr<Surface> pixmapIndentGuideHighlight;
+diff --git a/scintilla/src/Editor.cxx b/scintilla/src/Editor.cxx
+index 1465bac..e82e30d 100644
+--- a/scintilla/src/Editor.cxx
++++ b/scintilla/src/Editor.cxx
+@@ -68,6 +68,7 @@
+ #include "MarginView.h"
+ #include "EditView.h"
+ #include "Editor.h"
++#include "KexScintilla.h"
+ #include "ElapsedPeriod.h"
+ #include "RunThreads.h"
+ 
+@@ -987,6 +988,8 @@ void Editor::ScrollTo(Sci::Line line, bool moveThumb) {
+ #ifndef UNDER_CE
+ 		// Perform redraw rather than scroll if many lines would be redrawn anyway.
+ 		if (performBlit) {
++			for (PRectangle &rc : kexOnScreen)	// KEX: what was drawn moves with the text
++				rc.Move(0, static_cast<XYPOSITION>(linesToMove) * vs.lineHeight);
+ 			ScrollText(linesToMove);
+ 		} else {
+ 			Redraw();
+@@ -1947,7 +1950,10 @@ void Editor::Paint(Surface *surfaceWindow, PRectangle rcArea) {
+ 		return;
+ 	}
+ 
++	view.kexSeen.clear();
+ 	view.PaintText(surfaceWindow, *this, vs, rcArea, rcClient);
++	if (kexOn)
++		KexPaintCarets(surfaceWindow, rcArea, rcClient);
+ 
+ 	if (horizontalScrollBarVisible && trackLineWidth && (view.lineWidthMaxSeen > scrollWidth)) {
+ 		scrollWidth = view.lineWidthMaxSeen;
+@@ -1962,6 +1968,182 @@ void Editor::Paint(Surface *surfaceWindow, PRectangle rcArea) {
+ 	NotifyPainted();
+ }
+ 
++// ---- KEX smooth caret (KexScintilla.h) ----
++
++double Editor::KexNowMs() {
++	return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
++}
++
++// where a caret is now, gliding from "from" to "to" with an ease-out curve
++KexCaretTarget Editor::KexCurrent(const KexCaret &c, double now) const {
++	if (kexGlideMs <= 0)
++		return c.to;
++	double g = (now - c.start) / kexGlideMs;
++	if (kexFreeze >= 0 && g > kexFreeze)
++		g = kexFreeze;
++	if (g >= 1.0)
++		return c.to;
++	if (g < 0)
++		g = 0;
++	const double e = 1.0 - (1.0 - g) * (1.0 - g) * (1.0 - g);
++	KexCaretTarget t = c.to;
++	t.x = static_cast<XYPOSITION>(c.from.x + (c.to.x - c.from.x) * e);
++	t.y = static_cast<XYPOSITION>(c.from.y + (c.to.y - c.from.y) * e);
++	t.w = static_cast<XYPOSITION>(c.from.w + (c.to.w - c.from.w) * e);
++	t.h = static_cast<XYPOSITION>(c.from.h + (c.to.h - c.from.h) * e);
++	return t;
++}
++
++// The caret's opacity: on for a period, off for a period, with short fades between (or none). Sets
++// nextChangeMs to when that changes next (0: it is fading, -1: never).
++float Editor::KexBlinkAlpha(double now, double *nextChangeMs) const {
++	*nextChangeMs = -1;
++	const double P = caret.period;
++	if (kexSolid || P <= 0)
++		return 1.0f;
++	const double F = kexFade ? std::min(140.0, P / 3) : 0.0;
++	const double ph = std::fmod(now - kexBlinkStart, 2 * P);
++	if (ph < P - F) {
++		*nextChangeMs = (P - F) - ph;
++		return 1.0f;
++	}
++	if (ph < P) {
++		*nextChangeMs = 0;
++		return static_cast<float>(1.0 - (ph - (P - F)) / F);
++	}
++	if (ph < 2 * P - F) {
++		*nextChangeMs = (2 * P - F) - ph;
++		return 0.0f;
++	}
++	*nextChangeMs = 0;
++	return F > 0 ? static_cast<float>((ph - (2 * P - F)) / F) : 1.0f;
++}
++
++namespace {
++bool KexSameTarget(const KexCaretTarget &a, const KexCaretTarget &b) noexcept {
++	return std::abs(a.x - b.x) < 0.1 && std::abs(a.y - b.y) < 0.1 && std::abs(a.w - b.w) < 0.1 &&
++		std::abs(a.h - b.h) < 0.1 && a.block == b.block && a.colour == b.colour && a.blinks == b.blinks;
++}
++}
++
++// After the text is painted: take the carets EditView recorded as new targets, then draw every caret
++// at its animated position, and time the next frame.
++void Editor::KexPaintCarets(Surface *surface, PRectangle rcArea, PRectangle rcClient) {
++	const double now = KexNowMs();
++	const size_t n = sel.Count();
++	if (vs.lineHeight != kexLineHeight) {
++		kexLineHeight = vs.lineHeight;
++		kexSnapNext = true;
++	}
++	if (kexCarets.size() != n) {
++		// carets added or removed: start over, and paint everything so that every caret is recorded
++		const bool allSeen = view.kexSeen.size() >= n;
++		kexCarets.assign(n, KexCaret());
++		if (!allSeen)
++			Redraw();
++	}
++	bool moved = false;
++	for (const KexCaretTarget &t : view.kexSeen) {
++		if (t.selection >= kexCarets.size())
++			continue;
++		KexCaret &c = kexCarets[t.selection];
++		if (c.valid && KexSameTarget(c.to, t))
++			continue;
++		moved = true;
++		const bool jump = !c.valid || kexSnapNext || kexGlideMs <= 0 ||
++			std::abs(t.y - c.to.y) > kexSnapLines * vs.lineHeight || c.to.block != t.block;
++		c.from = jump ? t : KexCurrent(c, now);
++		c.to = t;
++		c.start = jump ? now - 100000 : now;
++		c.valid = true;
++	}
++	if (!view.kexSeen.empty())
++		kexSnapNext = false;
++	if (moved)
++		kexBlinkStart = now;	// visible right after a move, as Scintilla's own caret
++
++	kexStats.visible = 0;
++	kexStats.carets = 0;
++	if (!caret.active || posDrag.IsValid() || !vs.selection.visible) {
++		FineTickerCancel(TickReason::kexCaret);
++		return;
++	}
++	double nextBlink = -1;
++	const float alpha = KexBlinkAlpha(now, &nextBlink);
++	PRectangle rcText = rcClient;
++	rcText.left = static_cast<XYPOSITION>(vs.textStart);
++	rcText.right -= vs.rightMarginWidth;
++	const PRectangle rcClip(std::max(rcText.left, rcArea.left), std::max(rcText.top, rcArea.top),
++		std::min(rcText.right, rcArea.right), std::min(rcText.bottom, rcArea.bottom));
++	bool gliding = false;
++	if (rcClip.left < rcClip.right && rcClip.top < rcClip.bottom)
++		surface->SetClip(rcClip);
++	for (const KexCaret &c : kexCarets) {
++		if (!c.valid)
++			continue;
++		if (kexGlideMs > 0 && kexFreeze < 0 && now - c.start < kexGlideMs)
++			gliding = true;
++		const KexCaretTarget t = KexCurrent(c, now);
++		const PRectangle rc(t.x + vs.textStart - xOffset, t.y - static_cast<XYPOSITION>(topLine) * vs.lineHeight,
++			t.x + vs.textStart - xOffset + t.w, t.y - static_cast<XYPOSITION>(topLine) * vs.lineHeight + t.h);
++		if (rc.right <= rcText.left || rc.left >= rcText.right || rc.bottom <= rcText.top || rc.top >= rcText.bottom)
++			continue;
++		kexOnScreen.push_back(rc);
++		++kexStats.carets;
++		if (t.main) {
++			kexStats.visible = 1;
++			kexStats.mainX = static_cast<float>(rc.left);
++			kexStats.mainY = static_cast<float>(rc.top);
++			kexStats.mainH = static_cast<float>(rc.Height());
++			kexStats.block = t.block ? 1 : 0;
++		}
++		const float a = (t.blinks ? alpha : 1.0f) * (t.block ? 0.55f : 1.0f);
++		if (a > 0.004f && rc.Intersects(rcClip))
++			surface->FillRectangle(rc, Fill(ColourRGBA(t.colour, static_cast<unsigned int>(a * 255.0f + 0.5f))));
++	}
++	if (rcClip.left < rcClip.right && rcClip.top < rcClip.bottom)
++		surface->PopClip();
++	if (kexStats.carets > 0)
++		++kexStats.frames;
++
++	int ms = 0;
++	if (kexStats.carets > 0) {
++		if (gliding || nextBlink == 0)
++			ms = 15;
++		else if (nextBlink > 0)
++			ms = static_cast<int>(nextBlink) + 1;
++	}
++	if (ms > 0)
++		FineTickerStart(TickReason::kexCaret, ms, 0);
++	else
++		FineTickerCancel(TickReason::kexCaret);
++	kexStats.workMs += KexNowMs() - now;
++}
++
++// Repaint where carets were drawn and where they are now, so the next paint draws the next frame.
++void Editor::KexInvalidate() {
++	const double now = KexNowMs();
++	for (const PRectangle &rc : kexOnScreen)
++		RedrawRect(PRectangle(rc.left - 1, rc.top - 1, rc.right + 1, rc.bottom + 1));
++	kexOnScreen.clear();
++	for (const KexCaret &c : kexCarets) {
++		if (!c.valid)
++			continue;
++		const KexCaretTarget t = KexCurrent(c, now);
++		const XYPOSITION x = t.x + vs.textStart - xOffset;
++		const XYPOSITION y = t.y - static_cast<XYPOSITION>(topLine) * vs.lineHeight;
++		RedrawRect(PRectangle(x - 1, y - 1, x + t.w + 1, y + t.h + 1));
++	}
++}
++
++void Editor::KexTick() {
++	if (!kexOn || kexCarets.empty()) {
++		FineTickerCancel(TickReason::kexCaret);
++		return;
++	}
++	KexInvalidate();
++}
++
+ // This is mostly copied from the Paint method but with some things omitted
+ // such as the margin markers, line numbers, selection and caret
+ // Should be merged back into a combined Draw method.
+@@ -5296,10 +5478,13 @@ void Editor::TickFor(TickReason reason) {
+ 	switch (reason) {
+ 		case TickReason::caret:
+ 			caret.on = !caret.on;
+-			if (caret.active) {
++			if (caret.active && !kexOn) {	// KEX: the smooth caret blinks on its own timer
+ 				InvalidateCaret();
+ 			}
+ 			break;
++		case TickReason::kexCaret:
++			KexTick();
++			break;
+ 		case TickReason::scroll:
+ 			// Auto scroll
+ 			if (HaveMouseCapture()) {
+@@ -6297,6 +6482,52 @@ sptr_t Editor::BytesResult(Scintilla::sptr_t lParam, std::string_view sv) noexce
+ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
+ 	//Platform::DebugPrintf("S start wnd proc %d %d %d\n",iMessage, wParam, lParam);
+ 
++	// KEX smooth caret (KexScintilla.h)
++	switch (static_cast<unsigned int>(iMessage)) {
++	case SCI_KEX_SETSMOOTHCARET: {
++		const bool on = (lParam & KEXCARET_ON) != 0;
++		kexGlideMs = std::clamp(static_cast<int>(wParam), 0, 1000);
++		kexFade = (lParam & KEXCARET_FADE) != 0;
++		view.kexOvertypeBlock = (lParam & KEXCARET_OVERTYPE_BLOCK) != 0;
++		const int snapLines = static_cast<int>((lParam >> 8) & 0xFF);
++		kexSnapLines = snapLines ? snapLines : 12;
++		if (on != kexOn) {
++			kexOn = on;
++			view.kexCollect = on;
++			kexCarets.clear();
++			kexOnScreen.clear();
++			kexSnapNext = true;
++			kexStats = {};
++			if (!on)
++				FineTickerCancel(TickReason::kexCaret);
++		}
++		Redraw();
++		return 0;
++	}
++	case SCI_KEX_GETCARETINFO:
++		if (KexCaretInfo *info = static_cast<KexCaretInfo *>(PtrFromSPtr(lParam))) {
++			info->on = kexOn ? 1 : 0;
++			info->visible = kexOn ? kexStats.visible : 0;
++			info->carets = kexStats.carets;
++			info->mainX = kexStats.mainX;
++			info->mainY = kexStats.mainY;
++			info->mainH = kexStats.mainH;
++			info->block = kexStats.block;
++			info->frames = kexStats.frames;
++			info->workMs = kexStats.workMs;
++		}
++		return kexOn ? 1 : 0;
++	case SCI_KEX_CARETTEST:
++		kexFreeze = static_cast<intptr_t>(wParam) < 0 ? -1.0 : static_cast<double>(wParam) / 1000.0;
++		kexSolid = lParam != 0;
++		kexBlinkStart = KexNowMs();
++		if (kexOn)
++			KexInvalidate();
++		return 0;
++	default:
++		break;
++	}
++
+ 	// Optional macro recording hook
+ 	if (recordingMacro)
+ 		NotifyMacroRecord(iMessage, wParam, lParam);
+@@ -8464,6 +8695,7 @@ sptr_t Editor::WndProc(Message iMessage, uptr_t wParam, sptr_t lParam) {
+ 		return SPtrFromPtr(pdoc->AsDocumentEditable());
+ 
+ 	case Message::SetDocPointer:
++		kexSnapNext = true;	// KEX: the caret doesn't glide into another document
+ 		CancelModes();
+ 		SetDocPointer(static_cast<Document *>(static_cast<IDocumentEditable *>(PtrFromSPtr(lParam))));
+ 		return 0;
+diff --git a/scintilla/src/Editor.h b/scintilla/src/Editor.h
+index 85c1410..a7398ef 100644
+--- a/scintilla/src/Editor.h
++++ b/scintilla/src/Editor.h
+@@ -189,6 +189,37 @@ constexpr XYScrollOptions operator|(XYScrollOptions a, XYScrollOptions b) noexce
+ class Editor : public EditModel, public DocWatcher {
+ protected:	// ScintillaBase subclass needs access to much of Editor
+ 
++	// KEX smooth caret (KexScintilla.h): the caret glides to each new position and fades instead of
++	// blinking. EditView records where it would draw each caret; Paint draws them at their animated
++	// positions after the text.
++	struct KexCaret {
++		KexCaretTarget from, to;
++		double start = 0;		// when the glide from "from" to "to" started (ms)
++		bool valid = false;
++	};
++	bool kexOn = false;
++	int kexGlideMs = 80;
++	int kexSnapLines = 12;
++	bool kexFade = true;
++	double kexFreeze = -1;	// self-test: glide fraction to stop at
++	bool kexSolid = false;	// self-test: no blinking
++	bool kexSnapNext = true;	// the next targets are taken as they are (new document, zoom)
++	XYPOSITION kexLineHeight = 0;
++	double kexBlinkStart = 0;
++	std::vector<KexCaret> kexCarets;
++	std::vector<PRectangle> kexOnScreen;	// client rectangles where a caret was drawn since the last tick
++	struct {
++		int visible = 0, carets = 0, block = 0, frames = 0;
++		float mainX = 0, mainY = 0, mainH = 0;
++		double workMs = 0;
++	} kexStats;
++	static double KexNowMs();
++	KexCaretTarget KexCurrent(const KexCaret &c, double now) const;
++	float KexBlinkAlpha(double now, double *nextChangeMs) const;
++	void KexPaintCarets(Surface *surface, PRectangle rcArea, PRectangle rcClient);
++	void KexTick();
++	void KexInvalidate();
++
+ 	/** On GTK+, Scintilla is a container widget holding two scroll bars
+ 	 * whereas on Windows there is just one window with both scroll bars turned on. */
+ 	Window wMain;	///< The Scintilla parent window
+@@ -571,7 +602,7 @@ protected:	// ScintillaBase subclass needs access to much of Editor
+ 	void ButtonUpWithModifiers(Point pt, unsigned int curTime, Scintilla::KeyMod modifiers);
+ 
+ 	bool Idle();
+-	enum class TickReason { caret, scroll, widen, dwell, platform };
++	enum class TickReason { caret, scroll, widen, dwell, kexCaret, platform };	// KEX: kexCaret
+ 	static constexpr int tickerInterval = 100;	// Default background ticker period for caret blinking, auto-scroll, ...
+ 	static constexpr int tickerIntervalWiden = 50;	// Ticker period for reflecting measured width to widen scroll bar
+ 	static constexpr int tickerToleranceFraction = 10;	// Default tolerance is 1/10 of tick interval
+diff --git a/scintilla/win32/ScintillaWin.cxx b/scintilla/win32/ScintillaWin.cxx
+index 1da0dcc..ade950b 100644
+--- a/scintilla/win32/ScintillaWin.cxx
++++ b/scintilla/win32/ScintillaWin.cxx
+@@ -651,7 +651,7 @@ class ScintillaWin :
+ 
+ 	std::string EncodeWString(std::wstring_view wsv);
+ 	sptr_t DefWndProc(Message iMessage, uptr_t wParam, sptr_t lParam) override;
+-	UINT_PTR timers[static_cast<int>(TickReason::dwell)+1] {};
++	UINT_PTR timers[static_cast<int>(TickReason::kexCaret)+1] {};	// KEX: kexCaret
+ 	bool FineTickerRunning(TickReason reason) override;
+ 	void FineTickerStart(TickReason reason, int millis, int tolerance) override;
+ 	void FineTickerCancel(TickReason reason) override;
+@@ -840,7 +840,7 @@ ScintillaWin::~ScintillaWin() {
+ 
+ void ScintillaWin::Finalise() {
+ 	ScintillaBase::Finalise();
+-	for (TickReason tr = TickReason::caret; tr <= TickReason::dwell;
++	for (TickReason tr = TickReason::caret; tr <= TickReason::kexCaret;	// KEX: kexCaret
+ 		tr = static_cast<TickReason>(static_cast<int>(tr) + 1)) {
+ 		FineTickerCancel(tr);
+ 	}
 -- 
 2.43.0
 
