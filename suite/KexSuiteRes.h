@@ -6,6 +6,7 @@
 #define IDD_KEX_PAGE_WINDOWS 30502
 #define IDD_KEX_PAGE_HIGHLIGHT 30503
 #define IDD_KEX_PAGE_NOTE    30504
+#define IDD_KEX_PAGE_EFFECTS 30505
 
 #define IDC_SUMMARY        1001
 #define IDC_L_EN           1100
@@ -16,11 +17,12 @@
 #define IDC_L_DRIFT        1105
 #define IDC_L_RESPECT      1106
 #define IDC_L_UNDO         1107
+#define IDC_L_OPACITY      1108
 #define IDC_C_EN           1200
 #define IDC_C_STATUS       1201
 #define IDC_C_GLIDE        1202
 #define IDC_C_SNAP         1203
-#define IDC_C_FADE         1204
+#define IDC_C_BLINK        1204
 #define IDC_C_OVB          1205
 #define IDC_H_EN           1300
 #define IDC_H_STATUS       1301
@@ -34,6 +36,14 @@
 #define IDC_H_CARETLINE    1309
 #define IDC_H_ONTOP        1310
 #define IDC_H_PLACE        1311
+#define IDC_H_AUTOHIDE     1312
+#define IDC_H_FILE         1313
+#define IDC_H_BROWSE       1314
+#define IDC_H_FILEINFO     1315
+#define IDC_H_CARET        1316
+#define IDC_H_LETTERS      1317
+#define IDC_H_FLASH        1318
+#define IDC_H_OPACITY      1319
 #define IDC_T_EN           1400
 #define IDC_T_STATUS       1401
 #define IDC_T_ZONE         1402
@@ -64,3 +74,19 @@
 #define IDC_K_KEYMAP       1903
 #define IDC_K_REMEMBER     1904
 #define IDC_K_INFO         1905
+#define IDC_E_EN           2000
+#define IDC_E_STATUS       2001
+#define IDC_E_COPY         2002
+#define IDC_E_CUT          2003
+#define IDC_E_DEL          2004
+#define IDC_E_STRENGTH     2005
+#define IDC_E_RESPECT      2006
+#define IDC_E_INFO         2007
+#define IDC_W_EN           2100
+#define IDC_W_STATUS       2101
+#define IDC_W_MS           2102
+#define IDC_W_RESPECT      2103
+#define IDC_P_EN           2200
+#define IDC_P_STATUS       2201
+#define IDC_P_DROPS        2202
+#define IDC_P_RESPECT      2203

@@ -143,8 +143,11 @@ Module* createTabSnap();
 Module* createJetBrainsKeys();
 Module* createGlassText();
 Module* createTokenStyles();
+Module* createEditFlash();
+Module* createTabSlide();
+Module* createPaintSplash();
 
-enum ModuleId { M_LETTERS = 0, M_CARET, M_HOTKEY, M_TABS, M_DESKTOP, M_SNAP, M_KEYS, M_GLASS, M_TOKENS, M_COUNT };
+enum ModuleId { M_LETTERS = 0, M_CARET, M_HOTKEY, M_TABS, M_DESKTOP, M_SNAP, M_KEYS, M_GLASS, M_TOKENS, M_FLASH, M_SLIDE, M_SPLASH, M_COUNT };
 extern Module* modules[M_COUNT];
 
 // Core services used across modules.
@@ -152,7 +155,7 @@ bool setModuleEnabled(int id, bool on, bool interactive);
 void refreshPrefPages();           // after a feature was switched on/off or failed
 void showNote(const std::wstring& text, int ms);   // non-modal note in the corner of Notepad++
 bool isPostItMode();
-enum PrefPageId { PAGE_EDITING = 0, PAGE_TABS, PAGE_WINDOWS, PAGE_HIGHLIGHT, PAGE_NOTE, PAGE_COUNT };
+enum PrefPageId { PAGE_EDITING = 0, PAGE_TABS, PAGE_WINDOWS, PAGE_HIGHLIGHT, PAGE_NOTE, PAGE_EFFECTS, PAGE_COUNT };
 HWND prefPage(int i);              // a KEX Preferences page (PrefPageId), once created
 int pageOfModule(int module);      // the page a feature's settings are on
 void openPreferences();            // Preferences on the "KEX Editing" page
@@ -176,6 +179,13 @@ extern MainHooks mainHooks;
 void desktopLoadPendingCopy();     // at NPPN_READY: a new window opens the copy of the first window's tabs
 LRESULT desktopServeCopy(HWND sender, const COPYDATASTRUCT* cds);   // WM_COPYDATA 'KEXT' from a new window
 
+// Screen rectangles of the visible part of [a, b) in an editor, one per visual line (EditFlash.cpp)
+std::vector<RECT> rangeRects(HWND sciHwnd, Sci_Position a, Sci_Position b, bool eol);
+// Paint splash (PaintSplash.cpp): around a command that may colour tokens; the new ones splash
+void paintSplashBegin();
+void paintSplashEnd();
+struct SplashScope { SplashScope() { paintSplashBegin(); } ~SplashScope() { paintSplashEnd(); } };
+
 // Self-test entry points
 void selfTestStart(const std::wstring& args);
 void selfTestOnNotify(SCNotification* n);
@@ -188,15 +198,28 @@ struct LettersStats { int lastSpawned = 0; int lastCandidates = 0; int totalSpaw
                       RECT overlay{}; bool overlayVisible = false; int skippedUndo = 0; int skippedAnimOff = 0; int skippedGlobal = 0; };
 LettersStats lettersStats();
 void lettersFreezeAfter(int ms);   // <0 = run normally
+void lettersFromNote(HWND sciHwnd, Sci_Position pos, Sci_Position len, int modType);   // the quick note's deletes
+void flashFromNote(HWND sciHwnd, Sci_Position pos, Sci_Position len, int modType);
+struct FlashStats { int copies = 0, cuts = 0, deletes = 0, lastRects = 0, live = 0, spawned = 0; };
+FlashStats flashStats();
+struct SplashStats { int splashes = 0, lastTokens = 0, live = 0, spawned = 0; };
+SplashStats splashStats();
+struct SlideStats { int seen = 0, started = 0, skipped = 0, lastDir = 0; bool active = false;
+                    int slides = 0, frames = 0, captures = 0, cancelled = 0, stopReason = 0; float fraction = 0; };
+SlideStats slideStats(HWND view);
+void slideTestFreeze(double fraction);   // <0 = run normally
+std::wstring effectsInfo();       // the line on the KEX Effects page
 // what Scintilla's smooth caret drew in the focused view at its last paint (KexScintilla.h)
 struct CaretStats { int carets = 0; bool visible = false; HWND target = nullptr;
                     float mainX = 0, mainY = 0, mainH = 0; bool block = false;
                     int pushes = 0;   // paints that drew the caret
                     double workMs = 0;   // time Scintilla spent working out and drawing carets
+                    float alpha = 0;     // the main caret's blink opacity at the last paint
 };
 CaretStats caretStats();
 void caretTestFreeze(double glideFraction, bool solidBlink);   // fraction <0 = off
 bool smoothCaretOn(HWND sciHwnd);   // the smooth caret is on in this view
+void smoothCaretApply(HWND sciHwnd, bool on);   // another editor (the quick note) follows the feature when on
 struct HotkeyStats { bool registered = false; bool byOtherNpp = false; DWORD lastError = 0; UINT mods = 0, vk = 0; int presses = 0; std::wstring text; bool noteOpen = false; };
 HotkeyStats hotkeyStats();
 void hotkeyPress();              // run the same code path as WM_HOTKEY
@@ -205,6 +228,10 @@ std::wstring hotkeyText(UINT mods, UINT vk);
 HWND quickNoteWindow();          // the open quick note (nullptr when closed or fading out)
 HWND quickNoteEditor();
 std::wstring quickNoteFile();
+std::wstring quickNoteFileError();   // why the chosen note file couldn't be read ("" when fine)
+void quickNoteOpenFile();            // Settings > KEX Quick Note > Open Note File in Notepad++
+void quickNoteOptionsChanged();      // the Preferences page changed an option of the open note
+void addNoteCommands(HMENU parent, int position);
 struct TabsStats { bool stripVisible = false; RECT strip{}; int tabCount = 0; int activeIndex = -1; int view = 0; std::vector<RECT> tabRects; std::vector<int> dirty; };
 TabsStats tabsStats();
 void tabsTestClick(int index);
@@ -224,7 +251,7 @@ void glassTestDragEnter();         // what a drag entering the glass does
 struct TokenStats { int wrapperCalls = 0; int liveWrappers = 0; int docs = 0; int lexCalls = 0; int variantsMade = 0; int collisions = 0;
                     int fullPasses = 0; int menus = 0; int augmented = 0; bool menuKeyOn = false; std::wstring menuKey; std::wstring last; };
 TokenStats tokenStats();
-int tokenCommandId(int which);     // our menu commands: 0 Bold, 1 Italic, 2 Clear This Token
+int tokenCommandId(int which);     // our menu commands: 0 Bold, 1 Italic, 2 Clear This Token, 3 Bold / 4 Italic (one token)
 std::wstring tokenStoreFile();     // kex-tokens.txt
 std::wstring tokenInfo();          // the line on the KEX Highlighting page
 int tokenRuleCount(HWND view);     // tokens styled in the document of that view
@@ -232,6 +259,10 @@ int tokenVariantBase(HWND view, int style, int* flags);   // lexer style behind 
 bool tokenDocWrapped(HWND view);   // the document's lexer goes through the suite
 void addTokenCommands(HMENU parent, int position);       // Settings > KEX Highlighting > Token Style Menu
 int tokenMenuCommandId();
+int tokenOneOffAt(HWND view);      // bold/italic of the single range at the selection or caret (Style One Token)
+void tokenExportCopy(const std::wstring& dir);   // the first window: the styles of its tabs, for a new window's copy
+void tokenImportCopy(const std::wstring& dir);   // the new window: read them before the copy's folder goes
+std::wstring desktopSessionKey();  // this window's desktop session ("" for the first window's own)
 
 // Desktop provider (real IVirtualDesktopManager or the fake used by the self-test)
 class DesktopProvider {

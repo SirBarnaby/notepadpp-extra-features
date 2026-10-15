@@ -1,12 +1,16 @@
 // HotkeyDrop.cpp - quick note: a global hotkey (RegisterHotKey, default Ctrl+Alt+M) fades a small
 // Notepad++-styled note window in at the centre of the screen (or where it was left), over whatever
 // program is in front and whether or not Notepad++ is minimised. Pressing it again fades the note out
-// and gives the focus back. The text is saved to kex-quicknote.txt in Notepad++'s settings folder as
-// you type. The note has no title bar: its top edge moves it, the other edges and corners resize it.
+// and gives the focus back. The text is saved as you type, to kex-quicknote.txt in Notepad++'s settings
+// folder or to a file of the user's choosing (kept in its own encoding and line endings). The note has
+// no title bar: its top edge moves it, the other edges and corners resize it. Its editor gets the
+// smooth caret, the falling letters and the copy/cut/delete flashes, as the views do.
 #include "KexSuite.h"
+#include "KexScintilla.h"
 #include <dwmapi.h>
 #include <cmath>
 #include <climits>
+#include <cstring>
 
 namespace kex {
 
@@ -54,7 +58,30 @@ public:
         _x = settings.getInt(key(), L"X", INT_MIN);
         _y = settings.getInt(key(), L"Y", INT_MIN);
         _zoom = settings.getInt(key(), L"Zoom", INT_MIN);
+        _smoothCaret = settings.getInt(key(), L"SmoothCaret", 1) != 0;
+        _autoHide = settings.getInt(key(), L"HideWhenInactive", 0) != 0;
+        _opacity = std::max(30, std::min(100, settings.getInt(key(), L"Opacity", 100)));
+        const std::wstring f = noteFileSetting();
+        if (f != _file)
+        {
+            // another note file: what is typed so far goes to the old one, the note shows the new one
+            if (_sci && !_closing) save();
+            _file = f;
+            if (_sci && !_closing) load();
+        }
+        if (_sci && !_closing) applyEffects();
     }
+
+    // the file the note keeps its text in: the chosen one (environment variables expanded) or ours
+    static std::wstring noteFileSetting()
+    {
+        const std::wstring set = settings.getStr(L"HotkeyDropDown", L"NoteFile");
+        if (set.empty()) return settings.dir() + L"\\kex-quicknote.txt";
+        wchar_t buf[MAX_PATH * 2] = {};
+        const DWORD n = ::ExpandEnvironmentStringsW(set.c_str(), buf, MAX_PATH * 2);
+        return (n > 0 && n < MAX_PATH * 2) ? std::wstring(buf) : set;
+    }
+    bool ownFile() const { return settings.getStr(key(), L"NoteFile").empty(); }
 
     bool selfCheck(std::wstring& why) override
     {
@@ -135,7 +162,7 @@ public:
         ++s_stats.presses;
         if (_note && isCloaked(_note)) destroyNote(true);     // left open on another desktop: start again here
         if (!_note) { open(); return; }
-        if (_closing) { fadeTo(255); _closing = false; front(); return; }
+        if (_closing) { fadeTo(maxAlpha()); _closing = false; front(); return; }
         HWND fg = ::GetForegroundWindow();
         if (fg && (fg == _note || ::GetAncestor(fg, GA_ROOT) == _note)) close();
         else front();
@@ -143,7 +170,22 @@ public:
 
     HWND noteWindow() const { return _closing ? nullptr : _note; }
     HWND editor() const { return _closing ? nullptr : _sci; }
-    std::wstring file() const { return settings.dir() + L"\\kex-quicknote.txt"; }
+    std::wstring file() const { return _file.empty() ? noteFileSetting() : _file; }
+    std::wstring fileError() const { return _fileError; }
+
+    // Settings > KEX Quick Note > Open Note File in Notepad++
+    void openFileInNpp()
+    {
+        if (_sci && !_closing) { _dirty = true; save(); }   // a file that doesn't exist yet is made first
+        const std::wstring f = file();
+        if (::GetFileAttributesW(f.c_str()) == INVALID_FILE_ATTRIBUTES)
+        {
+            HANDLE h = ::CreateFileW(f.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr);
+            if (h != INVALID_HANDLE_VALUE) ::CloseHandle(h);
+        }
+        if (_note && !_closing) close();
+        nppMsg(NPPM_DOOPEN, 0, reinterpret_cast<LPARAM>(f.c_str()));
+    }
 
 protected:
     LRESULT onMessage(UINT m, WPARAM w, LPARAM l) override
@@ -189,7 +231,7 @@ private:
         std::wstring caption = L"Quick note  (" + s_stats.text + L" or Esc to hide)";
         // Layered for its whole life when it fades: switching the style on a shown window is what made
         // the fade skip now and then.
-        _layered = _fade && !binaryAlpha();
+        _layered = (_fade || _opacity < 100) && !binaryAlpha();
         DWORD ex = WS_EX_TOOLWINDOW | (_onTop ? WS_EX_TOPMOST : 0) | (_layered ? WS_EX_LAYERED : 0);
         // Unowned, so it shows even while Notepad++ is minimised; created fresh each time, so it opens on
         // the desktop you are looking at. No title bar: the edge around the text moves and sizes it.
@@ -206,17 +248,18 @@ private:
         if (!_sci) { log(L"quick note: Scintilla failed (%lu)", ::GetLastError()); destroyNote(false); return; }
         ::SetWindowSubclass(_sci, editorSubclass, 1, reinterpret_cast<DWORD_PTR>(this));
         styleLike(views.sci(views.current()));
+        _closing = false;
         load();
+        applyEffects();
         layout();
 
-        _closing = false;
-        if (_layered) { _alpha = 0; ::SetLayeredWindowAttributes(_note, 0, 0, LWA_ALPHA); }
+        if (_layered) { _alpha = _fade ? 0 : maxAlpha(); ::SetLayeredWindowAttributes(_note, 0, static_cast<BYTE>(_alpha), LWA_ALPHA); }
         else _alpha = 255;
         ::ShowWindow(_note, SW_SHOWNA);
         // paint the text before the first visible frame, so the fade shows the note and not a blank box
         ::RedrawWindow(_note, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
         front();
-        if (_layered) fadeTo(255);
+        if (_layered && _fade) fadeTo(maxAlpha());
         s_stats.noteOpen = true;
         log(L"quick note: opened at %d,%d %dx%d, previous window %p", x, y, w, h, _prevFg);
     }
@@ -229,7 +272,7 @@ private:
         ::SetFocus(_sci);
     }
 
-    void close()
+    void close(bool giveFocusBack = true)
     {
         if (!_note || _closing) return;
         save();
@@ -243,9 +286,9 @@ private:
         loadOptions();
         _closing = true;
         s_stats.noteOpen = false;
-        if (_prevFg && ::IsWindow(_prevFg) && ::IsWindowVisible(_prevFg) && !::IsIconic(_prevFg)) ::SetForegroundWindow(_prevFg);
-        log(L"quick note: closed, focus back to %p", _prevFg);
-        if (_layered) fadeTo(0);
+        if (giveFocusBack && _prevFg && ::IsWindow(_prevFg) && ::IsWindowVisible(_prevFg) && !::IsIconic(_prevFg)) ::SetForegroundWindow(_prevFg);
+        log(L"quick note: closed, focus back to %p", giveFocusBack ? _prevFg : nullptr);
+        if (_layered && _fade) fadeTo(0);
         else destroyNote(false);
     }
 
@@ -384,54 +427,150 @@ private:
         sci(s, SCI_SETCARETLINEVISIBLE, _caretLine ? 1 : 0);
         sci(s, SCI_SETCARETLINEVISIBLEALWAYS, _caretLine ? 1 : 0);
         if (!_caretLine) sci(s, SCI_RESETELEMENTCOLOUR, SC_ELEMENT_CARET_LINE_BACK);
-        sci(s, SCI_SETMODEVENTMASK, SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT);
+        sci(s, SCI_SETMODEVENTMASK, SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT | SC_MOD_BEFOREDELETE);
         _marginWidth = -1;
+    }
+
+    // the smooth caret, as the views have it (when that feature is on)
+    void applyEffects()
+    {
+        if (_sci) smoothCaretApply(_sci, _smoothCaret);
+    }
+
+    int maxAlpha() const { return _opacity * 255 / 100; }
+
+    enum Encoding { ENC_UTF8 = 0, ENC_UTF8_BOM, ENC_UTF16LE, ENC_UTF16BE, ENC_ANSI };
+
+    static FILETIME writeTime(const std::wstring& path)
+    {
+        WIN32_FILE_ATTRIBUTE_DATA fa{};
+        if (!::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fa)) return FILETIME{};
+        return fa.ftLastWriteTime;
+    }
+
+    // a file's bytes as UTF-8 for the editor, remembering the encoding to write it back in
+    static std::string decode(const std::string& raw, int& enc)
+    {
+        auto wideToUtf8 = [](const wchar_t* w, int n) {
+            std::string out;
+            const int len = ::WideCharToMultiByte(CP_UTF8, 0, w, n, nullptr, 0, nullptr, nullptr);
+            if (len > 0) { out.resize(static_cast<size_t>(len)); ::WideCharToMultiByte(CP_UTF8, 0, w, n, &out[0], len, nullptr, nullptr); }
+            return out;
+        };
+        if (raw.size() >= 3 && static_cast<unsigned char>(raw[0]) == 0xEF && static_cast<unsigned char>(raw[1]) == 0xBB && static_cast<unsigned char>(raw[2]) == 0xBF)
+        { enc = ENC_UTF8_BOM; return raw.substr(3); }
+        if (raw.size() >= 2 && (static_cast<unsigned char>(raw[0]) == 0xFF && static_cast<unsigned char>(raw[1]) == 0xFE))
+        { enc = ENC_UTF16LE; std::wstring w((raw.size() - 2) / 2, L'\0'); memcpy(&w[0], raw.data() + 2, w.size() * 2); return wideToUtf8(w.data(), static_cast<int>(w.size())); }
+        if (raw.size() >= 2 && (static_cast<unsigned char>(raw[0]) == 0xFE && static_cast<unsigned char>(raw[1]) == 0xFF))
+        {
+            enc = ENC_UTF16BE;
+            std::wstring w((raw.size() - 2) / 2, L'\0');
+            for (size_t i = 0; i < w.size(); ++i) w[i] = static_cast<wchar_t>((static_cast<unsigned char>(raw[2 + 2 * i]) << 8) | static_cast<unsigned char>(raw[3 + 2 * i]));
+            return wideToUtf8(w.data(), static_cast<int>(w.size()));
+        }
+        if (raw.empty() || ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, raw.data(), static_cast<int>(raw.size()), nullptr, 0) > 0)
+        { enc = ENC_UTF8; return raw; }
+        enc = ENC_ANSI;
+        const int n = ::MultiByteToWideChar(CP_ACP, 0, raw.data(), static_cast<int>(raw.size()), nullptr, 0);
+        std::wstring w(static_cast<size_t>(std::max(0, n)), L'\0');
+        if (n > 0) ::MultiByteToWideChar(CP_ACP, 0, raw.data(), static_cast<int>(raw.size()), &w[0], n);
+        return wideToUtf8(w.data(), static_cast<int>(w.size()));
+    }
+
+    static std::string encode(const std::string& utf8, int enc)
+    {
+        if (enc == ENC_UTF8) return utf8;
+        if (enc == ENC_UTF8_BOM) return "\xEF\xBB\xBF" + utf8;
+        const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+        std::wstring w(static_cast<size_t>(std::max(0, n)), L'\0');
+        if (n > 0) ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), &w[0], n);
+        if (enc == ENC_ANSI)
+        {
+            const int len = ::WideCharToMultiByte(CP_ACP, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+            std::string out(static_cast<size_t>(std::max(0, len)), '\0');
+            if (len > 0) ::WideCharToMultiByte(CP_ACP, 0, w.data(), static_cast<int>(w.size()), &out[0], len, nullptr, nullptr);
+            return out;
+        }
+        std::string out(enc == ENC_UTF16LE ? "\xFF\xFE" : "\xFE\xFF");
+        for (wchar_t c : w)
+        {
+            const char lo = static_cast<char>(c & 0xFF), hi = static_cast<char>((c >> 8) & 0xFF);
+            if (enc == ENC_UTF16LE) { out += lo; out += hi; } else { out += hi; out += lo; }
+        }
+        return out;
     }
 
     void load()
     {
         std::string text;
-        if (_keepText)
+        _encoding = ENC_UTF8;
+        _fileError.clear();
+        const bool keep = _keepText || !ownFile();   // a chosen file is always the note's text
+        const std::wstring path = file();
+        if (keep)
         {
-            HANDLE f = ::CreateFileW(file().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+            HANDLE f = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
             if (f != INVALID_HANDLE_VALUE)
             {
                 LARGE_INTEGER sz{};
                 if (::GetFileSizeEx(f, &sz) && sz.QuadPart < (16 << 20))
                 {
-                    text.resize(static_cast<size_t>(sz.QuadPart));
+                    std::string raw(static_cast<size_t>(sz.QuadPart), '\0');
                     DWORD got = 0;
-                    if (!text.empty() && !::ReadFile(f, &text[0], static_cast<DWORD>(text.size()), &got, nullptr)) got = 0;
-                    text.resize(got);
+                    if (!raw.empty() && !::ReadFile(f, &raw[0], static_cast<DWORD>(raw.size()), &got, nullptr)) got = 0;
+                    raw.resize(got);
+                    text = decode(raw, _encoding);
                 }
+                else _fileError = L"the file is larger than 16 MB";
                 ::CloseHandle(f);
             }
+            else if (::GetLastError() != ERROR_FILE_NOT_FOUND && ::GetLastError() != ERROR_PATH_NOT_FOUND)
+            {
+                wchar_t e[96]; swprintf(e, 96, L"the file can't be read (error %lu)", ::GetLastError());
+                _fileError = e;
+            }
         }
+        // its line endings: the first one in the file (Windows' for a new note)
+        int eol = SC_EOL_CRLF;
+        const size_t nl = text.find_first_of("\r\n");
+        if (nl != std::string::npos) eol = text[nl] == '\n' ? SC_EOL_LF : (nl + 1 < text.size() && text[nl + 1] == '\n' ? SC_EOL_CRLF : SC_EOL_CR);
         _loading = true;
+        sci(_sci, SCI_SETEOLMODE, eol);
         sci(_sci, SCI_SETTEXT, 0, reinterpret_cast<LPARAM>(text.c_str()));
         sci(_sci, SCI_EMPTYUNDOBUFFER);
         sci(_sci, SCI_DOCUMENTEND);
         _loading = false;
         _dirty = false;
+        _fileTime = writeTime(path);
+        if (!_fileError.empty()) log(L"quick note: %ls: %ls", path.c_str(), _fileError.c_str());
         updateMargins();
     }
 
     void save()
     {
         if (_note) ::KillTimer(_note, TIMER_SAVE);
-        if (!_keepText || !_sci || !_dirty) return;
+        if ((!_keepText && ownFile()) || !_sci || !_dirty || !_fileError.empty()) return;   // never overwrite a file we couldn't read
         LRESULT len = sci(_sci, SCI_GETLENGTH);
         std::string text(static_cast<size_t>(len) + 1, '\0');
         sci(_sci, SCI_GETTEXT, len + 1, reinterpret_cast<LPARAM>(&text[0]));
         text.resize(static_cast<size_t>(len));
-        std::wstring dst = file(), tmp = dst + L".tmp";
+        text = encode(text, _encoding);
+        std::wstring dst = file(), tmp = dst + L".kex-tmp";
         HANDLE f = ::CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
         if (f == INVALID_HANDLE_VALUE) { log(L"quick note: can't write %ls (%lu)", tmp.c_str(), ::GetLastError()); return; }
         DWORD put = 0;
         bool ok = text.empty() || (::WriteFile(f, text.data(), static_cast<DWORD>(text.size()), &put, nullptr) && put == text.size());
         ::CloseHandle(f);
-        if (ok && ::MoveFileExW(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) _dirty = false;
+        if (ok && ::MoveFileExW(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) { _dirty = false; _fileTime = writeTime(dst); }
         else { ::DeleteFileW(tmp.c_str()); log(L"quick note: saving %ls failed (%lu)", dst.c_str(), ::GetLastError()); }
+    }
+
+    // changed by another program while the note was open (and nothing typed since): show the new text
+    void reloadIfChanged()
+    {
+        if (!_sci || _closing || _dirty) return;
+        const FILETIME t = writeTime(file());
+        if (::CompareFileTime(&t, &_fileTime) != 0) load();
     }
 
     bool registerClass()
@@ -489,7 +628,11 @@ private:
             ::InvalidateRect(h, nullptr, TRUE);
             return 0;
         }
-        case WM_ACTIVATE: if (LOWORD(w) != WA_INACTIVE && self->_sci) ::SetFocus(self->_sci); return 0;
+        case WM_ACTIVATE:
+            if (LOWORD(w) != WA_INACTIVE && self->_sci) { self->reloadIfChanged(); ::SetFocus(self->_sci); }
+            // clicked away: hide (another window took the focus, so it keeps it)
+            else if (LOWORD(w) == WA_INACTIVE && self->_autoHide && !self->_closing && !selfTestMode) self->close(false);
+            return 0;
         case WM_CLOSE: self->close(); return 0;
         case WM_COMMAND: if (LOWORD(w) == IDCANCEL) { self->close(); return 0; } break;
         case WM_TIMER:
@@ -499,6 +642,12 @@ private:
         case WM_NOTIFY:
         {
             auto* n = reinterpret_cast<SCNotification*>(l);
+            if (n->nmhdr.hwndFrom == self->_sci && n->nmhdr.code == SCN_MODIFIED && !self->_loading
+                && (n->modificationType & SC_MOD_BEFOREDELETE) && n->length > 0)
+            {
+                lettersFromNote(self->_sci, n->position, n->length, n->modificationType);
+                flashFromNote(self->_sci, n->position, n->length, n->modificationType);
+            }
             if (n->nmhdr.hwndFrom == self->_sci && n->nmhdr.code == SCN_MODIFIED && !self->_loading
                 && (n->modificationType & (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT)))
             {
@@ -523,6 +672,10 @@ private:
     UINT _mods = MOD_CONTROL | MOD_ALT, _vk = 'M';
     bool _keepText = true, _fade = true, _closing = false, _dirty = false, _loading = false, _layered = false;
     bool _lineNumbers = false, _wrap = true, _caretLine = false, _onTop = true, _remember = false;
+    bool _smoothCaret = true, _autoHide = false;
+    int _opacity = 100, _encoding = ENC_UTF8;
+    std::wstring _file, _fileError;
+    FILETIME _fileTime{};
     int _w96 = 640, _h96 = 420, _x = INT_MIN, _y = INT_MIN, _zoom = INT_MIN;
     LRESULT _marginWidth = -1;
     HWND _note = nullptr, _sci = nullptr, _prevFg = nullptr;
@@ -541,6 +694,20 @@ std::wstring hotkeyText(UINT mods, UINT vk) { return QuickNote::text(mods, vk); 
 HWND quickNoteWindow() { return s_mod ? s_mod->noteWindow() : nullptr; }
 HWND quickNoteEditor() { return s_mod ? s_mod->editor() : nullptr; }
 std::wstring quickNoteFile() { return s_mod ? s_mod->file() : std::wstring(); }
+std::wstring quickNoteFileError() { return s_mod ? s_mod->fileError() : std::wstring(); }
+void quickNoteOpenFile() { if (s_mod) s_mod->openFileInNpp(); }
+void quickNoteOptionsChanged() { if (s_mod) s_mod->loadOptions(); }
+
+// Settings > KEX Quick Note > Open Note File in Notepad++ (Shortcut Mapper can give it a key)
+void addNoteCommands(HMENU parent, int position)
+{
+    static int id = 0;
+    if (id || !parent) return;
+    const KexCommand cmd{ 102, L"Open Note File in Notepad++", quickNoteOpenFile, false, false, false, 0 };
+    KexCommandList list{ &cmd, 1, &id, position };
+    if (!nppMsg(NPPM_KEX_ADDCOMMANDS, reinterpret_cast<WPARAM>(parent), reinterpret_cast<LPARAM>(&list)) || !id)
+        log(L"Quick note: Notepad++ did not take the menu command");
+}
 // Options dialog: store and (if the feature is on) re-register. Returns true when registered.
 bool hotkeyApply(UINT mods, UINT vk)
 {

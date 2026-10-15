@@ -140,70 +140,97 @@ bool renderRuns(Sprite& out, const std::vector<TextRun>& runs, int w, int h, int
     return true;
 }
 
-static inline uint32_t samplePremul(const Sprite& sp, float fx, float fy)
+// premultiplied "over" with integer weights: s scaled by k/256 first (k = 256 keeps it)
+static inline void blendOverK(uint32_t& d, uint32_t s, uint32_t k)
 {
-    // bilinear sample with transparent outside
-    int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));
-    float tx = fx - x0, ty = fy - y0;
-    float acc[4] = { 0, 0, 0, 0 };
-    for (int j = 0; j < 2; ++j)
-        for (int i = 0; i < 2; ++i)
-        {
-            int x = x0 + i, y = y0 + j;
-            if (x < 0 || y < 0 || x >= sp.w || y >= sp.h) continue;
-            float wgt = (i ? tx : 1 - tx) * (j ? ty : 1 - ty);
-            uint32_t p = sp.px[static_cast<size_t>(y) * sp.w + x];
-            acc[0] += wgt * (p & 0xFF);
-            acc[1] += wgt * ((p >> 8) & 0xFF);
-            acc[2] += wgt * ((p >> 16) & 0xFF);
-            acc[3] += wgt * (p >> 24);
-        }
-    return (static_cast<uint32_t>(acc[3] + 0.5f) << 24) | (static_cast<uint32_t>(acc[2] + 0.5f) << 16) |
-           (static_cast<uint32_t>(acc[1] + 0.5f) << 8) | static_cast<uint32_t>(acc[0] + 0.5f);
-}
-
-static inline void blendOver(uint32_t& d, uint32_t s, float alpha)
-{
-    uint32_t sa = s >> 24;
-    if (alpha < 1.0f)
+    if (k < 256)
     {
-        uint32_t k = static_cast<uint32_t>(alpha * 256.0f);
-        s = ((((s >> 24) * k) >> 8) << 24) | (((((s >> 16) & 0xFF) * k) >> 8) << 16) |
-            (((((s >> 8) & 0xFF) * k) >> 8) << 8) | (((s & 0xFF) * k) >> 8);
-        sa = s >> 24;
+        const uint32_t rb = ((s & 0x00FF00FFu) * k >> 8) & 0x00FF00FFu;
+        const uint32_t ag = (((s >> 8) & 0x00FF00FFu) * k >> 8) & 0x00FF00FFu;
+        s = rb | (ag << 8);
     }
+    const uint32_t sa = s >> 24;
     if (!sa) return;
     if (sa == 255) { d = s; return; }
-    uint32_t inv = 255 - sa;
-    uint32_t na = sa + (((d >> 24) * inv) / 255);
-    uint32_t nr = ((s >> 16) & 0xFF) + ((((d >> 16) & 0xFF) * inv) / 255);
-    uint32_t ng = ((s >> 8) & 0xFF) + ((((d >> 8) & 0xFF) * inv) / 255);
-    uint32_t nb = (s & 0xFF) + (((d & 0xFF) * inv) / 255);
-    d = (std::min(na, 255u) << 24) | (std::min(nr, 255u) << 16) | (std::min(ng, 255u) << 8) | std::min(nb, 255u);
+    const uint32_t inv = 256 - sa;
+    const uint32_t rb = ((d & 0x00FF00FFu) * inv >> 8) & 0x00FF00FFu;
+    const uint32_t ag = (((d >> 8) & 0x00FF00FFu) * inv >> 8) & 0x00FF00FFu;
+    d = s + (rb | (ag << 8));   // no lane can pass 255: s is premultiplied and inv <= 256 - sa
+}
+
+// bilinear blend of four premultiplied pixels, weights ux, uy in 0..256
+static inline uint32_t lerp4(uint32_t p00, uint32_t p10, uint32_t p01, uint32_t p11, uint32_t ux, uint32_t uy)
+{
+    if (!(p00 | p10 | p01 | p11)) return 0;
+    const uint32_t vx = 256 - ux, vy = 256 - uy;
+    const uint32_t rbT = (((p00 & 0x00FF00FFu) * vx + (p10 & 0x00FF00FFu) * ux) >> 8) & 0x00FF00FFu;
+    const uint32_t agT = ((((p00 >> 8) & 0x00FF00FFu) * vx + ((p10 >> 8) & 0x00FF00FFu) * ux) >> 8) & 0x00FF00FFu;
+    const uint32_t rbB = (((p01 & 0x00FF00FFu) * vx + (p11 & 0x00FF00FFu) * ux) >> 8) & 0x00FF00FFu;
+    const uint32_t agB = ((((p01 >> 8) & 0x00FF00FFu) * vx + ((p11 >> 8) & 0x00FF00FFu) * ux) >> 8) & 0x00FF00FFu;
+    const uint32_t rb = ((rbT * vy + rbB * uy) >> 8) & 0x00FF00FFu;
+    const uint32_t ag = ((agT * vy + agB * uy) >> 8) & 0x00FF00FFu;
+    return rb | (ag << 8);
+}
+
+// The x range [lo, hi] of a row where a + b x stays inside (min, max); false when none.
+static inline bool clipLinear(float a, float b, float mn, float mx, float& lo, float& hi)
+{
+    if (std::fabs(b) < 1e-7f) return a > mn && a < mx;
+    float x1 = (mn - a) / b, x2 = (mx - a) / b;
+    if (x1 > x2) std::swap(x1, x2);
+    lo = std::max(lo, x1); hi = std::min(hi, x2);
+    return lo <= hi;
 }
 
 void drawSprite(Surface& s, const Sprite& sp, float cx, float cy, float angle, float alpha)
 {
     if (!s.px || sp.w <= 0 || sp.h <= 0 || alpha <= 0.0f) return;
-    float c = std::cos(angle), sn = std::sin(angle);
-    float hw = sp.w * 0.5f, hh = sp.h * 0.5f;
-    float ex = std::fabs(c) * hw + std::fabs(sn) * hh, ey = std::fabs(sn) * hw + std::fabs(c) * hh;
-    int x0 = std::max(0, static_cast<int>(std::floor(cx - ex))), x1 = std::min(s.w - 1, static_cast<int>(std::ceil(cx + ex)));
-    int y0 = std::max(0, static_cast<int>(std::floor(cy - ey))), y1 = std::min(s.h - 1, static_cast<int>(std::ceil(cy + ey)));
-    bool axisAligned = std::fabs(angle) < 0.0005f;
+    const uint32_t k = alpha >= 1.0f ? 256u : static_cast<uint32_t>(alpha * 256.0f + 0.5f);
+    if (!k) return;
+    const float c = std::cos(angle), sn = std::sin(angle);
+    const float hw = sp.w * 0.5f, hh = sp.h * 0.5f;
+    const float ex = std::fabs(c) * hw + std::fabs(sn) * hh, ey = std::fabs(sn) * hw + std::fabs(c) * hh;
+    const int x0 = std::max(0, static_cast<int>(std::floor(cx - ex))), x1 = std::min(s.w - 1, static_cast<int>(std::ceil(cx + ex)));
+    const int y0 = std::max(0, static_cast<int>(std::floor(cy - ey))), y1 = std::min(s.h - 1, static_cast<int>(std::ceil(cy + ey)));
+    if (x0 > x1 || y0 > y1) return;
+    const int W = sp.w, H = sp.h;
+    const uint32_t* src = sp.px.data();
+    // The sprite pixel under the centre of screen pixel x is (sx, sy) = (c x + bx, -sn x + by): a
+    // straight line along each row, walked in 16.16 fixed point. Only the part of the row where the
+    // sample touches the sprite is visited.
+    const int32_t dfx = static_cast<int32_t>(c * 65536.0f), dfy = static_cast<int32_t>(-sn * 65536.0f);
     for (int y = y0; y <= y1; ++y)
     {
+        const float dy = y + 0.5f - cy;
+        const float bx = c * (0.5f - cx) + sn * dy + hw - 0.5f;
+        const float by = -sn * (0.5f - cx) + c * dy + hh - 0.5f;
+        float lo = static_cast<float>(x0), hi = static_cast<float>(x1);
+        if (!clipLinear(bx, c, -1.0f, static_cast<float>(W), lo, hi)) continue;
+        if (!clipLinear(by, -sn, -1.0f, static_cast<float>(H), lo, hi)) continue;
+        const int xs = std::max(x0, static_cast<int>(std::ceil(lo))), xe = std::min(x1, static_cast<int>(std::floor(hi)));
+        if (xs > xe) continue;
+        int32_t fx = static_cast<int32_t>((c * xs + bx) * 65536.0f), fy = static_cast<int32_t>((-sn * xs + by) * 65536.0f);
         uint32_t* row = s.px + static_cast<size_t>(y) * s.stride;
-        float dy = y + 0.5f - cy;
-        for (int x = x0; x <= x1; ++x)
+        for (int x = xs; x <= xe; ++x, fx += dfx, fy += dfy)
         {
-            float dx = x + 0.5f - cx;
-            float sx, sy;
-            if (axisAligned) { sx = dx + hw - 0.5f; sy = dy + hh - 0.5f; }
-            else { sx = c * dx + sn * dy + hw - 0.5f; sy = -sn * dx + c * dy + hh - 0.5f; }
-            if (sx < -1 || sy < -1 || sx > sp.w || sy > sp.h) continue;
-            uint32_t p = samplePremul(sp, sx, sy);
-            if (p >> 24) blendOver(row[x], p, alpha);
+            const int ix = fx >> 16, iy = fy >> 16;   // floor (arithmetic shift)
+            if (ix < -1 || iy < -1 || ix >= W || iy >= H) continue;
+            const uint32_t ux = (static_cast<uint32_t>(fx) >> 8) & 0xFF, uy = (static_cast<uint32_t>(fy) >> 8) & 0xFF;
+            uint32_t p00, p10, p01, p11;
+            if (ix >= 0 && iy >= 0 && ix + 1 < W && iy + 1 < H)
+            {
+                const uint32_t* q = src + static_cast<size_t>(iy) * W + ix;
+                p00 = q[0]; p10 = q[1]; p01 = q[W]; p11 = q[W + 1];
+            }
+            else
+            {
+                auto at = [&](int px, int py) -> uint32_t {
+                    return (px < 0 || py < 0 || px >= W || py >= H) ? 0u : src[static_cast<size_t>(py) * W + px];
+                };
+                p00 = at(ix, iy); p10 = at(ix + 1, iy); p01 = at(ix, iy + 1); p11 = at(ix + 1, iy + 1);
+            }
+            const uint32_t p = lerp4(p00, p10, p01, p11, ux, uy);
+            if (p >> 24) blendOverK(row[x], p, k);
         }
     }
 }
@@ -213,20 +240,24 @@ void fillRectF(Surface& s, float l, float t, float r, float b, COLORREF c, float
     if (!s.px || r <= l || b <= t || alpha <= 0) return;
     int x0 = std::max(0, static_cast<int>(std::floor(l))), x1 = std::min(s.w - 1, static_cast<int>(std::ceil(r)) - 1);
     int y0 = std::max(0, static_cast<int>(std::floor(t))), y1 = std::min(s.h - 1, static_cast<int>(std::ceil(b)) - 1);
-    uint32_t cr = GetRValue(c), cg = GetGValue(c), cb = GetBValue(c);
+    if (x0 > x1 || y0 > y1) return;
+    const uint32_t opaque = 0xFF000000u | (static_cast<uint32_t>(GetRValue(c)) << 16) | (static_cast<uint32_t>(GetGValue(c)) << 8) | GetBValue(c);
+    const float al = std::min(1.0f, alpha);
     for (int y = y0; y <= y1; ++y)
     {
-        float covY = std::min(b, y + 1.0f) - std::max(t, static_cast<float>(y));
+        const float covY = std::min(b, y + 1.0f) - std::max(t, static_cast<float>(y));
         uint32_t* row = s.px + static_cast<size_t>(y) * s.stride;
+        // the inner columns are fully covered: one weight for the whole row
+        const uint32_t kIn = static_cast<uint32_t>(std::min(1.0f, covY * al) * 256.0f + 0.5f);
         for (int x = x0; x <= x1; ++x)
         {
-            float covX = std::min(r, x + 1.0f) - std::max(l, static_cast<float>(x));
-            float a = covX * covY * alpha;
-            if (a <= 0.003f) continue;
-            if (a > 1) a = 1;
-            uint32_t A = static_cast<uint32_t>(a * 255.0f + 0.5f);
-            uint32_t p = (A << 24) | ((cr * A / 255) << 16) | ((cg * A / 255) << 8) | (cb * A / 255);
-            blendOver(row[x], p, 1.0f);
+            uint32_t kk = kIn;
+            if (x == x0 || x == x1)
+            {
+                const float covX = std::min(r, x + 1.0f) - std::max(l, static_cast<float>(x));
+                kk = static_cast<uint32_t>(std::min(1.0f, covX * covY * al) * 256.0f + 0.5f);
+            }
+            if (kk) blendOverK(row[x], opaque, kk);
         }
     }
 }

@@ -27,7 +27,7 @@ sleep 2
 NPPWIN="Z:$(echo "$NPP" | sed 's#/#\\#g')\\notepad++.exe"
 (cd "$NPP" && wine explorer /desktop=kexs,1280x800 "$NPPWIN" -nosession "-pluginMessage=KexSuite_selftest=1;KexSuite_testdir=$WTESTDIR" >/dev/null 2>&1) &
 
-for i in $(seq 1 1500); do
+for i in $(seq 1 4000); do
   sleep 0.2
   [ -f "$LOG" ] || continue
   while read -r _ n name; do

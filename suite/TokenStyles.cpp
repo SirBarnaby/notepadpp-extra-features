@@ -15,12 +15,22 @@
 // lexer's style plus bold/italic, kept at the top of the 256 styles. The lexer only ever sees its
 // own styles (initial style and look-backs are mapped back), so its states and the folding are
 // unaffected.
+//
+// Style One Token gets Bold and Italic too: they make only that one occurrence bold or italic. Those
+// ranges are kept in an indicator of our own (NPPM_ALLOCATEINDICATOR, never drawn), so they move with
+// the text, and the wrapped lexer makes them bold or italic like the occurrences of a token.
+//
+// What is styled is remembered per file in kex-tokens.txt: the tokens, and the single ranges (Style
+// One Token's colours, our one-occurrence bold/italic) with their text, so they only come back where
+// that text still is. Untitled tabs are remembered with a fingerprint of their text, and a new window
+// on another desktop gets the styles of the tabs it copies.
 #include "KexSuite.h"
 #include "KexSuiteRes.h"
 #include "ILexer.h"
 #include <map>
 #include <cwchar>
 #include <cstdio>
+#include <cstring>
 
 namespace kex {
 
@@ -43,7 +53,9 @@ const UINT WM_TOK_MENU = WM_APP + 80;    // lParam: the view the menu key was pr
 const UINT WM_TOK_VIEW = WM_APP + 81;    // lParam: a Scintilla that just got its styles from Notepad++
 const UINT WM_TOK_DOC = WM_APP + 82;     // lParam: a document with new variant styles to define
 const UINT_PTR kSubclassId = 0x4B45544B; // 'KETK'
-enum { CMD_BOLD = 0, CMD_ITALIC, CMD_CLEAR, CMD_COUNT };
+enum { CMD_BOLD = 0, CMD_ITALIC, CMD_CLEAR, CMD_ONE_BOLD, CMD_ONE_ITALIC, CMD_COUNT };
+const size_t kMaxStatics = 2000;          // single styled ranges remembered per file
+const size_t kMaxStaticBytes = 4000;
 
 struct Rule {
     std::wstring text;
@@ -72,6 +84,7 @@ struct Doc {
     intptr_t restyleFrom = -1;            // posted: define new variants, then restyle from here
     intptr_t relexFrom = INTPTR_MAX;      // bold/italic taken away: lex again from here
     bool posted = false;
+    bool oneOff = false;                  // it has single bold/italic ranges (our indicator)
     Doc() { for (int i = 0; i < 256; ++i) base[i] = static_cast<unsigned char>(i); }
     int styleMask() const { int m = 0; for (const Rule& r : rules) if (r.style) m |= 1 << r.style; return m; }
     void resetVariants()
@@ -94,6 +107,7 @@ HWND g_post = nullptr;                // the module's message window, while it r
 HWND g_hidden = nullptr;              // a Scintilla of our own, for documents no window shows
 TokenStats s_stats;
 UINT g_ids[CMD_COUNT] = {};           // our menu command ids (NPPM_ALLOCATECMDID)
+int g_oneInd = -1;                    // our indicator for single bold/italic ranges (NPPM_ALLOCATEINDICATOR)
 
 // ---- Scintilla access ---------------------------------------------------------------------------
 
@@ -236,6 +250,21 @@ void syncIndicators(const Sci& s, int mask, const std::vector<Span>& spans, intp
     }
     s(SCI_SETINDICATORCURRENT, cur);
     s(SCI_SETINDICATORVALUE, val);
+}
+
+// The single bold/italic ranges (our indicator) that touch [a, b).
+void oneOffSpans(const Sci& s, intptr_t a, intptr_t b, std::vector<Span>& out)
+{
+    if (g_oneInd < 0) return;
+    intptr_t pos = std::max<intptr_t>(0, a - 1);
+    for (int guard = 0; pos < b && guard < 100000; ++guard)
+    {
+        const intptr_t end = static_cast<intptr_t>(s(SCI_INDICATOREND, g_oneInd, pos));
+        const int v = static_cast<int>(s(SCI_INDICATORVALUEAT, g_oneInd, pos)) & (F_BOLD | F_ITALIC);
+        if (v && end > a) out.push_back({ pos, end > pos ? end : pos + 1, 0, v });
+        if (end <= pos) break;
+        pos = end;
+    }
 }
 
 // Remove every run of ours from the given indicators of the whole document.
@@ -432,17 +461,21 @@ public:
         ++s_stats.lexCalls;
         try
         {
-            if (!d.rules.empty())
+            if (!d.rules.empty() || d.oneOff)
             {
                 std::vector<HWND> shown = scisShowing(_doc);
                 if (!shown.empty())
                 {
                     Sci s(shown[0]);
                     const intptr_t a = static_cast<intptr_t>(startPos), b = a + length;
-                    std::vector<Span> spans;
-                    findSpans(s, d, a, b, spans);
-                    syncIndicators(s, d.styleMask(), spans, a, b);
-                    for (const Span& sp : spans) if (sp.flags) px.spans.push_back(sp);
+                    if (!d.rules.empty())
+                    {
+                        std::vector<Span> spans;
+                        findSpans(s, d, a, b, spans);
+                        syncIndicators(s, d.styleMask(), spans, a, b);
+                        for (const Span& sp : spans) if (sp.flags) px.spans.push_back(sp);
+                    }
+                    if (d.oneOff) oneOffSpans(s, a, b, px.spans);
                 }
             }
         }
@@ -575,26 +608,6 @@ struct Token {
     bool tooLong = false;
 };
 
-struct Stored { std::wstring path; std::vector<Rule> rules; };
-
-class TokenStyles;
-TokenStyles* s_mod = nullptr;
-int g_menuCmd = 0;    // "Token Style Menu", a KEX command (Shortcut Mapper sets its key)
-
-// the menu command's key as Notepad++ shows it ("" for none)
-std::wstring menuKeyText()
-{
-    ShortcutKey sk{};
-    if (!g_menuCmd || !nppMsg(NPPM_GETSHORTCUTBYCMDID, static_cast<WPARAM>(g_menuCmd), reinterpret_cast<LPARAM>(&sk))) return L"";
-    return hotkeyText((sk._isCtrl ? MOD_CONTROL : 0) | (sk._isAlt ? MOD_ALT : 0) | (sk._isShift ? MOD_SHIFT : 0), sk._key);
-}
-
-bool sameText(const Rule& r, const std::wstring& t)
-{
-    if (r.matchCase) return r.text == t;
-    return ::CompareStringOrdinal(r.text.c_str(), static_cast<int>(r.text.size()), t.c_str(), static_cast<int>(t.size()), TRUE) == CSTR_EQUAL;
-}
-
 std::wstring escape(const std::wstring& t)
 {
     std::wstring o;
@@ -619,6 +632,195 @@ std::wstring unescape(const std::wstring& t)
         o += c == L't' ? L'\t' : c == L'r' ? L'\r' : c == L'n' ? L'\n' : c;
     }
     return o;
+}
+
+// A single styled range: Style One Token's colour (kind 'C', value = style 1..5) or our one-occurrence
+// bold/italic (kind 'O', value = flags), with its text so it only comes back where that text still is.
+struct Static { wchar_t kind = 'C'; int value = 0; intptr_t pos = 0; std::wstring text; };
+// What is remembered for a file. key: its path, or "untitled:<window>:<tab name>" for an untitled tab,
+// whose styles only come back to a tab with the same text (hash).
+struct Stored { std::wstring path; std::vector<Rule> rules; std::vector<Static> statics; unsigned hash = 0; };
+std::vector<Stored> g_copied;         // a new window on another desktop: the styles of the tabs it copied
+
+int styleOfIndicator(int ind) { for (int st = 1; st <= 5; ++st) if (kIndicator[st] == ind) return st; return 0; }
+
+unsigned textHash(const Sci& s)
+{
+    const intptr_t len = static_cast<intptr_t>(s(SCI_GETLENGTH));
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(s(SCI_GETCHARACTERPOINTER));
+    unsigned h = 2166136261u;
+    for (intptr_t i = 0; p && i < len; ++i) { h ^= p[i]; h *= 16777619u; }
+    return h ^ static_cast<unsigned>(len);
+}
+
+// Style One Token's colours and our single bold/italic ranges in a document
+std::vector<Static> collectStatics(const Sci& s)
+{
+    std::vector<Static> out;
+    const intptr_t len = static_cast<intptr_t>(s(SCI_GETLENGTH));
+    const int cp = static_cast<int>(s(SCI_GETCODEPAGE));
+    auto scan = [&](int ind, wchar_t kind) {
+        for (intptr_t pos = 0; pos < len && out.size() < kMaxStatics;)
+        {
+            const intptr_t end = static_cast<intptr_t>(s(SCI_INDICATOREND, ind, pos));
+            const int v = static_cast<int>(s(SCI_INDICATORVALUEAT, ind, pos));
+            const bool take = kind == 'C' ? (v && v != kOurValue) : (v & (F_BOLD | F_ITALIC)) != 0;
+            if (take && end > pos && static_cast<size_t>(end - pos) <= kMaxStaticBytes)
+            {
+                const char* p = reinterpret_cast<const char*>(s(SCI_GETRANGEPOINTER, pos, end - pos));
+                if (p)
+                {
+                    Static st;
+                    st.kind = kind;
+                    st.value = kind == 'C' ? styleOfIndicator(ind) : (v & (F_BOLD | F_ITALIC));
+                    st.pos = pos;
+                    st.text = toWide(std::string(p, static_cast<size_t>(end - pos)), cp);
+                    out.push_back(st);
+                }
+            }
+            if (end <= pos) break;
+            pos = end;
+        }
+    };
+    for (int st = 1; st <= 5; ++st) scan(kIndicator[st], 'C');
+    if (g_oneInd >= 0) scan(g_oneInd, 'O');
+    return out;
+}
+
+// Put remembered single ranges back where their text still is. Returns the first bold/italic one, -1 if none.
+intptr_t applyStatics(const Sci& s, Doc& d, const std::vector<Static>& statics)
+{
+    intptr_t first = -1;
+    const intptr_t len = static_cast<intptr_t>(s(SCI_GETLENGTH));
+    const int cp = static_cast<int>(s(SCI_GETCODEPAGE));
+    const sptr_t cur = s(SCI_GETINDICATORCURRENT), val = s(SCI_GETINDICATORVALUE);
+    for (const Static& st : statics)
+    {
+        const std::string bytes = toBytes(st.text, cp);
+        const intptr_t n = static_cast<intptr_t>(bytes.size());
+        if (!n || st.pos < 0 || st.pos + n > len) continue;
+        const char* p = reinterpret_cast<const char*>(s(SCI_GETRANGEPOINTER, st.pos, n));
+        if (!p || memcmp(p, bytes.data(), static_cast<size_t>(n)) != 0) continue;
+        if (st.kind == 'C' && st.value >= 1 && st.value <= 5)
+        {
+            s(SCI_SETINDICATORCURRENT, kIndicator[st.value]);
+            s(SCI_SETINDICATORVALUE, 1);   // the value Style One Token gives
+            s(SCI_INDICATORFILLRANGE, st.pos, n);
+        }
+        else if (st.kind == 'O' && g_oneInd >= 0 && (st.value & (F_BOLD | F_ITALIC)))
+        {
+            s(SCI_SETINDICATORCURRENT, g_oneInd);
+            s(SCI_SETINDICATORVALUE, st.value & (F_BOLD | F_ITALIC));
+            s(SCI_INDICATORFILLRANGE, st.pos, n);
+            d.oneOff = true;
+            if (first < 0 || st.pos < first) first = st.pos;
+        }
+    }
+    s(SCI_SETINDICATORCURRENT, cur);
+    s(SCI_SETINDICATORVALUE, val);
+    return first;
+}
+
+// The store's text format (also the styles a new window on another desktop gets):
+//   F <tab> key [<tab> hash]         a file
+//   T <tab> style <tab> flags <tab> matchCase <tab> wholeWord <tab> text      a token
+//   S <tab> kind <tab> value <tab> pos <tab> text                             a single range
+std::wstring storeText(const std::vector<Stored>& store)
+{
+    std::wstring w = L"# KEX live token styles, one block per file (Settings > Preferences > KEX Highlighting)\n";
+    for (const Stored& st : store)
+    {
+        w += L"F\t" + st.path + (st.hash ? L"\t" + std::to_wstring(st.hash) : L"") + L"\n";
+        for (const Rule& r : st.rules)
+            w += L"T\t" + std::to_wstring(r.style) + L"\t" + std::to_wstring(r.flags) + L"\t" + (r.matchCase ? L"1" : L"0") + L"\t"
+               + (r.wholeWord ? L"1" : L"0") + L"\t" + escape(r.text) + L"\n";
+        for (const Static& x : st.statics)
+            w += L"S\t" + std::wstring(1, x.kind) + L"\t" + std::to_wstring(x.value) + L"\t" + std::to_wstring(static_cast<long long>(x.pos))
+               + L"\t" + escape(x.text) + L"\n";
+    }
+    return w;
+}
+
+std::vector<Stored> parseStore(const std::wstring& w)
+{
+    std::vector<Stored> store;
+    size_t pos = 0;
+    while (pos < w.size())
+    {
+        size_t e = w.find(L'\n', pos);
+        if (e == std::wstring::npos) e = w.size();
+        std::wstring line = w.substr(pos, e - pos);
+        pos = e + 1;
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        if (line.size() < 2 || line[1] != L'\t') continue;
+        if (line[0] == L'F')
+        {
+            Stored st;
+            st.path = line.substr(2);
+            const size_t t = st.path.find(L'\t');
+            if (t != std::wstring::npos) { st.hash = static_cast<unsigned>(wcstoul(st.path.c_str() + t + 1, nullptr, 10)); st.path.resize(t); }
+            store.push_back(st);
+            continue;
+        }
+        if ((line[0] != L'T' && line[0] != L'S') || store.empty()) continue;
+        std::vector<std::wstring> f;
+        size_t p = 2;
+        const int fields = line[0] == L'T' ? 4 : 3;
+        for (int i = 0; i < fields; ++i)
+        {
+            size_t t = line.find(L'\t', p);
+            if (t == std::wstring::npos) break;
+            f.push_back(line.substr(p, t - p));
+            p = t + 1;
+        }
+        if (static_cast<int>(f.size()) != fields) continue;
+        if (line[0] == L'T')
+        {
+            Rule r;
+            r.style = std::max(0, std::min(5, _wtoi(f[0].c_str())));
+            r.flags = _wtoi(f[1].c_str()) & 3;
+            r.matchCase = _wtoi(f[2].c_str()) != 0;
+            r.wholeWord = _wtoi(f[3].c_str()) != 0;
+            r.text = unescape(line.substr(p));
+            if (!r.text.empty() && (r.style || r.flags)) store.back().rules.push_back(r);
+        }
+        else
+        {
+            Static x;
+            x.kind = f[0].empty() ? L'C' : f[0][0];
+            x.value = _wtoi(f[1].c_str());
+            x.pos = static_cast<intptr_t>(_wtoi64(f[2].c_str()));
+            x.text = unescape(line.substr(p));
+            if (!x.text.empty() && (x.kind == L'C' || x.kind == L'O') && store.back().statics.size() < kMaxStatics) store.back().statics.push_back(x);
+        }
+    }
+    store.erase(std::remove_if(store.begin(), store.end(), [](const Stored& s) { return s.rules.empty() && s.statics.empty(); }), store.end());
+    return store;
+}
+
+// our indicator is only a record of where the single bold/italic ranges are: never drawn
+void hideOneOffIndicator(HWND h)
+{
+    if (g_oneInd >= 0 && h && ::IsWindow(h) && ::SendMessageW(h, SCI_INDICGETSTYLE, g_oneInd, 0) != INDIC_HIDDEN)
+        ::SendMessageW(h, SCI_INDICSETSTYLE, g_oneInd, INDIC_HIDDEN);
+}
+
+class TokenStyles;
+TokenStyles* s_mod = nullptr;
+int g_menuCmd = 0;    // "Token Style Menu", a KEX command (Shortcut Mapper sets its key)
+
+// the menu command's key as Notepad++ shows it ("" for none)
+std::wstring menuKeyText()
+{
+    ShortcutKey sk{};
+    if (!g_menuCmd || !nppMsg(NPPM_GETSHORTCUTBYCMDID, static_cast<WPARAM>(g_menuCmd), reinterpret_cast<LPARAM>(&sk))) return L"";
+    return hotkeyText((sk._isCtrl ? MOD_CONTROL : 0) | (sk._isAlt ? MOD_ALT : 0) | (sk._isShift ? MOD_SHIFT : 0), sk._key);
+}
+
+bool sameText(const Rule& r, const std::wstring& t)
+{
+    if (r.matchCase) return r.text == t;
+    return ::CompareStringOrdinal(r.text.c_str(), static_cast<int>(r.text.size()), t.c_str(), static_cast<int>(t.size()), TRUE) == CSTR_EQUAL;
 }
 
 bool isRealPath(const std::wstring& p) { return p.find(L'\\') != std::wstring::npos || p.find(L'/') != std::wstring::npos; }
@@ -657,6 +859,12 @@ public:
             if (!nppMsg(NPPM_ALLOCATECMDID, CMD_COUNT, reinterpret_cast<LPARAM>(&first)) || first <= 0) return false;
             for (int i = 0; i < CMD_COUNT; ++i) g_ids[i] = static_cast<UINT>(first + i);
         }
+        if (g_oneInd < 0)
+        {
+            int ind = -1;
+            if (nppMsg(NPPM_ALLOCATEINDICATOR, 1, reinterpret_cast<LPARAM>(&ind)) && ind >= 0) g_oneInd = ind;
+            else log(L"Live token styles: no indicator for single bold/italic ranges");
+        }
         if (!::SetWindowSubclass(npp._nppHandle, mainProc, kSubclassId, 0)) return false;
         _subclassed = true;
         if (g_menuCmd) nppMsg(NPPM_KEX_ENABLECOMMAND, static_cast<WPARAM>(g_menuCmd), TRUE);
@@ -688,7 +896,14 @@ public:
                 {
                     Sci s(h);
                     clearIndicators(s, 0x3E);
-                    if (restyleIt) s(SCI_STARTSTYLING, 0, 0);
+                    if (d.oneOff && g_oneInd >= 0)
+                    {
+                        const sptr_t cur = s(SCI_GETINDICATORCURRENT);
+                        s(SCI_SETINDICATORCURRENT, g_oneInd);
+                        s(SCI_INDICATORCLEARRANGE, 0, s(SCI_GETLENGTH));
+                        s(SCI_SETINDICATORCURRENT, cur);
+                    }
+                    if (restyleIt || d.oneOff) s(SCI_STARTSTYLING, 0, 0);
                 });
                 for (HWND h : scisShowing(doc)) ::InvalidateRect(h, nullptr, FALSE);
             }
@@ -707,6 +922,17 @@ public:
         case NPPN_SHUTDOWN:
             _shutdown = true;
             break;
+        case NPPN_BEFORESHUTDOWN:
+            // the untitled tabs come back from Notepad++'s backup next time: remember their styles as they are now
+            _exiting = true;
+            rememberAll();
+            break;
+        case NPPN_CANCELSHUTDOWN:
+            _exiting = false;
+            break;
+        case NPPN_FILEBEFORECLOSE:
+            if (!_exiting) closing(static_cast<intptr_t>(n->nmhdr.idFrom));
+            break;
         case NPPN_BUFFERACTIVATED:
         {
             const int v = views.current();
@@ -723,7 +949,8 @@ public:
                 if (kv.second.buffer == static_cast<intptr_t>(n->nmhdr.idFrom))
                 {
                     const std::wstring p = bufferPath(kv.second.buffer);
-                    if (p != kv.second.path) { forget(kv.second.path); kv.second.path = p; remember(kv.second); }
+                    if (p != kv.second.path) { forget(keyOf(kv.second.path)); kv.second.path = p; }
+                    remember(kv.second);   // where the single ranges are now
                 }
             break;
         }
@@ -742,6 +969,7 @@ public:
         return s;
     }
 
+    static int oneOffAtPublic(HWND h) { return oneOffAt(h); }
     int ruleCount(HWND h) { auto it = g_docs.find(docOf(h)); return it == g_docs.end() ? 0 : static_cast<int>(it->second.rules.size()); }
     int variantBase(HWND h, int style, int* flags)
     {
@@ -779,25 +1007,61 @@ private:
         if (!doc) return;
         const std::wstring path = buffer ? bufferPath(buffer) : std::wstring();
         auto it = g_docs.find(doc);
+        hideOneOffIndicator(h);
         if (it != g_docs.end())
         {
             if (buffer) it->second.buffer = buffer;
-            if (buffer && path != it->second.path) { forget(it->second.path); it->second.path = path; remember(it->second); }
+            if (buffer && path != it->second.path) { forget(keyOf(it->second.path)); it->second.path = path; remember(it->second); }
             return;
         }
-        if (!_remember || !isRealPath(path)) return;
-        refreshStore();   // tokens another desktop's Notepad++ saved for this file
-        for (const Stored& st : _store)
-            if (::CompareStringOrdinal(st.path.c_str(), -1, path.c_str(), -1, TRUE) == CSTR_EQUAL)
+        if (path.empty()) return;
+        // a new window on another desktop: the styles of the tab it copied
+        const std::wstring copyKey = isRealPath(path) ? path : L"untitled:" + path;
+        for (auto c = g_copied.begin(); c != g_copied.end(); ++c)
+            if (sameKey(c->path, copyKey) && (isRealPath(path) || c->hash == textHash(Sci(h))))
             {
-                Doc& d = g_docs[doc];
-                d.buffer = buffer;
-                d.path = path;
-                d.rules = st.rules;
-                log(L"Live token styles: %d styled tokens restored for %ls", static_cast<int>(d.rules.size()), path.c_str());
-                changed(doc, d, 0x3E, true);
+                const Stored st = *c;
+                g_copied.erase(c);
+                restore(h, doc, buffer, path, st, L"copied from the first window");
                 return;
             }
+        if (!_remember) return;
+        refreshStore();   // tokens another desktop's Notepad++ saved for this file
+        const std::wstring key = keyOf(path);
+        for (const Stored& st : _store)
+            if (sameKey(st.path, key))
+            {
+                if (st.hash && st.hash != textHash(Sci(h))) return;   // an untitled tab with other text now
+                const Stored copy = st;
+                restore(h, doc, buffer, path, copy, L"restored");
+                return;
+            }
+    }
+
+    void restore(HWND h, sptr_t doc, intptr_t buffer, const std::wstring& path, const Stored& st, const wchar_t* how)
+    {
+        Doc& d = g_docs[doc];
+        d.buffer = buffer;
+        d.path = path;
+        d.rules = st.rules;
+        const intptr_t first = applyStatics(Sci(h), d, st.statics);
+        if (first >= 0) d.relexFrom = std::min(d.relexFrom, first);
+        log(L"Live token styles: %d styled tokens and %d single ranges %ls for %ls", static_cast<int>(d.rules.size()),
+            static_cast<int>(st.statics.size()), how, path.c_str());
+        changed(doc, d, 0x3E, true);
+    }
+
+    static bool sameKey(const std::wstring& a, const std::wstring& b)
+    {
+        return ::CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_EQUAL;
+    }
+
+    // a file's key in the store: its path; an untitled tab's name, per window (each desktop's Notepad++ has its own tabs)
+    static std::wstring keyOf(const std::wstring& path)
+    {
+        if (path.empty() || isRealPath(path)) return path;
+        const std::wstring w = desktopSessionKey();
+        return L"untitled:" + (w.empty() ? std::wstring(L"main") : w) + L":" + path;
     }
 
     Doc& docFor(HWND h)
@@ -908,7 +1172,11 @@ private:
             if (!existing) return true;
             Doc& d = *existing;
             int mask = 0; bool relex = false;
-            if (a == A_CLEAR_ALL) noteRelex(h, d);
+            if (a == A_CLEAR_ALL)
+            {
+                noteRelex(h, d);
+                if (clearOneOff(h, d)) relex = true;
+            }
             for (Rule& r : d.rules)
                 if (a == A_CLEAR_ALL || r.style == style)
                 {
@@ -967,6 +1235,73 @@ private:
         return true;
     }
 
+    // Style One Token > Bold / Italic: only this occurrence (the selection, or the word at the caret)
+    void actOne(int flag)
+    {
+        HWND h = views.sci(views.current());
+        if (!h || g_oneInd < 0) return;
+        Sci s(h);
+        intptr_t a = static_cast<intptr_t>(s(SCI_GETSELECTIONSTART)), b = static_cast<intptr_t>(s(SCI_GETSELECTIONEND));
+        if (a == b)
+        {
+            const intptr_t caret = static_cast<intptr_t>(s(SCI_GETCURRENTPOS));
+            a = static_cast<intptr_t>(s(SCI_WORDSTARTPOSITION, caret, 1));
+            b = static_cast<intptr_t>(s(SCI_WORDENDPOSITION, caret, 1));
+        }
+        if (b <= a) return;
+        if (b - a > 200000) { showNote(L"KEX: the selection is too long to make bold or italic.", 4000); return; }
+        const sptr_t doc = docOf(h);
+        Doc& d = docFor(h);
+        hideOneOffIndicator(h);
+        for (HWND o : scisShowing(doc)) hideOneOffIndicator(o);
+        const int now = static_cast<int>(s(SCI_INDICATORVALUEAT, g_oneInd, a)) & (F_BOLD | F_ITALIC);
+        const int want = now ^ flag;
+        const sptr_t cur = s(SCI_GETINDICATORCURRENT), val = s(SCI_GETINDICATORVALUE);
+        s(SCI_SETINDICATORCURRENT, g_oneInd);
+        if (want) { s(SCI_SETINDICATORVALUE, want); s(SCI_INDICATORFILLRANGE, a, b - a); }
+        else s(SCI_INDICATORCLEARRANGE, a, b - a);
+        s(SCI_SETINDICATORCURRENT, cur);
+        s(SCI_SETINDICATORVALUE, val);
+        d.oneOff = true;
+        d.relexFrom = std::min(d.relexFrom, a);
+        s_stats.last = L"one occurrence:" + std::wstring((want & F_BOLD) ? L" bold" : L"") + ((want & F_ITALIC) ? L" italic" : L"") + (want ? L"" : L" plain");
+        changed(doc, d, 0, true);
+    }
+
+    static int oneOffAt(HWND h)
+    {
+        if (!h || g_oneInd < 0) return 0;
+        Sci s(h);
+        intptr_t a = static_cast<intptr_t>(s(SCI_GETSELECTIONSTART));
+        if (a == static_cast<intptr_t>(s(SCI_GETSELECTIONEND)))
+            a = static_cast<intptr_t>(s(SCI_WORDSTARTPOSITION, s(SCI_GETCURRENTPOS), 1));
+        return static_cast<int>(s(SCI_INDICATORVALUEAT, g_oneInd, a)) & (F_BOLD | F_ITALIC);
+    }
+
+    // Clear all styles: the single bold/italic ranges go too
+    bool clearOneOff(HWND h, Doc& d)
+    {
+        if (!d.oneOff || g_oneInd < 0) return false;
+        Sci s(h);
+        std::vector<Span> spans;
+        oneOffSpans(s, 0, static_cast<intptr_t>(s(SCI_GETLENGTH)), spans);
+        if (!spans.empty()) d.relexFrom = std::min(d.relexFrom, spans.front().a);
+        const sptr_t cur = s(SCI_GETINDICATORCURRENT);
+        s(SCI_SETINDICATORCURRENT, g_oneInd);
+        s(SCI_INDICATORCLEARRANGE, 0, s(SCI_GETLENGTH));
+        s(SCI_SETINDICATORCURRENT, cur);
+        d.oneOff = false;
+        return true;
+    }
+
+    // after Notepad++'s own Style One Token / Clear Style: remember where the single colours are
+    void rememberCurrent()
+    {
+        HWND h = views.sci(views.current());
+        if (!h) return;
+        rememberDoc(docOf(h), bufferPath(views.bufferId(views.current(), views.currentIndex(views.current()))));
+    }
+
     // bold/italic are being taken away: lex again from the first occurrence there is now
     void noteRelex(HWND h, Doc& d)
     {
@@ -1007,49 +1342,12 @@ private:
         size_t n;
         while ((n = fread(buf, 1, sizeof(buf), f)) > 0) all.append(buf, n);
         fclose(f);
-        std::wstring w = toWide(all, SC_CP_UTF8);
-        size_t pos = 0;
-        while (pos < w.size())
-        {
-            size_t e = w.find(L'\n', pos);
-            if (e == std::wstring::npos) e = w.size();
-            std::wstring line = w.substr(pos, e - pos);
-            pos = e + 1;
-            if (!line.empty() && line.back() == L'\r') line.pop_back();
-            if (line.size() < 2 || line[1] != L'\t') continue;
-            if (line[0] == L'F') { _store.push_back({ line.substr(2), {} }); continue; }
-            if (line[0] != L'T' || _store.empty()) continue;
-            std::vector<std::wstring> f5;
-            size_t p = 2;
-            for (int i = 0; i < 4; ++i)
-            {
-                size_t t = line.find(L'\t', p);
-                if (t == std::wstring::npos) break;
-                f5.push_back(line.substr(p, t - p));
-                p = t + 1;
-            }
-            if (f5.size() != 4) continue;
-            Rule r;
-            r.style = std::max(0, std::min(5, _wtoi(f5[0].c_str())));
-            r.flags = _wtoi(f5[1].c_str()) & 3;
-            r.matchCase = _wtoi(f5[2].c_str()) != 0;
-            r.wholeWord = _wtoi(f5[3].c_str()) != 0;
-            r.text = unescape(line.substr(p));
-            if (!r.text.empty() && (r.style || r.flags)) _store.back().rules.push_back(r);
-        }
-        _store.erase(std::remove_if(_store.begin(), _store.end(), [](const Stored& s) { return s.rules.empty(); }), _store.end());
+        _store = parseStore(toWide(all, SC_CP_UTF8));
     }
 
     void saveStore()
     {
-        std::wstring w = L"# KEX live token styles, one block per file (Settings > Preferences > KEX Highlighting)\n";
-        for (const Stored& st : _store)
-        {
-            w += L"F\t" + st.path + L"\n";
-            for (const Rule& r : st.rules)
-                w += L"T\t" + std::to_wstring(r.style) + L"\t" + std::to_wstring(r.flags) + L"\t" + (r.matchCase ? L"1" : L"0") + L"\t"
-                   + (r.wholeWord ? L"1" : L"0") + L"\t" + escape(r.text) + L"\n";
-        }
+        const std::wstring w = storeText(_store);
         const std::string s = toBytes(w, SC_CP_UTF8);
         const std::wstring tmp = storeFile() + L".new";
         FILE* f = _wfopen(tmp.c_str(), L"wb");
@@ -1060,20 +1358,102 @@ private:
         _storeStamp = storeStamp();
     }
 
+    // what a document has: its tokens and its single ranges, keyed by its path or untitled name
+    Stored snapshot(sptr_t doc, const std::wstring& path, const std::wstring& key)
+    {
+        Stored st;
+        st.path = key;
+        auto it = g_docs.find(doc);
+        if (it != g_docs.end()) { st.rules = it->second.rules; for (Rule& r : st.rules) r.bytes.clear(); }
+        withDoc(doc, [&](HWND h)
+        {
+            const Sci s(h);
+            st.statics = collectStatics(s);
+            if (!isRealPath(path)) st.hash = textHash(s);
+        });
+        return st;
+    }
+
     void remember(const Doc& d)
     {
-        if (!_remember || !isRealPath(d.path)) return;
+        for (auto& kv : g_docs)
+            if (&kv.second == &d) { rememberDoc(kv.first, d.path); return; }
+    }
+
+    void rememberDoc(sptr_t doc, const std::wstring& path)
+    {
+        if (!_remember || path.empty() || !doc) return;
+        const std::wstring key = keyOf(path);
         refreshStore();
-        forget(d.path, false);
-        if (!d.rules.empty())
+        forget(key, false);
+        Stored st = snapshot(doc, path, key);
+        if (!st.rules.empty() || !st.statics.empty())
         {
-            Stored st{ d.path, d.rules };
-            for (Rule& r : st.rules) r.bytes.clear();
             _store.push_back(st);
             if (_store.size() > kMaxStoredFiles) _store.erase(_store.begin(), _store.begin() + (_store.size() - kMaxStoredFiles));
         }
         saveStore();
     }
+
+    // every open tab, as it is now (Notepad++ is closing; its backup brings the untitled ones back)
+    void rememberAll()
+    {
+        std::vector<sptr_t> seen;
+        for (int v = 0; v < views.count(); ++v)
+            for (int i = 0, n = views.nbFiles(v); i < n; ++i)
+            {
+                const intptr_t id = views.bufferId(v, i);
+                const sptr_t doc = static_cast<sptr_t>(nppMsg(NPPM_KEX_GETBUFFERDOC, static_cast<WPARAM>(id), 0));
+                if (!doc || std::find(seen.begin(), seen.end(), doc) != seen.end()) continue;
+                seen.push_back(doc);
+                const std::wstring path = bufferPath(id);
+                // only what has something styled, or had: no write for every tab
+                const std::wstring key = keyOf(path);
+                const bool known = std::any_of(_store.begin(), _store.end(), [&](const Stored& st) { return sameKey(st.path, key); });
+                Stored st = snapshot(doc, path, key);
+                if (known || !st.rules.empty() || !st.statics.empty()) rememberDoc(doc, path);
+            }
+    }
+
+    // a tab is closing: a file keeps its styles for next time (where its ranges are now), an untitled tab's go
+    void closing(intptr_t buffer)
+    {
+        const std::wstring path = bufferPath(buffer);
+        const sptr_t doc = static_cast<sptr_t>(nppMsg(NPPM_KEX_GETBUFFERDOC, static_cast<WPARAM>(buffer), 0));
+        if (path.empty() || !doc) return;
+        if (!isRealPath(path)) { forget(keyOf(path)); return; }
+        auto it = g_docs.find(doc);
+        if (it != g_docs.end()) rememberDoc(doc, path);
+    }
+
+public:
+    // Settings menu / desktop copy: the styles of every open tab, for a new window on another desktop
+    void exportCopy(const std::wstring& file)
+    {
+        std::vector<Stored> out;
+        std::vector<sptr_t> seen;
+        for (int v = 0; v < views.count(); ++v)
+            for (int i = 0, n = views.nbFiles(v); i < n; ++i)
+            {
+                const intptr_t id = views.bufferId(v, i);
+                const sptr_t doc = static_cast<sptr_t>(nppMsg(NPPM_KEX_GETBUFFERDOC, static_cast<WPARAM>(id), 0));
+                if (!doc || std::find(seen.begin(), seen.end(), doc) != seen.end()) continue;
+                seen.push_back(doc);
+                const std::wstring path = bufferPath(id);
+                if (path.empty()) continue;
+                Stored st = snapshot(doc, path, isRealPath(path) ? path : L"untitled:" + path);
+                if (!isRealPath(path) && st.hash == 0) continue;
+                if (!st.rules.empty() || !st.statics.empty()) out.push_back(st);
+            }
+        if (out.empty()) return;
+        const std::string bytes = toBytes(storeText(out), SC_CP_UTF8);
+        FILE* f = _wfopen(file.c_str(), L"wb");
+        if (!f) return;
+        fwrite(bytes.data(), 1, bytes.size(), f);
+        fclose(f);
+        log(L"Live token styles: the styles of %d tab(s) go with the copy", static_cast<int>(out.size()));
+    }
+private:
 
     void forget(const std::wstring& path, bool save = true)
     {
@@ -1132,6 +1512,24 @@ private:
         ++s_stats.augmented;
     }
 
+    // Notepad++'s "Style One Token" submenu: Bold and Italic for that one occurrence
+    void augmentOne(HMENU m)
+    {
+        if (::GetMenuState(m, g_ids[CMD_ONE_BOLD], MF_BYCOMMAND) == static_cast<UINT>(-1))
+        {
+            ::AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+            ::AppendMenuW(m, MF_STRING, g_ids[CMD_ONE_BOLD], L"Bold");
+            ::AppendMenuW(m, MF_STRING, g_ids[CMD_ONE_ITALIC], L"Italic");
+        }
+        const int f = oneOffAt(views.sci(views.current()));
+        ::CheckMenuItem(m, g_ids[CMD_ONE_BOLD], MF_BYCOMMAND | ((f & F_BOLD) ? MF_CHECKED : MF_UNCHECKED));
+        ::CheckMenuItem(m, g_ids[CMD_ONE_ITALIC], MF_BYCOMMAND | ((f & F_ITALIC) ? MF_CHECKED : MF_UNCHECKED));
+        const UINT on = g_oneInd >= 0 ? MF_ENABLED : MF_GRAYED;
+        ::EnableMenuItem(m, g_ids[CMD_ONE_BOLD], MF_BYCOMMAND | on);
+        ::EnableMenuItem(m, g_ids[CMD_ONE_ITALIC], MF_BYCOMMAND | on);
+        ++s_stats.augmented;
+    }
+
     // a context menu without that submenu (contextMenu.xml changed) gets one of its own
     void addOwnSubmenu(HMENU top)
     {
@@ -1146,19 +1544,25 @@ private:
     void unaugmentMainMenu()
     {
         HMENU mm = reinterpret_cast<HMENU>(nppMsg(NPPM_GETMENUHANDLE, NPPMAINMENU, 0));
-        HMENU m = submenuWith(mm, IDM_SEARCH_MARKALLEXT1);
-        if (!m || ::GetMenuState(m, g_ids[CMD_BOLD], MF_BYCOMMAND) == static_cast<UINT>(-1)) return;
-        for (int i = ::GetMenuItemCount(m) - 1; i >= 0; --i)
+        for (UINT anchor : { static_cast<UINT>(IDM_SEARCH_MARKALLEXT1), static_cast<UINT>(IDM_SEARCH_MARKONEEXT1) })
         {
-            const UINT id = ::GetMenuItemID(m, i);
-            const bool ours = id == g_ids[CMD_BOLD] || id == g_ids[CMD_ITALIC] || id == g_ids[CMD_CLEAR];
-            if (ours) ::DeleteMenu(m, static_cast<UINT>(i), MF_BYPOSITION);
+            HMENU m = submenuWith(mm, anchor);
+            if (!m) continue;
+            bool removed = false;
+            for (int i = ::GetMenuItemCount(m) - 1; i >= 0; --i)
+            {
+                const UINT id = ::GetMenuItemID(m, i);
+                bool ours = false;
+                for (UINT c : g_ids) if (c && id == c) ours = true;
+                if (ours) { ::DeleteMenu(m, static_cast<UINT>(i), MF_BYPOSITION); removed = true; }
+            }
+            if (!removed) continue;
+            int last = ::GetMenuItemCount(m) - 1;
+            MENUITEMINFOW mi{ sizeof(mi) }; mi.fMask = MIIM_FTYPE;
+            if (last >= 0 && ::GetMenuItemInfoW(m, static_cast<UINT>(last), TRUE, &mi) && (mi.fType & MFT_SEPARATOR))
+                ::DeleteMenu(m, static_cast<UINT>(last), MF_BYPOSITION);
+            for (int s = 1; s <= 5; ++s) ::CheckMenuItem(m, kMarkAll[s], MF_BYCOMMAND | MF_UNCHECKED);
         }
-        int last = ::GetMenuItemCount(m) - 1;
-        MENUITEMINFOW mi{ sizeof(mi) }; mi.fMask = MIIM_FTYPE;
-        if (last >= 0 && ::GetMenuItemInfoW(m, static_cast<UINT>(last), TRUE, &mi) && (mi.fType & MFT_SEPARATOR))
-            ::DeleteMenu(m, static_cast<UINT>(last), MF_BYPOSITION);
-        for (int s = 1; s <= 5; ++s) ::CheckMenuItem(m, kMarkAll[s], MF_BYCOMMAND | MF_UNCHECKED);
     }
 
     static HBITMAP swatch(COLORREF c, int size)
@@ -1233,6 +1637,10 @@ private:
         ::AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(m, MF_STRING | (usable ? 0 : MF_GRAYED) | (r && (r->flags & F_BOLD) ? MF_CHECKED : 0), 10, L"&Bold");
         ::AppendMenuW(m, MF_STRING | (usable ? 0 : MF_GRAYED) | (r && (r->flags & F_ITALIC) ? MF_CHECKED : 0), 11, L"&Italic");
+        const int one = oneOffAt(h);
+        const UINT oneOk = (usable && g_oneInd >= 0) ? 0 : MF_GRAYED;
+        ::AppendMenuW(m, MF_STRING | oneOk | ((one & F_BOLD) ? MF_CHECKED : 0), 14, L"Bold, this &one only");
+        ::AppendMenuW(m, MF_STRING | oneOk | ((one & F_ITALIC) ? MF_CHECKED : 0), 15, L"Italic, this o&ne only");
         ::AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(m, MF_STRING | (r ? 0 : MF_GRAYED), 12, L"&Clear this token");
         ::AppendMenuW(m, MF_STRING | (anyRules ? 0 : MF_GRAYED), 13, L"Clear &all tokens");
@@ -1251,7 +1659,10 @@ private:
         ::DestroyMenu(m);
         for (HBITMAP b : sw) if (b) ::DeleteObject(b);
         ::SetFocus(h);
+        SplashScope splash;   // a colour given here splashes (PaintSplash.cpp)
         if (cmd >= 1 && cmd <= 5) act(A_TOGGLE_STYLE, static_cast<int>(cmd));
+        else if (cmd == 14) actOne(F_BOLD);
+        else if (cmd == 15) actOne(F_ITALIC);
         else if (cmd == 10) act(A_BOLD, 0);
         else if (cmd == 11) act(A_ITALIC, 0);
         else if (cmd == 12) act(A_CLEAR, 0);
@@ -1273,12 +1684,27 @@ private:
                 if (id == g_ids[CMD_BOLD]) { self->act(A_BOLD, 0); return 0; }
                 if (id == g_ids[CMD_ITALIC]) { self->act(A_ITALIC, 0); return 0; }
                 if (id == g_ids[CMD_CLEAR]) { self->act(A_CLEAR, 0); return 0; }
+                if (id == g_ids[CMD_ONE_BOLD]) { self->actOne(F_BOLD); return 0; }
+                if (id == g_ids[CMD_ONE_ITALIC]) { self->actOne(F_ITALIC); return 0; }
+                bool rememberAfter = id >= IDM_SEARCH_MARKONEEXT1 && id <= IDM_SEARCH_MARKONEEXT5;
                 for (int s = 1; s <= 5; ++s)
                 {
-                    if (id == kMarkAll[s]) { if (self->act(A_STYLE, s)) return 0; break; }
-                    if (id == kUnmarkAll[s]) { self->act(A_UNSTYLE, s); break; }   // Notepad++ clears the rest of that style
+                    if (id == kMarkAll[s])
+                    {
+                        SplashScope splash;   // the colour splashes (PaintSplash.cpp), whichever of us handles it
+                        if (self->act(A_STYLE, s)) return 0;
+                        rememberAfter = true;   // a token over several lines: Notepad++'s own single marks
+                        break;
+                    }
+                    if (id == kUnmarkAll[s]) { self->act(A_UNSTYLE, s); rememberAfter = true; break; }   // Notepad++ clears the rest of that style
                 }
-                if (id == IDM_SEARCH_CLEARALLMARKS) self->act(A_CLEAR_ALL, 0);
+                if (id == IDM_SEARCH_CLEARALLMARKS) { self->act(A_CLEAR_ALL, 0); rememberAfter = true; }
+                if (rememberAfter)
+                {
+                    LRESULT r = ::DefSubclassProc(h, m, w, l);
+                    if (s_mod) s_mod->rememberCurrent();
+                    return r;
+                }
                 break;
             }
             case WM_CONTEXTMENU:
@@ -1297,6 +1723,7 @@ private:
                 if (!HIWORD(l))
                 {
                     if (menuHas(menu, IDM_SEARCH_MARKALLEXT1)) self->augment(menu);
+                    else if (menuHas(menu, IDM_SEARCH_MARKONEEXT1)) self->augmentOne(menu);
                     else if (self->_editorMenu && !self->_editorMenuSeen)
                     {
                         self->_editorMenuSeen = true;
@@ -1318,7 +1745,7 @@ private:
 public:
     bool _remember = true;
 private:
-    bool _subclassed = false, _shutdown = false;
+    bool _subclassed = false, _shutdown = false, _exiting = false;
     bool _editorMenu = false, _editorMenuSeen = false;
     std::vector<Stored> _store;
     ULONGLONG _storeStamp = 0;   // last write of kex-tokens.txt when this process last read or wrote it
@@ -1358,7 +1785,7 @@ void addTokenCommands(HMENU parent, int position)
     if (g_menuCmd || !parent) return;
     const UINT mods = static_cast<UINT>(settings.getInt(L"TokenStyles", L"MenuModifiers", MOD_CONTROL | MOD_SHIFT));
     const UINT vk = static_cast<UINT>(settings.getInt(L"TokenStyles", L"MenuKey", 'H'));
-    const KexCommand cmd{ 1, L"Token Style Menu", showTokenMenu, (mods & MOD_CONTROL) != 0, (mods & MOD_ALT) != 0, (mods & MOD_SHIFT) != 0,
+    const KexCommand cmd{ 101, L"Token Style Menu", showTokenMenu, (mods & MOD_CONTROL) != 0, (mods & MOD_ALT) != 0, (mods & MOD_SHIFT) != 0,
                           static_cast<unsigned char>(vk) };
     int id = 0;
     KexCommandList list{ &cmd, 1, &id, position };
@@ -1373,6 +1800,23 @@ void addTokenCommands(HMENU parent, int position)
 }
 
 int tokenMenuCommandId() { return g_menuCmd; }
+
+// A new window on another desktop (DesktopSync.cpp): the first window writes the styles of its tabs
+// next to the copy of them, the new one reads them before the copy's folder goes.
+void tokenExportCopy(const std::wstring& dir) { if (s_mod) s_mod->exportCopy(dir + L"\\kex-styles.txt"); }
+void tokenImportCopy(const std::wstring& dir)
+{
+    FILE* f = _wfopen((dir + L"\\kex-styles.txt").c_str(), L"rb");
+    if (!f) return;
+    std::string all;
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) all.append(buf, n);
+    fclose(f);
+    g_copied = parseStore(toWide(all, SC_CP_UTF8));
+    log(L"Live token styles: the styles of %d copied tab(s) arrived", static_cast<int>(g_copied.size()));
+}
+int tokenOneOffAt(HWND view) { return TokenStyles::oneOffAtPublic(view); }
 
 } // namespace kex
 

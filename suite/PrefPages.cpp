@@ -1,10 +1,11 @@
-// PrefPages.cpp - Settings > Preferences > "KEX Editing", "KEX Tabs", "KEX Windows", "KEX Highlighting" and "KEX Quick Note" (the core
+// PrefPages.cpp - Settings > Preferences > "KEX Editing", "KEX Tabs", "KEX Windows", "KEX Highlighting", "KEX Quick Note" and "KEX Effects" (the core
 // creates the pages inside Notepad++'s Preferences dialog and hands their messages to prefPageProc).
 // Like the other Preferences pages, every change takes effect at once; numbers apply half a second
 // after the last keystroke.
 #include "KexSuite.h"
 #include "KexSuiteRes.h"
 #include <cwchar>
+#include <commdlg.h>
 
 namespace kex {
 
@@ -12,8 +13,8 @@ namespace {
 
 const UINT_PTR TIMER_APPLY = 1;
 HWND g_pages[PAGE_COUNT] = {};
-const wchar_t* const kPageTitle[PAGE_COUNT] = { L"KEX Editing", L"KEX Tabs", L"KEX Windows", L"KEX Highlighting", L"KEX Quick Note" };
-const wchar_t* const kPageName[PAGE_COUNT] = { L"KexEditing", L"KexTabs", L"KexWindows", L"KexHighlighting", L"KexQuickNote" };
+const wchar_t* const kPageTitle[PAGE_COUNT] = { L"KEX Editing", L"KEX Tabs", L"KEX Windows", L"KEX Highlighting", L"KEX Quick Note", L"KEX Effects" };
+const wchar_t* const kPageName[PAGE_COUNT] = { L"KexEditing", L"KexTabs", L"KexWindows", L"KexHighlighting", L"KexQuickNote", L"KexEffects" };
 bool g_filling = false;
 
 struct IntField { int id; int module; const wchar_t* key; int def; };
@@ -22,17 +23,21 @@ const IntField kInts[] = {
     { IDC_L_MAX, M_LETTERS, L"MaxLetters", 200 },
     { IDC_L_SPIN, M_LETTERS, L"SpinDegPerSec", 260 },
     { IDC_L_DRIFT, M_LETTERS, L"DriftPxPerSec", 90 },
+    { IDC_L_OPACITY, M_LETTERS, L"Opacity", 100 },
     { IDC_C_GLIDE, M_CARET, L"GlideMs", 80 },
     { IDC_C_SNAP, M_CARET, L"SnapAfterLines", 12 },
     { IDC_T_ZONE, M_TABS, L"HotZonePx", 6 },
     { IDC_T_DELAY, M_TABS, L"HideDelayMs", 350 },
     { IDC_G_TINT, M_GLASS, L"Tint", 40 },
+    { IDC_H_OPACITY, M_HOTKEY, L"Opacity", 100 },
+    { IDC_E_STRENGTH, M_FLASH, L"Strength", 100 },
+    { IDC_W_MS, M_SLIDE, L"DurationMs", 200 },
+    { IDC_P_DROPS, M_SPLASH, L"DropsPerToken", 7 },
 };
 struct BoolField { int id; int module; const wchar_t* key; int def; };
 const BoolField kBools[] = {
     { IDC_L_RESPECT, M_LETTERS, L"RespectSystemAnimationSetting", 1 },
     { IDC_L_UNDO, M_LETTERS, L"AnimateUndoRedo", 0 },
-    { IDC_C_FADE, M_CARET, L"FadeBlink", 1 },
     { IDC_C_OVB, M_CARET, L"OvertypeBlock", 1 },
     { IDC_H_KEEP, M_HOTKEY, L"KeepText", 1 },
     { IDC_H_FADE, M_HOTKEY, L"Fade", 1 },
@@ -46,17 +51,36 @@ const BoolField kBools[] = {
     { IDC_J_ALL, M_KEYS, L"AlsoNotepadKeys", 1 },
     { IDC_G_MARGINS, M_GLASS, L"Margins", 1 },
     { IDC_K_REMEMBER, M_TOKENS, L"Remember", 1 },
+    { IDC_H_AUTOHIDE, M_HOTKEY, L"HideWhenInactive", 0 },
+    { IDC_H_CARET, M_HOTKEY, L"SmoothCaret", 1 },
+    { IDC_H_LETTERS, M_LETTERS, L"InQuickNote", 1 },
+    { IDC_H_FLASH, M_FLASH, L"InQuickNote", 1 },
+    { IDC_E_COPY, M_FLASH, L"Copy", 1 },
+    { IDC_E_CUT, M_FLASH, L"Cut", 1 },
+    { IDC_E_DEL, M_FLASH, L"Delete", 1 },
+    { IDC_E_RESPECT, M_FLASH, L"RespectSystemAnimationSetting", 1 },
+    { IDC_W_RESPECT, M_SLIDE, L"RespectSystemAnimationSetting", 1 },
+    { IDC_P_RESPECT, M_SPLASH, L"RespectSystemAnimationSetting", 1 },
 };
+// options the feature reads again at once: no restart (which would close the quick note, or take the token styles away)
+bool liveOption(int id, int module)
+{
+    return module == M_TOKENS || id == IDC_H_AUTOHIDE || id == IDC_H_CARET || id == IDC_H_OPACITY ||
+           id == IDC_E_COPY || id == IDC_E_CUT || id == IDC_E_DEL || id == IDC_E_STRENGTH || id == IDC_E_RESPECT ||
+           id == IDC_W_MS || id == IDC_W_RESPECT || id == IDC_P_DROPS || id == IDC_P_RESPECT || id == IDC_C_BLINK;
+}
 // a drop-down list: the setting is the index of the picked item
 struct ComboField { int id; int module; const wchar_t* key; int def; const wchar_t* items; };
 const ComboField kCombos[] = {
+    { IDC_C_BLINK, M_CARET, L"Blink", 0, L"Fade in and out|On and off, like Notepad++|Never" },
     { IDC_J_CASE, M_KEYS, L"OccurrenceCase", 0, L"Like Smart Highlighting|Match case|Ignore case" },
     { IDC_J_WORDS, M_KEYS, L"OccurrenceWords", 0, L"Like Smart Highlighting|From a bare caret (IntelliJ)|Always|Never" },
     { IDC_G_STYLE, M_GLASS, L"Style", 0, L"Blur|Acrylic" },
     { IDC_G_EDGES, M_GLASS, L"TextEdges", 0, L"Sharp (no outlines on the glass)|Smooth|As Notepad++ draws them" },
 };
-const int kEnable[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN, IDC_G_EN, IDC_K_EN };
-const int kStatus[M_COUNT] = { IDC_L_STATUS, IDC_C_STATUS, IDC_H_STATUS, IDC_T_STATUS, IDC_D_STATUS, IDC_S_STATUS, IDC_J_STATUS, IDC_G_STATUS, IDC_K_STATUS };
+const int kEnable[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN, IDC_G_EN, IDC_K_EN, IDC_E_EN, IDC_W_EN, IDC_P_EN };
+const int kStatus[M_COUNT] = { IDC_L_STATUS, IDC_C_STATUS, IDC_H_STATUS, IDC_T_STATUS, IDC_D_STATUS, IDC_S_STATUS, IDC_J_STATUS, IDC_G_STATUS, IDC_K_STATUS,
+                               IDC_E_STATUS, IDC_W_STATUS, IDC_P_STATUS };
 
 bool has(HWND d, int id) { return ::GetDlgItem(d, id) != nullptr; }
 
@@ -107,6 +131,17 @@ void fillStatus(HWND d)
         ::SetDlgItemTextW(d, IDC_D_INFO, info.c_str());
     }
     if (has(d, IDC_G_INFO)) ::SetDlgItemTextW(d, IDC_G_INFO, glassInfo().c_str());
+    if (has(d, IDC_E_INFO)) ::SetDlgItemTextW(d, IDC_E_INFO, effectsInfo().c_str());
+    if (has(d, IDC_H_FILEINFO))
+    {
+        std::wstring info;
+        const std::wstring err = quickNoteFileError();
+        if (settings.getStr(modules[M_HOTKEY]->key(), L"NoteFile").empty())
+            info = L"Empty: the note keeps its text in kex-quicknote.txt in Notepad++'s settings folder.";
+        else if (!err.empty()) info = L"Not used: " + err + L". The note shows nothing from it and won't write to it.";
+        else info = L"The note shows this file and saves to it as you type, in its own encoding and line endings.";
+        ::SetDlgItemTextW(d, IDC_H_FILEINFO, info.c_str());
+    }
     if (has(d, IDC_K_INFO))
     {
         ::SetDlgItemTextW(d, IDC_K_INFO, modules[M_TOKENS]->isEnabled() ? tokenInfo().c_str() : L"");
@@ -141,6 +176,14 @@ void fill(HWND d)
         }
         ::SendMessageW(cb, CB_SETCURSEL, static_cast<WPARAM>(settings.getInt(modules[f.module]->key(), f.key, f.def)), 0);
     }
+    if (has(d, IDC_H_FILE))
+    {
+        // only when it differs: setting the text puts the caret back at the start of the box
+        wchar_t now[MAX_PATH * 2] = {};
+        ::GetDlgItemTextW(d, IDC_H_FILE, now, MAX_PATH * 2);
+        const std::wstring v = settings.getStr(modules[M_HOTKEY]->key(), L"NoteFile");
+        if (v != now && ::GetFocus() != ::GetDlgItem(d, IDC_H_FILE)) ::SetDlgItemTextW(d, IDC_H_FILE, v.c_str());
+    }
     if (has(d, IDC_H_KEY))
     {
         UINT mods = static_cast<UINT>(settings.getInt(modules[M_HOTKEY]->key(), L"Modifiers", MOD_CONTROL | MOD_ALT));
@@ -174,7 +217,21 @@ void applyNumbers(HWND d)
         UINT v = ::GetDlgItemInt(d, f.id, &ok, FALSE);
         if (!ok || static_cast<int>(v) == settings.getInt(modules[f.module]->key(), f.key, f.def)) continue;
         settings.setInt(modules[f.module]->key(), f.key, static_cast<int>(v));
-        changed[f.module] = true;
+        if (liveOption(f.id, f.module)) modules[f.module]->loadOptions();
+        else changed[f.module] = true;
+    }
+    if (has(d, IDC_H_FILE))
+    {
+        wchar_t buf[MAX_PATH * 2] = {};
+        ::GetDlgItemTextW(d, IDC_H_FILE, buf, MAX_PATH * 2);
+        std::wstring v = buf;
+        while (!v.empty() && (v.back() == L' ' || v.back() == L'"')) v.pop_back();
+        while (!v.empty() && (v.front() == L' ' || v.front() == L'"')) v.erase(0, 1);
+        if (v != settings.getStr(modules[M_HOTKEY]->key(), L"NoteFile"))
+        {
+            settings.setStr(modules[M_HOTKEY]->key(), L"NoteFile", v);
+            quickNoteOptionsChanged();
+        }
     }
     for (int i = 0; i < M_COUNT; ++i) if (changed[i]) restart(i);
 }
@@ -188,6 +245,24 @@ void applyHotkey(HWND d)
     if (flags & HOTKEYF_SHIFT) mods |= MOD_SHIFT;
     if (::IsDlgButtonChecked(d, IDC_H_WIN) == BST_CHECKED) mods |= MOD_WIN;
     if (vk && mods) hotkeyApply(mods, vk);
+}
+
+// a file for the note's text: an existing one, or a new name (made on the first save)
+void browseNoteFile(HWND d)
+{
+    wchar_t path[MAX_PATH * 2] = {};
+    ::GetDlgItemTextW(d, IDC_H_FILE, path, MAX_PATH * 2);
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = ::GetAncestor(d, GA_ROOT);
+    ofn.lpstrFilter = L"Text files (*.txt;*.md;*.log)\0*.txt;*.md;*.log\0All files (*.*)\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH * 2;
+    ofn.lpstrTitle = L"Quick note file";
+    ofn.lpstrDefExt = L"txt";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR | OFN_NOTESTFILECREATE;
+    if (!::GetSaveFileNameW(&ofn)) return;
+    ::SetDlgItemTextW(d, IDC_H_FILE, path);   // EN_CHANGE applies it
 }
 
 void onCommand(HWND d, int id, int code)
@@ -208,12 +283,13 @@ void onCommand(HWND d, int id, int code)
             if (id == f.id)
             {
                 settings.setInt(modules[f.module]->key(), f.key, ::IsDlgButtonChecked(d, id) == BST_CHECKED ? 1 : 0);
-                if (f.module == M_TOKENS) modules[f.module]->loadOptions();   // a restart would take the styles away
+                if (liveOption(f.id, f.module)) modules[f.module]->loadOptions();
                 else restart(f.module);
                 refreshPrefPages();
                 return;
             }
         if (id == IDC_H_WIN) { applyHotkey(d); refreshPrefPages(); }
+        if (id == IDC_H_BROWSE) { browseNoteFile(d); return; }
         if (id == IDC_J_LIST || id == IDC_K_KEYMAP)
         {
             // the keys of the KEX commands are Notepad++'s own shortcuts now
@@ -241,6 +317,7 @@ void onCommand(HWND d, int id, int code)
     if (code == EN_CHANGE)
     {
         if (id == IDC_H_KEY) { applyHotkey(d); fillStatus(d); return; }
+        if (id == IDC_H_FILE) { ::SetTimer(d, TIMER_APPLY, 700, nullptr); return; }
         for (const IntField& f : kInts)
             if (id == f.id) { ::SetTimer(d, TIMER_APPLY, 500, nullptr); return; }
     }
@@ -248,7 +325,7 @@ void onCommand(HWND d, int id, int code)
 
 int pageIndex(HWND d)
 {
-    return has(d, IDC_L_EN) ? PAGE_EDITING : has(d, IDC_S_EN) ? PAGE_TABS : has(d, IDC_K_EN) ? PAGE_HIGHLIGHT : has(d, IDC_H_EN) ? PAGE_NOTE : PAGE_WINDOWS;
+    return has(d, IDC_E_EN) ? PAGE_EFFECTS : has(d, IDC_L_EN) ? PAGE_EDITING : has(d, IDC_S_EN) ? PAGE_TABS : has(d, IDC_K_EN) ? PAGE_HIGHLIGHT : has(d, IDC_H_EN) ? PAGE_NOTE : PAGE_WINDOWS;
 }
 
 } // namespace
@@ -264,6 +341,7 @@ int pageOfModule(int module)
     case M_GLASS: return PAGE_WINDOWS;
     case M_TOKENS: return PAGE_HIGHLIGHT;
     case M_HOTKEY: return PAGE_NOTE;
+    case M_FLASH: case M_SLIDE: case M_SPLASH: return PAGE_EFFECTS;
     default: return PAGE_WINDOWS;
     }
 }

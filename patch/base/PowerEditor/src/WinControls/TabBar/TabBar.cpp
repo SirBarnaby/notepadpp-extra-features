@@ -14,29 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-
-#include "TabBar.h"
-
-#include <windows.h>
-
-#include <cassert>
-#include <cstdint>
-#include <cstdlib>
-#include <cwchar>
 #include <stdexcept>
-#include <vector>
-
 #include "Buffer.h"
-#include "Common.h"
-#include "DoubleBuffer/DoubleBuffer.h"
-#include "NppConstants.h"
-#include "NppDarkMode.h"
+#include "TabBar.h"
 #include "Parameters.h"
-#include "Window.h"
-#include "colors.h"
-#include "dpiManagerV2.h"
-#include "menuCmdID.h"
-#include "resource.h"
+#include "DoubleBuffer/DoubleBuffer.h"
+
+#include <cwchar>
+#include "NppConstants.h"
 
 #define	IDC_DRAG_TAB     1404
 #define	IDC_DRAG_INTERDIT_TAB 1405
@@ -82,8 +67,15 @@ void TabBar::init(HINSTANCE hInst, HWND parent, bool isVertical, bool isMultiLin
 		throw std::runtime_error("TabBar::init : CreateWindowEx() function return null");
 	}
 
-	NppDarkMode::subclassTabControl(_hSelf);
-	setFontFromParent();
+	if (_hFont == nullptr)
+	{
+		const UINT dpi = DPIManagerV2::getDpiForWindow(_hParent);
+		LOGFONT lf{ DPIManagerV2::getDefaultGUIFontForDpi(dpi) };
+		static const UINT fontSize = DPIManagerV2::scaleFontForFactor(8);
+		lf.lfHeight = DPIManagerV2::scaleFont(fontSize, dpi);
+		_hFont = ::CreateFontIndirect(&lf);
+		::SendMessage(_hSelf, WM_SETFONT, reinterpret_cast<WPARAM>(_hFont), 0);
+	}
 }
 
 void TabBar::destroy()
@@ -393,14 +385,14 @@ void TabBar::setFont()
 {
 	TabBar::destroyFonts();
 
-	auto lf = _dpiManager.getDefaultGUIFontForDpi();
+	LOGFONT lf{ DPIManagerV2::getDefaultGUIFontForDpi(_dpiManager.getDpi()) };
 	LOGFONT lfVer{ lf };
 
 	_hFont = ::CreateFontIndirect(&lf);
 
 	lf.lfWeight = FW_HEAVY;
-	static const UINT fontSize = DPIManagerV2::scaleFontForFactor(NppParameters::getInstance().getDlgFontSize() + 2);
-	lf.lfHeight = _dpiManager.scaleFont(fontSize);
+	static const UINT fontSize = DPIManagerV2::scaleFontForFactor(10);
+	lf.lfHeight = DPIManagerV2::scaleFont(fontSize, _dpiManager.getDpi());
 
 	_hLargeFont = ::CreateFontIndirect(&lf);
 
@@ -414,13 +406,6 @@ void TabBar::setFont()
 	_hVerticalLargeFont = CreateFontIndirect(&lfVer);
 }
 
-HFONT TabBar::setFontFromParent()
-{
-	auto hFont = reinterpret_cast<HFONT>(::SendMessage(_hParent, WM_GETFONT, 0, 0));
-	::SendMessage(_hSelf, WM_SETFONT, reinterpret_cast<WPARAM>(hFont), MAKELPARAM(TRUE, 0));
-
-	return hFont;
-}
 
 void TabBarPlus::triggerOwnerDrawTabbar(DPIManagerV2* pDPIManager)
 {
