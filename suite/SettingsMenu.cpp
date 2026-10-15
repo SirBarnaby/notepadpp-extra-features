@@ -1,5 +1,5 @@
 // SettingsMenu.cpp - the KEX group at the end of Notepad++'s Settings menu: one submenu for each KEX
-// Preferences page ("KEX Editing", "KEX Tabs", "KEX Windows", "KEX Highlighting", "KEX Quick Note"),
+// Preferences page ("KEX Editing", "KEX Tabs", "KEX Windows", "KEX Highlighting", "KEX Quick Note", "KEX Effects"),
 // holding an on/off switch for every feature on that page, the features' commands and "Preferences..."
 // to open the page.
 // The group goes after Notepad++'s own items, so their positions (which Notepad++'s translations use
@@ -10,7 +10,7 @@ namespace kex {
 
 namespace {
 
-const wchar_t* const kGroupTitle[PAGE_COUNT] = { L"KEX Editing", L"KEX Tabs", L"KEX Windows", L"KEX Highlighting", L"KEX Quick Note" };
+const wchar_t* const kGroupTitle[PAGE_COUNT] = { L"KEX Editing", L"KEX Tabs", L"KEX Windows", L"KEX Highlighting", L"KEX Quick Note", L"KEX Effects" };
 UINT g_first = 0;               // our command ids (NPPM_ALLOCATECMDID): a switch per feature, then "Preferences..." per page
 HMENU g_sub[PAGE_COUNT] = {};
 
@@ -52,6 +52,7 @@ bool buildSettingsMenu()
     // the features' commands, before the separator (Shortcut Mapper lists them under plugin "KEX")
     addJetBrainsCommands(g_sub[PAGE_EDITING], ::GetMenuItemCount(g_sub[PAGE_EDITING]) - 2);
     addTokenCommands(g_sub[PAGE_HIGHLIGHT], ::GetMenuItemCount(g_sub[PAGE_HIGHLIGHT]) - 2);
+    addNoteCommands(g_sub[PAGE_NOTE], ::GetMenuItemCount(g_sub[PAGE_NOTE]) - 2);
     return true;
 }
 

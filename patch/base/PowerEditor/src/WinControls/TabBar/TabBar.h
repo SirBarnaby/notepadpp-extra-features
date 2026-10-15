@@ -86,8 +86,6 @@ public:
 		return isReduced ? _hFont : _hLargeFont;
 	}
 
-	HFONT setFontFromParent();
-
 	int getNextOrPrevTabIdx(bool isNext) const;
 
 	DPIManagerV2& dpiManager() { return _dpiManager; }
@@ -264,5 +262,6 @@ protected:
 	void notify(int notifyCode, int tabIndex);
 	void trackMouseEvent(DWORD event2check);
 
+	using Window::init;
 	using TabBar::init;
 };

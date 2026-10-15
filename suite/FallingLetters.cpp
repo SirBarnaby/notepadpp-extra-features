@@ -2,10 +2,9 @@
 //
 // UI thread: on SCN_MODIFIED/SC_MOD_BEFOREDELETE (requested with NPPM_ADDSCNMODIFIEDFLAGS) we read
 // every deleted character that is visible on screen, with its exact position, style colour and
-// font, before Scintilla removes it. The batch is handed to a render thread which owns a
-// click-through, non-activating, topmost layered window sized to the bounding box of the live
-// letters. The window only exists while letters are falling.
-#include "Overlay.h"
+// font, before Scintilla removes it. The batch is handed to the shared effects renderer (Effects.h),
+// which turns it into pictures and lets them fall on its own thread.
+#include "Effects.h"
 #include <atomic>
 #include <cmath>
 #include <map>
@@ -15,256 +14,16 @@ namespace kex {
 
 namespace {
 
-struct FontSpec {
-    std::wstring face; int height = 13; int weight = 400; bool italic = false;
-    bool operator<(const FontSpec& o) const
-    {
-        if (face != o.face) return face < o.face;
-        if (height != o.height) return height < o.height;
-        if (weight != o.weight) return weight < o.weight;
-        return italic < o.italic;
-    }
-};
+using fx::FontSpec;
+using fx::CapRun;
+using fx::CapItem;
+typedef fx::LetterBatch CapBatch;
 
-struct CapRun { std::wstring text; int dx = 0; COLORREF color = 0; int font = 0; };
-struct CapItem { int x = 0, y = 0, w = 0, h = 0; std::vector<CapRun> runs; };
-struct CapBatch {
-    std::vector<FontSpec> fonts;     // fonts[0] = STYLE_DEFAULT font (baseline reference)
-    std::vector<CapItem> items;
-    RECT monitor{};
-    int extraAscent = 0;
-    float gravity = 2200, drift = 90, spin = 4.0f, pop = 220;
-};
-
-struct Particle {
-    Sprite sprite;
-    float x0, y0, vx, vy, w, age = 0;
-    float x = 0, y = 0, a = 0;
-    RECT monitor;
-    float gravity;
-};
-
-std::atomic<int> s_lastSpawned{ 0 }, s_lastCandidates{ 0 }, s_totalSpawned{ 0 }, s_live{ 0 }, s_frames{ 0 };
+std::atomic<int> s_lastSpawned{ 0 }, s_lastCandidates{ 0 }, s_totalSpawned{ 0 };
 std::atomic<int> s_skipUndo{ 0 }, s_skipAnim{ 0 }, s_skipGlobal{ 0 };
-std::atomic<int> s_freezeAfter{ -1 };
-std::atomic<bool> s_overlayVisible{ false };
-CRITICAL_SECTION s_rectLock;
-RECT s_overlayRect{};
 
-// ---------------------------------------------------------------------------------------------
-// render thread
-
-class Renderer {
-public:
-    bool start()
-    {
-        if (_thread) return true;
-        _quit = false;
-        _event = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        _ready = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        _thread = ::CreateThread(nullptr, 0, threadMain, this, 0, nullptr);
-        if (!_thread) return false;
-        ::WaitForSingleObject(_ready, 3000);
-        return _wnd != nullptr;
-    }
-    void stop()
-    {
-        if (!_thread) return;
-        _quit = true;
-        ::SetEvent(_event);
-        if (::WaitForSingleObject(_thread, 3000) == WAIT_TIMEOUT) ::TerminateThread(_thread, 0);
-        ::CloseHandle(_thread); _thread = nullptr;
-        ::CloseHandle(_event); _event = nullptr;
-        ::CloseHandle(_ready); _ready = nullptr;
-        _queue.clear();
-    }
-    void submit(CapBatch&& b)
-    {
-        ::EnterCriticalSection(&_lock);
-        _queue.push_back(std::move(b));
-        ::LeaveCriticalSection(&_lock);
-        ::SetEvent(_event);
-    }
-    Renderer() { ::InitializeCriticalSection(&_lock); }
-    ~Renderer() { stop(); ::DeleteCriticalSection(&_lock); }
-    int maxLive = 400;
-
-private:
-    static DWORD WINAPI threadMain(LPVOID p) { static_cast<Renderer*>(p)->run(); return 0; }
-
-    HFONT font(const FontSpec& f)
-    {
-        auto it = _fonts.find(f);
-        if (it != _fonts.end()) return it->second;
-        LOGFONTW lf{};
-        lf.lfHeight = -f.height;
-        lf.lfWeight = f.weight;
-        lf.lfItalic = f.italic ? TRUE : FALSE;
-        lf.lfCharSet = DEFAULT_CHARSET;
-        lf.lfQuality = ANTIALIASED_QUALITY;
-        wcsncpy(lf.lfFaceName, f.face.c_str(), LF_FACESIZE - 1);
-        HFONT h = ::CreateFontIndirectW(&lf);
-        _fonts[f] = h;
-        return h;
-    }
-
-    void addBatch(CapBatch& b)
-    {
-        // baseline: Scintilla draws text at line top + maxAscent (+ extra ascent)
-        HDC dc = ::CreateCompatibleDC(nullptr);
-        TEXTMETRICW tm{};
-        HGDIOBJ of = ::SelectObject(dc, font(b.fonts.empty() ? FontSpec{} : b.fonts[0]));
-        ::GetTextMetricsW(dc, &tm);
-        ::SelectObject(dc, of);
-        ::DeleteDC(dc);
-        int baseline = b.extraAscent + tm.tmAscent;
-        for (CapItem& it : b.items)
-        {
-            Particle p;
-            std::vector<TextRun> runs;
-            for (CapRun& r : it.runs)
-            {
-                TextRun t; t.text = r.text; t.dx = r.dx; t.color = r.color;
-                t.font = font(b.fonts[r.font < static_cast<int>(b.fonts.size()) ? r.font : 0]);
-                runs.push_back(t);
-            }
-            int pad = 3;
-            if (!renderRuns(p.sprite, runs, std::max(1, it.w), std::max(1, it.h), baseline, pad)) continue;
-            p.x0 = it.x + it.w * 0.5f;
-            p.y0 = it.y + it.h * 0.5f;
-            float r1 = rnd(), r2 = rnd(), r3 = rnd();
-            p.vx = (r1 * 2 - 1) * b.drift;
-            p.vy = -(0.25f + 0.75f * r2) * b.pop;
-            p.w = (r3 * 2 - 1) * b.spin;
-            p.monitor = b.monitor;
-            p.gravity = b.gravity;
-            p.x = p.x0; p.y = p.y0;
-            _parts.push_back(std::move(p));
-        }
-        while (static_cast<int>(_parts.size()) > maxLive) _parts.pop_front();
-    }
-
-    float rnd() { _seed = _seed * 1664525u + 1013904223u; return static_cast<float>((_seed >> 8) & 0xFFFF) / 65535.0f; }
-
-    void run()
-    {
-        _wnd = createOverlayWindow(nullptr, true, L"KEX falling letters");
-        ::SetEvent(_ready);
-        if (!_wnd) return;
-        typedef HRESULT(WINAPI * DwmFlushFn)();
-        HMODULE dwm = ::LoadLibraryW(L"dwmapi.dll");
-        DwmFlushFn dwmFlush = dwm ? reinterpret_cast<DwmFlushFn>(::GetProcAddress(dwm, "DwmFlush")) : nullptr;
-        bool shown = false;
-        double last = nowMs();
-        double frozenSince = -1;
-        while (!_quit)
-        {
-            MSG m;
-            while (::PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) { ::TranslateMessage(&m); ::DispatchMessageW(&m); }
-            std::deque<CapBatch> incoming;
-            ::EnterCriticalSection(&_lock);
-            incoming.swap(_queue);
-            ::LeaveCriticalSection(&_lock);
-            for (CapBatch& b : incoming) addBatch(b);
-            if (!incoming.empty()) { last = nowMs(); frozenSince = -1; }
-
-            if (_parts.empty())
-            {
-                if (shown) { ::ShowWindow(_wnd, SW_HIDE); shown = false; s_overlayVisible = false; }
-                s_live = 0;
-                ::MsgWaitForMultipleObjects(1, &_event, FALSE, INFINITE, QS_ALLINPUT);
-                last = nowMs();
-                continue;
-            }
-            double now = nowMs();
-            float dt = static_cast<float>((now - last) / 1000.0);
-            last = now;
-            if (dt > 0.05f) dt = 0.05f;
-            int freeze = s_freezeAfter.load();
-            if (freeze >= 0 && !_parts.empty() && _parts.back().age * 1000.0f >= freeze) dt = 0;   // test hook
-
-            RECT bb{ LONG_MAX, LONG_MAX, LONG_MIN, LONG_MIN };
-            for (auto it = _parts.begin(); it != _parts.end();)
-            {
-                Particle& p = *it;
-                p.age += dt;
-                float t = p.age;
-                p.x = p.x0 + p.vx * t;
-                p.y = p.y0 + p.vy * t + 0.5f * p.gravity * t * t;
-                p.a = p.w * t;
-                float r = 0.5f * std::sqrt(static_cast<float>(p.sprite.w * p.sprite.w + p.sprite.h * p.sprite.h)) + 1;
-                bool gone = (p.y - r > p.monitor.bottom) || (p.x + r < p.monitor.left - 400) ||
-                            (p.x - r > p.monitor.right + 400) || p.age > 8.0f;
-                if (gone) { it = _parts.erase(it); continue; }
-                bb.left = std::min(bb.left, static_cast<LONG>(std::floor(p.x - r)));
-                bb.top = std::min(bb.top, static_cast<LONG>(std::floor(p.y - r)));
-                bb.right = std::max(bb.right, static_cast<LONG>(std::ceil(p.x + r)));
-                bb.bottom = std::max(bb.bottom, static_cast<LONG>(std::ceil(p.y + r)));
-                ++it;
-            }
-            s_live = static_cast<int>(_parts.size());
-            if (_parts.empty()) continue;
-            RECT vs{ ::GetSystemMetrics(SM_XVIRTUALSCREEN), ::GetSystemMetrics(SM_YVIRTUALSCREEN), 0, 0 };
-            vs.right = vs.left + ::GetSystemMetrics(SM_CXVIRTUALSCREEN);
-            vs.bottom = vs.top + ::GetSystemMetrics(SM_CYVIRTUALSCREEN);
-            RECT clip;
-            if (!::IntersectRect(&clip, &bb, &vs))
-            {
-                if (shown) { ::ShowWindow(_wnd, SW_HIDE); shown = false; s_overlayVisible = false; }
-                waitFrame(dwmFlush, now);
-                continue;
-            }
-            int w = clip.right - clip.left, h = clip.bottom - clip.top;
-            if (_surf.ensure(w, h))
-            {
-                _surf.clear();
-                for (Particle& p : _parts)
-                    drawSprite(_surf, p.sprite, p.x - clip.left, p.y - clip.top, p.a, 1.0f);
-                POINT pos{ clip.left, clip.top }; SIZE sz{ w, h };
-                pushLayered(_wnd, _surf, pos, sz);
-                if (!shown)
-                {
-                    ::SetWindowPos(_wnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-                    shown = true;
-                }
-                s_overlayVisible = true;
-                ::EnterCriticalSection(&s_rectLock); s_overlayRect = clip; ::LeaveCriticalSection(&s_rectLock);
-                ++s_frames;
-            }
-            (void)frozenSince;
-            waitFrame(dwmFlush, now);
-        }
-        if (_wnd) { ::DestroyWindow(_wnd); _wnd = nullptr; }
-        s_overlayVisible = false;
-        _parts.clear();
-        for (auto& f : _fonts) if (f.second) ::DeleteObject(f.second);
-        _fonts.clear();
-        _surf.release();
-        if (dwm) ::FreeLibrary(dwm);
-    }
-
-    void waitFrame(HRESULT(WINAPI* dwmFlush)(), double frameStart)
-    {
-        if (dwmFlush && !underWine)
-        {
-            double b = nowMs();
-            if (SUCCEEDED(dwmFlush()) && nowMs() - b > 2.0) return;   // vsync-paced by DWM
-        }
-        double spent = nowMs() - frameStart;
-        DWORD wait = spent < 15.0 ? static_cast<DWORD>(16.0 - spent) : 1;
-        ::MsgWaitForMultipleObjects(1, &_event, FALSE, wait, QS_ALLINPUT);
-    }
-
-    HANDLE _thread = nullptr, _event = nullptr, _ready = nullptr;
-    volatile bool _quit = false;
-    HWND _wnd = nullptr;
-    CRITICAL_SECTION _lock;
-    std::deque<CapBatch> _queue;
-    std::deque<Particle> _parts;
-    std::map<FontSpec, HFONT> _fonts;
-    Surface _surf;
-    uint32_t _seed = 0x1234567u;
-};
+class FallingLetters;
+FallingLetters* s_self = nullptr;
 
 // ---------------------------------------------------------------------------------------------
 // module
@@ -273,7 +32,6 @@ const UINT WM_KEX_SPAWN = WM_APP + 21;
 
 class FallingLetters : public Module, public MsgWindow {
 public:
-    FallingLetters() { ::InitializeCriticalSection(&s_rectLock); }
     const wchar_t* key() const override { return L"FallingLetters"; }
     const wchar_t* title() const override { return L"Falling letters"; }
 
@@ -286,6 +44,8 @@ public:
         _pop = settings.getInt(key(), L"PopPxPerSec", 240);
         _respectAnim = settings.getInt(key(), L"RespectSystemAnimationSetting", 1) != 0;
         _undoToo = settings.getInt(key(), L"AnimateUndoRedo", 0) != 0;
+        _opacity = std::max(5, std::min(100, settings.getInt(key(), L"Opacity", 100)));
+        _inNote = settings.getInt(key(), L"InQuickNote", 1) != 0;
     }
 
     bool selfCheck(std::wstring& why) override
@@ -309,17 +69,30 @@ public:
     bool enable() override
     {
         if (!createMsgWindow(L"KexFallingLetters")) return false;
-        _renderer.maxLive = _maxParticles * 2;
-        if (!_renderer.start()) { destroyMsgWindow(); return false; }
+        if (!fx::acquire()) { destroyMsgWindow(); return false; }
+        s_self = this;
         return true;
     }
 
     void disable() override
     {
-        _renderer.stop();
+        if (s_self == this)
+        {
+            fx::clear(fx::K_LETTER);
+            fx::release();
+            s_self = nullptr;
+        }
         _pending.clear();
         destroyMsgWindow();
-        s_live = 0; s_overlayVisible = false;
+    }
+
+    // the quick note's editor (HotkeyDrop.cpp): it is not one of the views, so it hands its deletes over
+    void fromNote(HWND s, Sci_Position pos, Sci_Position len, int modType)
+    {
+        if (!_inNote || len <= 0 || !::IsWindowVisible(s)) return;
+        if ((modType & (SC_PERFORMED_UNDO | SC_PERFORMED_REDO)) && !_undoToo) { ++s_skipUndo; return; }
+        if (_respectAnim && !fx::animationsOn()) { ++s_skipAnim; return; }
+        capture(s, pos, len);
     }
 
     void onNotify(SCNotification* n) override
@@ -338,11 +111,7 @@ public:
         // a document shown in two views notifies from both: letters fall only where the edit was made
         if (views.sci(views.current()) != s) return;
         if ((n->modificationType & (SC_PERFORMED_UNDO | SC_PERFORMED_REDO)) && !_undoToo) { ++s_skipUndo; return; }
-        if (_respectAnim)
-        {
-            BOOL anim = TRUE;
-            if (::SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &anim, 0) && !anim) { ++s_skipAnim; return; }
-        }
+        if (_respectAnim && !fx::animationsOn()) { ++s_skipAnim; return; }
         capture(s, n->position, n->length);
     }
 
@@ -352,7 +121,7 @@ protected:
         if (m == WM_KEX_SPAWN)
         {
             _posted = false;
-            for (CapBatch& b : _pending) _renderer.submit(std::move(b));
+            for (CapBatch& b : _pending) fx::submitLetters(std::move(b));
             _pending.clear();
             return 0;
         }
@@ -456,6 +225,8 @@ private:
         batch.drift = static_cast<float>(_drift);
         batch.spin = static_cast<float>(_spinDeg) * 3.14159265f / 180.0f;
         batch.pop = static_cast<float>(_pop);
+        batch.opacity = _opacity / 100.0f;
+        batch.maxLive = _maxParticles * 2;
         batch.extraAscent = static_cast<int>(sci(s, SCI_GETEXTRAASCENT));
         HMONITOR mon = ::MonitorFromWindow(s, MONITOR_DEFAULTTONEAREST);
         MONITORINFO mi{ sizeof(mi) }; ::GetMonitorInfoW(mon, &mi);
@@ -546,11 +317,11 @@ private:
         return f;
     }
 
-    Renderer _renderer;
     std::vector<CapBatch> _pending;
     bool _posted = false, _flagsAdded = false;
     int _gravity = 2200, _maxParticles = 200, _spinDeg = 260, _drift = 90, _pop = 240;
-    bool _respectAnim = true, _undoToo = false;
+    bool _respectAnim = true, _undoToo = false, _inNote = true;
+    int _opacity = 100;
 };
 
 } // namespace
@@ -561,12 +332,18 @@ LettersStats lettersStats()
 {
     LettersStats st;
     st.lastSpawned = s_lastSpawned; st.lastCandidates = s_lastCandidates; st.totalSpawned = s_totalSpawned;
-    st.live = s_live; st.frames = s_frames; st.overlayVisible = s_overlayVisible;
+    const fx::Stats fs = fx::stats();
+    st.live = fs.live[fx::K_LETTER]; st.frames = fs.frames; st.overlayVisible = fs.visible && fs.live[fx::K_LETTER] > 0;
     st.skippedUndo = s_skipUndo; st.skippedAnimOff = s_skipAnim; st.skippedGlobal = s_skipGlobal;
-    ::EnterCriticalSection(&s_rectLock); st.overlay = s_overlayRect; ::LeaveCriticalSection(&s_rectLock);
+    st.overlay = fs.box;
     return st;
 }
 
-void lettersFreezeAfter(int ms) { s_freezeAfter = ms; }
+void lettersFreezeAfter(int ms) { fx::freezeAfter(ms); }
+
+void lettersFromNote(HWND sciHwnd, Sci_Position pos, Sci_Position len, int modType)
+{
+    if (s_self) s_self->fromNote(sciHwnd, pos, len, modType);
+}
 
 } // namespace kex

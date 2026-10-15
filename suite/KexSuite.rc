@@ -19,6 +19,8 @@ BEGIN
     EDITTEXT        IDC_L_SPIN, 242, 31, 30, 12, ES_NUMBER
     LTEXT           "Drift (px/s):", -1, 284, 33, 44, 8
     EDITTEXT        IDC_L_DRIFT, 330, 31, 30, 12, ES_NUMBER
+    LTEXT           "Opacity (%):", -1, 372, 33, 44, 8
+    EDITTEXT        IDC_L_OPACITY, 418, 31, 28, 12, ES_NUMBER
     AUTOCHECKBOX    "Not when Windows animation effects are off", IDC_L_RESPECT, 12, 50, 170, 10
     AUTOCHECKBOX    "Also on undo and redo", IDC_L_UNDO, 190, 50, 100, 10
 
@@ -29,8 +31,9 @@ BEGIN
     EDITTEXT        IDC_C_GLIDE, 54, 103, 30, 12, ES_NUMBER
     LTEXT           "Jump instead after (lines):", -1, 96, 105, 100, 8
     EDITTEXT        IDC_C_SNAP, 198, 103, 26, 12, ES_NUMBER
-    AUTOCHECKBOX    "Fade the blink", IDC_C_FADE, 240, 104, 70, 10
-    AUTOCHECKBOX    "Block caret in overtype", IDC_C_OVB, 316, 104, 110, 10
+    LTEXT           "Blink:", -1, 236, 105, 22, 8
+    COMBOBOX        IDC_C_BLINK, 260, 103, 98, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "Block caret in overtype", IDC_C_OVB, 366, 104, 86, 10
 
     GROUPBOX        "JetBrains shortcuts", -1, 4, 130, 452, 58
     AUTOCHECKBOX    "IntelliJ editor keys: Alt+J next occurrence, Ctrl+W extend selection, Ctrl+/ comment...", IDC_J_EN, 12, 141, 300, 10
@@ -113,7 +116,7 @@ IDD_KEX_PAGE_NOTE DIALOGEX 115, 10, 460, 205
 STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD
 FONT 8, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
-    GROUPBOX        "Quick note", -1, 4, 2, 452, 126
+    GROUPBOX        "Quick note", -1, 4, 2, 452, 186
     AUTOCHECKBOX    "A global hotkey fades a small note in over any program", IDC_H_EN, 12, 15, 204, 10
     LTEXT           "", IDC_H_STATUS, 222, 16, 226, 9
     LTEXT           "Hotkey:", -1, 12, 33, 28, 8
@@ -127,7 +130,50 @@ BEGIN
     AUTOCHECKBOX    "Stay on top of other windows", IDC_H_ONTOP, 160, 67, 140, 10
     AUTOCHECKBOX    "Open where I left it", IDC_H_PLACE, 308, 67, 140, 10
     AUTOCHECKBOX    "Keep the text between uses (saved as you type)", IDC_H_KEEP, 12, 82, 220, 10
-    LTEXT           "The note has no title bar: drag its top edge to move it, the other edges and corners to resize it. Esc or the hotkey hides it again and gives the focus back; Ctrl+mouse wheel zooms. Its size and zoom are remembered.", -1, 12, 100, 436, 20
+    AUTOCHECKBOX    "Hide it when I click another window", IDC_H_AUTOHIDE, 308, 82, 140, 10
+    LTEXT           "Note file:", -1, 12, 101, 34, 8
+    EDITTEXT        IDC_H_FILE, 48, 99, 330, 12, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...", IDC_H_BROWSE, 384, 98, 62, 14
+    LTEXT           "", IDC_H_FILEINFO, 48, 114, 400, 9
+    LTEXT           "In the note:", -1, 12, 132, 42, 8
+    AUTOCHECKBOX    "Smooth caret", IDC_H_CARET, 56, 131, 62, 10
+    AUTOCHECKBOX    "Falling letters", IDC_H_LETTERS, 122, 131, 64, 10
+    AUTOCHECKBOX    "Copy, cut and delete flashes", IDC_H_FLASH, 190, 131, 116, 10
+    LTEXT           "Opacity (%):", -1, 314, 132, 44, 8
+    EDITTEXT        IDC_H_OPACITY, 360, 130, 28, 12, ES_NUMBER
+    LTEXT           "The note has no title bar: drag its top edge to move it, the other edges and corners to resize it. Esc or the hotkey hides it again and gives the focus back; Ctrl+mouse wheel zooms. Its size and zoom are remembered. Settings > KEX Quick Note > Open Note File in Notepad++ opens its text as a normal tab.", -1, 12, 150, 436, 28
 
+    LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
+END
+
+IDD_KEX_PAGE_EFFECTS DIALOGEX 115, 10, 460, 205
+STYLE DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD
+FONT 8, "MS Shell Dlg", 0, 0, 0x1
+BEGIN
+    GROUPBOX        "Copy, cut and delete", -1, 4, 2, 452, 58
+    AUTOCHECKBOX    "The selection flashes when it is copied, cut or deleted", IDC_E_EN, 12, 15, 214, 10
+    LTEXT           "", IDC_E_STATUS, 232, 16, 216, 9
+    AUTOCHECKBOX    "Copy: one flash", IDC_E_COPY, 12, 31, 76, 10
+    AUTOCHECKBOX    "Cut: two flashes", IDC_E_CUT, 92, 31, 78, 10
+    AUTOCHECKBOX    "Delete: a red flash", IDC_E_DEL, 174, 31, 84, 10
+    LTEXT           "Strength (%):", -1, 270, 32, 48, 8
+    EDITTEXT        IDC_E_STRENGTH, 320, 30, 28, 12, ES_NUMBER
+    AUTOCHECKBOX    "Not when Windows animation effects are off", IDC_E_RESPECT, 12, 45, 170, 10
+
+    GROUPBOX        "Tab slide", -1, 4, 64, 452, 44
+    AUTOCHECKBOX    "Switching tabs slides the new document in, like switching desktops", IDC_W_EN, 12, 77, 246, 10
+    LTEXT           "", IDC_W_STATUS, 264, 78, 184, 9
+    LTEXT           "Slide (ms):", -1, 12, 93, 38, 8
+    EDITTEXT        IDC_W_MS, 52, 91, 30, 12, ES_NUMBER
+    AUTOCHECKBOX    "Not when Windows animation effects are off", IDC_W_RESPECT, 96, 92, 170, 10
+
+    GROUPBOX        "Paint splash", -1, 4, 112, 452, 44
+    AUTOCHECKBOX    "Giving a token a colour (Style Token, the KEX token menu) splashes paint", IDC_P_EN, 12, 125, 260, 10
+    LTEXT           "", IDC_P_STATUS, 278, 126, 170, 9
+    LTEXT           "Drops per token:", -1, 12, 141, 58, 8
+    EDITTEXT        IDC_P_DROPS, 72, 139, 26, 12, ES_NUMBER
+    AUTOCHECKBOX    "Not when Windows animation effects are off", IDC_P_RESPECT, 110, 140, 170, 10
+
+    LTEXT           "", IDC_E_INFO, 4, 162, 452, 26
     LTEXT           "", IDC_SUMMARY, 4, 192, 452, 9
 END

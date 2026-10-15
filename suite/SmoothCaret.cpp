@@ -14,6 +14,7 @@ namespace {
 
 class SmoothCaret;
 SmoothCaret* s_self = nullptr;
+std::vector<HWND> g_extra;   // editors other than the views that follow the feature (the quick note)
 
 class SmoothCaret : public Module {
 public:
@@ -24,7 +25,13 @@ public:
     {
         _glideMs = std::max(0, std::min(1000, settings.getInt(key(), L"GlideMs", 80)));
         _snapLines = std::max(1, std::min(255, settings.getInt(key(), L"SnapAfterLines", 12)));
-        _fadeBlink = settings.getInt(key(), L"FadeBlink", 1) != 0;
+        // how it blinks: 0 fades, 1 on and off like Notepad++'s caret, 2 not at all (once a checkbox, FadeBlink)
+        _blink = settings.getInt(key(), L"Blink", -1);
+        if (_blink < 0 || _blink > 2)
+        {
+            _blink = settings.getInt(key(), L"FadeBlink", 1) ? 0 : 1;
+            settings.setInt(key(), L"Blink", _blink);
+        }
         _overtypeBlock = settings.getInt(key(), L"OvertypeBlock", 1) != 0;
         if (s_self == this) applyAll();
     }
@@ -51,6 +58,7 @@ public:
     {
         for (int v = 0; v < views.count(); ++v)
             if (HWND s = views.sci(v)) ::SendMessageW(s, SCI_KEX_SETSMOOTHCARET, 0, 0);
+        for (HWND n : g_extra) if (::IsWindow(n)) ::SendMessageW(n, SCI_KEX_SETSMOOTHCARET, 0, 0);
         _applied.clear();
         s_self = nullptr;
     }
@@ -64,8 +72,8 @@ public:
 private:
     void applyAll(bool force = true)
     {
-        const LPARAM flags = KEXCARET_ON | (_fadeBlink ? KEXCARET_FADE : 0) | (_overtypeBlock ? KEXCARET_OVERTYPE_BLOCK : 0)
-                           | KEXCARET_SNAPLINES(_snapLines);
+        const LPARAM flags = this->flags();
+        if (force) for (HWND n : g_extra) if (::IsWindow(n)) ::SendMessageW(n, SCI_KEX_SETSMOOTHCARET, static_cast<WPARAM>(_glideMs), flags);
         for (int v = 0; v < views.count(); ++v)
         {
             HWND s = views.sci(v);
@@ -77,8 +85,17 @@ private:
         }
     }
 
-    int _glideMs = 80, _snapLines = 12;
-    bool _fadeBlink = true, _overtypeBlock = true;
+public:
+    LPARAM flags() const
+    {
+        return KEXCARET_ON | (_blink == 0 ? KEXCARET_FADE : 0) | (_blink == 2 ? KEXCARET_NOBLINK : 0) |
+               (_overtypeBlock ? KEXCARET_OVERTYPE_BLOCK : 0) | KEXCARET_SNAPLINES(_snapLines);
+    }
+    int glideMs() const { return _glideMs; }
+
+private:
+    int _glideMs = 80, _snapLines = 12, _blink = 0;
+    bool _overtypeBlock = true;
     std::vector<HWND> _applied;
 };
 
@@ -101,7 +118,17 @@ CaretStats caretStats()
     st.block = info.block != 0;
     st.pushes = info.frames;
     st.workMs = info.workMs;
+    st.alpha = info.alpha;
     return st;
+}
+
+void smoothCaretApply(HWND sciHwnd, bool on)
+{
+    if (!sciHwnd) return;
+    g_extra.erase(std::remove_if(g_extra.begin(), g_extra.end(), [&](HWND h) { return h == sciHwnd || !::IsWindow(h); }), g_extra.end());
+    if (on) g_extra.push_back(sciHwnd);
+    if (on && s_self) ::SendMessageW(sciHwnd, SCI_KEX_SETSMOOTHCARET, static_cast<WPARAM>(s_self->glideMs()), s_self->flags());
+    else ::SendMessageW(sciHwnd, SCI_KEX_SETSMOOTHCARET, 0, 0);
 }
 
 bool smoothCaretOn(HWND sciHwnd)

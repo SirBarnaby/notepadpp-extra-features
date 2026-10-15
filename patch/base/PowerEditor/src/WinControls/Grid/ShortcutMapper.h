@@ -17,23 +17,19 @@
 
 #pragma once
 
-#include <windows.h>
-
-#include <string>
-#include <vector>
-
 #include "BabyGridWrapper.h"
-#include "ContextMenu.h"
 #include "ShortcutMapper_rc.h"
-#include "StaticDialog.h"
-#include "Window.h"
-#include "dpiManagerV2.h"
 #include "shortcut.h"
+#include "ContextMenu.h"
 
 enum GridState {STATE_MENU, STATE_MACRO, STATE_USER, STATE_PLUGIN, STATE_SCINTILLA};
 
 class ShortcutMapper : public StaticDialog {
 public:
+	ShortcutMapper() : StaticDialog(), _currentState(STATE_MENU) {
+		_shortcutFilter = std::vector<std::wstring>();
+		_dialogInitDone = false;
+	}
 	~ShortcutMapper() override = default;
 
 	void init(HINSTANCE hInst, HWND parent, GridState initState = STATE_MENU) {
@@ -43,9 +39,7 @@ public:
 
 	void destroy() override {}
 	void doDialog(bool isRTL = false) {
-		const auto dpiContext = DPIManagerV2::setThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 		StaticDialog::myCreateDialogBoxIndirectParam(IDD_SHORTCUTMAPPER_DLG, isRTL);
-		DPIManagerV2::setThreadDpiAwarenessContext(dpiContext);
 	}
 	void getClientRect(RECT & rc) const override;
 
@@ -65,10 +59,10 @@ private:
 	BabyGridWrapper _babygrid;
 	ContextMenu _rightClickMenu;
 
-	GridState _currentState = STATE_MENU;
+	GridState _currentState;
 	HWND _hTabCtrl = nullptr;
 
-	static constexpr int _nbTab = 5;
+	const static int _nbTab = 5;
 	std::wstring _tabNames[_nbTab];
 	std::vector<std::wstring> _shortcutFilter;
 	std::vector<size_t> _shortcutIndex;
@@ -82,7 +76,7 @@ private:
 
 	std::vector<HFONT> _hGridFonts;
 
-	enum GridFonts : unsigned char
+	enum GridFonts : uint_fast8_t
 	{
 		GFONT_HEADER,
 		GFONT_ROWS,
@@ -93,21 +87,16 @@ private:
 	SIZE _szBorder{};
 	bool _dialogInitDone = false;
 
-	using Window::init;
-
 	void initTabs();
 	void initBabyGrid();
 	void fillOutBabyGrid();
 	std::wstring getTabString(size_t i) const;
 
-	static bool isConflict(const KeyCombo& lhs, const KeyCombo& rhs)
+	bool isConflict(const KeyCombo & lhs, const KeyCombo & rhs) const
 	{
 		return ( (lhs._isCtrl  == rhs._isCtrl ) &&
 				 (lhs._isAlt   == rhs._isAlt  ) &&
 				 (lhs._isShift == rhs._isShift) &&
 				 (lhs._key	   == rhs._key	  ) );
 	}
-
-	void setFontColRowMetrics();
-	void destroyFont() noexcept;
 };

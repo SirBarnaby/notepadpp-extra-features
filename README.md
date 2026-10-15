@@ -27,12 +27,15 @@ Notepad++ KEX is Notepad++ with extra features compiled in: four editor views, t
 - **Four views**: a 2×2 grid instead of two views. Move or clone tabs between any of them.
 - **Tab snapping**: drag a tab to the edge of a view to split it. <kbd>Ctrl</kbd> clones, <kbd>Esc</kbd> cancels.
 - **Snap-out windows**: drag a tab out of Notepad++ and its view gets its own window.
-- **Smooth caret**: the caret glides instead of jumping.
-- **Falling letters**: deleted text falls off the screen.
+- **Smooth caret**: the caret glides instead of jumping. It can fade, blink, or stay on.
+- **Falling letters**: deleted text falls off the screen. Their opacity can be set.
+- **Copy, cut and delete flashes**: copied text flashes once, cut text flashes twice, deleted text flashes red.
+- **Tab slide**: switching tabs slides the next document in, like switching desktops in Windows 10.
+- **Paint splash**: giving a word a colour splashes paint off it.
 - **JetBrains keys**: <kbd>Alt</kbd>+<kbd>J</kbd>, <kbd>Ctrl</kbd>+<kbd>W</kbd>, <kbd>Ctrl</kbd>+<kbd>/</kbd>, <kbd>Ctrl</kbd>+<kbd>D</kbd>, <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> and more. Rebind any of them in *Shortcut Mapper*.
-- **Live token styles**: styled words stay styled as you type. Bold and italic too.
-- **Quick note**: <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd> opens a note over any app.
-- **Per-desktop windows**: each virtual desktop gets its own Notepad++ with the same tabs, its own session and crash backup.
+- **Live token styles**: styled words stay styled as you type. Bold and italic too, for every occurrence or just one.
+- **Quick note**: <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd> opens a note over any app. It can keep its text in a file you choose.
+- **Per-desktop windows**: each virtual desktop gets its own Notepad++ with the same tabs and token styles, its own session and crash backup.
 - **F12 hover tabs**: in F12 mode, the tab bar appears when you touch the top of a view.
 - **Glass**: Windows' live blur behind the text. Off by default.
 - **On/off switches**: one per feature, in the KEX submenus at the bottom of the *Settings* menu.
