@@ -23,6 +23,7 @@ const ULONG_PTR COPYDATA_KEX_TABS = 0x4B455854;   // 'KEXT': "write a copy of yo
 std::wstring g_pendingCopy;     // set in a new instance by desktopHandOff: the folder to open at startup
 std::wstring g_handOffNote;     // what desktopHandOff did, logged once the suite is set up
 std::wstring g_logName = L"kex.log";   // a window for another desktop logs to its own file
+std::wstring g_sessionKey;      // a window for another desktop: its desktop's session name
 DesktopStats s_stats;
 
 BOOL CALLBACK collectNpp(HWND h, LPARAM l)
@@ -202,6 +203,7 @@ Module* createDesktopSync() { return new DesktopSync(); }
 DesktopStats desktopStats() { return s_stats; }
 
 const std::wstring& logFileName() { return g_logName; }
+std::wstring desktopSessionKey() { return g_sessionKey; }
 
 // At NPPN_READY, before the features start: a new instance opens the copy of the first window's tabs.
 void desktopLoadPendingCopy()
@@ -211,6 +213,7 @@ void desktopLoadPendingCopy()
     s_stats.newWindow = true;
     s_stats.copiedTabs = static_cast<int>(nppMsg(NPPM_KEX_LOADDESKTOPCOPY, 0, reinterpret_cast<LPARAM>(g_pendingCopy.c_str())));
     log(L"per-desktop: opened %d copied tab(s) from %ls", s_stats.copiedTabs, g_pendingCopy.c_str());
+    tokenImportCopy(g_pendingCopy);   // their bold, italic and colours
     removeFolder(g_pendingCopy);
     g_pendingCopy.clear();
 }
@@ -232,6 +235,7 @@ LRESULT desktopServeCopy(HWND sender, const COPYDATASTRUCT* cds)
         || dir.find_first_not_of(L"0123456789", root.size()) != std::wstring::npos)
         return 0;
     int n = static_cast<int>(nppMsg(NPPM_KEX_SAVEDESKTOPCOPY, 0, reinterpret_cast<LPARAM>(dir.c_str())));
+    if (n >= 0) tokenExportCopy(dir);
     ++s_stats.served;
     s_stats.lastAction = L"copied " + std::to_wstring(n) + L" tab(s) for a new window on another desktop";
     log(L"per-desktop: %ls (pid %lu)", s_stats.lastAction.c_str(), pid);
@@ -257,6 +261,7 @@ HWND kexsuite::desktopHandOff(HWND running, const wchar_t* settingsDir, wchar_t*
     // Notepad++ is open only on other desktops: this process becomes a new Notepad++ here, with this
     // desktop's own session. When this desktop has none yet, it starts with a copy of the first one's tabs.
     const std::wstring key = currentDesktopKey();
+    g_sessionKey = key;
     g_logName = L"kex-" + (key.empty() ? std::wstring(L"desktop") : key) + L".log";
     if (!key.empty() && desktopKey && static_cast<int>(key.size()) < keyLen)
     {

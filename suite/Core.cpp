@@ -306,6 +306,9 @@ void setInfo(HINSTANCE inst, const NppData& d)
         modules[M_KEYS] = createJetBrainsKeys();
         modules[M_GLASS] = createGlassText();
         modules[M_TOKENS] = createTokenStyles();
+        modules[M_FLASH] = createEditFlash();
+        modules[M_SLIDE] = createTabSlide();
+        modules[M_SPLASH] = createPaintSplash();
     }
     catch (...) { for (Module*& m : modules) m = nullptr; }
 }

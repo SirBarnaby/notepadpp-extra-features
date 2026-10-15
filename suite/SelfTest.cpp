@@ -87,6 +87,17 @@ void pump(int ms)
         ::Sleep(2);
     }
 }
+// waits inside a step, letting messages through (until() is for a step's end)
+bool waitFor(std::function<bool()> cond, int timeoutMs)
+{
+    const double end = nowMs() + timeoutMs;
+    while (!cond())
+    {
+        if (nowMs() >= end) return false;
+        pump(15);
+    }
+    return true;
+}
 
 HWND curSci() { return views.sci(views.current()); }
 
@@ -404,6 +415,9 @@ void removeDeskSession(const wchar_t* id)
 }
 
 POINT g_hoverPoint{};   // a point on the first tab while F12 shows the tab bar
+int g_slideDir = 0, g_slideBefore = 0, g_slideFrames = 0;   // the tab slide steps
+std::string g_flashText;   // a.cpp before the flash steps edit it
+bool g_flashModified = false;
 
 // the text of the second window's tab that holds `want` ("" when none does)
 std::wstring findTextInSecond(HWND w, const std::wstring& want)
@@ -579,7 +593,7 @@ int pressHotkey()
 }
 
 // The on/off tick of a feature on its Preferences page, clicked the way the user does it.
-const int kEnableBox[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN, IDC_G_EN, IDC_K_EN };
+const int kEnableBox[M_COUNT] = { IDC_L_EN, IDC_C_EN, IDC_H_EN, IDC_T_EN, IDC_D_EN, IDC_S_EN, IDC_J_EN, IDC_G_EN, IDC_K_EN, IDC_E_EN, IDC_W_EN, IDC_P_EN };
 HWND enableBox(int module)
 {
     if (!prefPage(pageOfModule(module))) { openPreferences(); pump(300); }
@@ -895,6 +909,10 @@ void buildSteps()
         check(true, L"S3", L"real virtual-desktop provider degrades without crashing (available=%d)", real->ok() ? 1 : 0);
         for (int i = 0; i < M_COUNT; ++i)
             check(modules[i]->isEnabled() == modules[i]->defaultOn(), L"S4", L"%ls %ls at startup, its default", modules[i]->title(), modules[i]->defaultOn() ? L"on" : L"off");
+        // the microinteractions get their own steps (near the end); before them, tab switches and edits show at once
+        setModuleEnabled(M_SLIDE, false, false);
+        setModuleEnabled(M_FLASH, false, false);
+        setModuleEnabled(M_SPLASH, false, false);
         open(L"d.txt"); open(L"c.txt"); open(L"b.py"); open(L"a.cpp");
         g_origCaretWidth = static_cast<int>(sci(views.sci(0), SCI_GETCARETWIDTH));
         return 600;
@@ -905,7 +923,7 @@ void buildSteps()
         HMENU mm = reinterpret_cast<HMENU>(nppMsg(NPPM_GETMENUHANDLE, NPPMAINMENU, 0));
         HMENU sm = subWith(mm, IDM_SETTING_PREFERENCE);
         const int n = sm ? ::GetMenuItemCount(sm) : 0;
-        static const wchar_t* const kNames[PAGE_COUNT] = { L"KEX Editing", L"KEX Tabs", L"KEX Windows", L"KEX Highlighting", L"KEX Quick Note" };
+        static const wchar_t* const kNames[PAGE_COUNT] = { L"KEX Editing", L"KEX Tabs", L"KEX Windows", L"KEX Highlighting", L"KEX Quick Note", L"KEX Effects" };
         bool group = n > PAGE_COUNT && (::GetMenuState(sm, n - PAGE_COUNT - 1, MF_BYPOSITION) & MF_SEPARATOR);
         std::wstring names, items;
         for (int p = 0; p < PAGE_COUNT && group; ++p)
@@ -1111,7 +1129,7 @@ void buildSteps()
         RECT nr; ::GetWindowRect(npp._nppHandle, &nr);
         check(st.overlayVisible && st.live > 0, L"F2", L"overlay alive with %d letters, bounding box %ls (Notepad++ window %ls)",
             st.live, rectStr(st.overlay).c_str(), rectStr(nr).c_str());
-        HWND ov = ::FindWindowW(L"KexSuiteOverlay", L"KEX falling letters");
+        HWND ov = ::FindWindowW(L"KexSuiteOverlay", L"KEX effects");
         LONG_PTR ex = ov ? ::GetWindowLongPtrW(ov, GWL_EXSTYLE) : 0;
         check(ov && (ex & WS_EX_TRANSPARENT) && (ex & WS_EX_LAYERED) && (ex & WS_EX_NOACTIVATE) && (ex & WS_EX_TOPMOST), L"F3",
             L"overlay is layered, click-through, non-activating, topmost (exstyle 0x%lx)", static_cast<long>(ex));
@@ -1399,6 +1417,48 @@ void buildSteps()
         return 100;
     });
 
+    add([] {
+        // how the caret blinks (KEX Editing > Smooth caret > Blink): fades, on and off as Notepad++'s, or not at all
+        HWND page = prefPage(PAGE_EDITING);
+        HWND s = views.sci(0);
+        const int period = static_cast<int>(sci(s, SCI_GETCARETPERIOD));
+        const int was = settings.getInt(modules[M_CARET]->key(), L"Blink", 0);
+        float lo[3] = {}, hi[3] = {};
+        int mid[3] = {};
+        for (int k = 2; k >= 0; --k)
+        {
+            pickCombo(page, IDC_C_BLINK, k);
+            ::SetFocus(s);
+            sci(s, SCI_GOTOPOS, posOf(s, 2, k + 1));
+            lo[k] = 2; hi[k] = -1;
+            const double end = nowMs() + 1600;
+            while (nowMs() < end)
+            {
+                ::InvalidateRect(s, nullptr, FALSE);
+                ::UpdateWindow(s);
+                const CaretStats c = caretStats();
+                if (c.visible)
+                {
+                    lo[k] = std::min(lo[k], c.alpha); hi[k] = std::max(hi[k], c.alpha);
+                    if (c.alpha > 0.02f && c.alpha < 0.98f) ++mid[k];
+                }
+                pump(12);
+            }
+        }
+        const int saved = settings.getInt(modules[M_CARET]->key(), L"Blink", -1);
+        if (period > 0)
+        {
+            check(lo[2] == 1.0f && hi[2] == 1.0f, L"C13", L"Blink \"Never\": the caret stays fully on (%.2f..%.2f over 1.6 s)", lo[2], hi[2]);
+            check(lo[1] == 0.0f && hi[1] == 1.0f && mid[1] == 0, L"C14", L"Blink \"On and off\": hard on and off as Notepad++'s caret (%d frames in between)", mid[1]);
+            check(lo[0] == 0.0f && hi[0] == 1.0f && mid[0] > 0, L"C15", L"Blink \"Fade\" (the default): fades in and out (%d frames in between)", mid[0]);
+        }
+        else
+            tlog(L"SKIP C13-C15 Notepad++'s caret doesn't blink here (period %d)", period);
+        check(saved == 0 && ::SendDlgItemMessageW(page, IDC_C_BLINK, CB_GETCURSEL, 0, 0) == 0, L"C16", L"the choice is remembered (Blink=%d)", saved);
+        if (was != 0) pickCombo(page, IDC_C_BLINK, was);
+        return 100;
+    });
+
     // ---- a Notepad++ for each desktop: a second notepad++.exe ---------------------------------------
     add([] {
         DesktopStats d = desktopStats();
@@ -1414,6 +1474,19 @@ void buildSteps()
         sci(curSci(), SCI_GOTOPOS, 12);
         g_deskNote = curName();
         g_deskNoteBuf = static_cast<intptr_t>(nppMsg(NPPM_GETCURRENTBUFFERID));
+        {
+            // its styles go along: a colour on one occurrence, a coloured token made bold, one italic word
+            HWND ns = curSci();
+            sci(ns, SCI_SETSEL, 5, 9);     // "note"
+            tokCommand(IDM_SEARCH_MARKONEEXT4);
+            sci(ns, SCI_SETSEL, 18, 22);   // "line"
+            tokCommand(IDM_SEARCH_MARKALLEXT1);
+            tokCommand(static_cast<UINT>(tokenCommandId(0)));   // Bold
+            sci(ns, SCI_SETSEL, 11, 17);   // "second"
+            tokCommand(static_cast<UINT>(tokenCommandId(4)));   // Style One Token > Italic
+            sci(ns, SCI_GOTOPOS, 12);
+            settle(200);
+        }
         switchTo(L"a.cpp");
         focusEditor();
         sci(curSci(), SCI_GOTOPOS, posOf(curSci(), 4, 2));
@@ -1464,7 +1537,22 @@ void buildSteps()
             noteCaret = static_cast<intptr_t>(::SendMessageW(ns, SCI_GETCURRENTPOS, 0, 0));
             modified = ::SendMessageW(ns, SCI_GETMODIFY, 0, 0);
         }
+        if (g_deskNoteView >= 0)
+            ::SendMessageW(reinterpret_cast<HWND>(::SendMessageW(w, NPPM_KEX_GETVIEWSCINTILLA, g_deskNoteView, 0)), SCI_COLOURISE, 0, -1);
         pump(300);
+        {
+            // the note's styles came along
+            HWND ns = g_deskNoteView >= 0 ? reinterpret_cast<HWND>(::SendMessageW(w, NPPM_KEX_GETVIEWSCINTILLA, g_deskNoteView, 0)) : nullptr;
+            auto styleOf = [ns](int pos) { return static_cast<int>(::SendMessageW(ns, SCI_GETSTYLEAT, pos, 0)) & 0xFF; };
+            const LRESULT note = ns ? ::SendMessageW(ns, SCI_INDICATORVALUEAT, 22, 5) : -1;
+            const LRESULT line = ns ? ::SendMessageW(ns, SCI_INDICATORVALUEAT, 25, 18) : -1;
+            const LRESULT lineBold = ns ? ::SendMessageW(ns, SCI_STYLEGETWEIGHT, styleOf(19), 0) : -1;
+            const LRESULT secondItalic = ns ? ::SendMessageW(ns, SCI_STYLEGETITALIC, styleOf(12), 0) : -1;
+            const LRESULT deskPlain = ns ? (::SendMessageW(ns, SCI_STYLEGETITALIC, styleOf(1), 0) == 0 && ::SendMessageW(ns, SCI_STYLEGETWEIGHT, styleOf(1), 0) < SC_WEIGHT_BOLD) : 0;
+            check(note == 1 && line == kTokValue && lineBold >= SC_WEIGHT_BOLD && secondItalic && deskPlain, L"D6b",
+                  L"the untitled tab's styles came along: \"note\" coloured (%d), \"line\" a bold token (%d, weight %d), \"second\" italic (%d)",
+                  static_cast<int>(note), static_cast<int>(line), static_cast<int>(lineBold), static_cast<int>(secondItalic));
+        }
         const std::wstring title = windowTitle(w);
         check(text == L"desk note\r\nsecond line" && noteCaret == 12 && modified == 0 && title.find(g_deskNote) != std::wstring::npos, L"D6",
               L"untitled tab %ls copied: text \"%ls\", caret %lld, unmodified (%d), title \"%ls\"", g_deskNote.c_str(),
@@ -1677,6 +1765,45 @@ void buildSteps()
         return 200;
     });
 
+    add([] {
+        // a chosen file as the note's text (KEX Quick Note > Note file), with its own line endings
+        const std::wstring f = path(L"chosen-note.txt");
+        writeFile(f, "chosen text\nsecond line\n");
+        settings.setStr(modules[M_HOTKEY]->key(), L"NoteFile", f);
+        modules[M_HOTKEY]->loadOptions();
+        pressHotkey();
+        pump(300);
+        HWND ed = quickNoteEditor();
+        const std::string text = ed ? docText(ed) : std::string();
+        check(ed && text == "chosen text\nsecond line\n" && sci(ed, SCI_GETEOLMODE) == SC_EOL_LF && quickNoteFile() == f && quickNoteFileError().empty(), L"Q12",
+              L"\"Note file\" set: the note shows that file's text with its Unix line endings (\"%hs\")", text.substr(0, 11).c_str());
+        check(ed && smoothCaretOn(ed), L"Q13", L"the note has the smooth caret, as the views do");
+        // deleting there rains letters, as in the views
+        lettersFreezeAfter(160);
+        const int before = lettersStats().totalSpawned;
+        if (ed) { ::SetFocus(ed); sci(ed, SCI_SETSEL, 0, 6); }   // "chosen"
+        tap(VK_DELETE);
+        pump(200);
+        check(lettersStats().totalSpawned - before == 6, L"Q14", L"deleting \"chosen\" in the note: %d letters fall", lettersStats().totalSpawned - before);
+        return shot(L"quick-note-letters");
+    });
+    add([] {
+        lettersFreezeAfter(-1);
+        tap('K');
+        pump(100);
+        pressHotkey();   // hides it, and saves
+        pump(300);
+        const std::string saved = readAll(path(L"chosen-note.txt"));
+        check(!quickNoteWindow() && saved == "k text\nsecond line\n", L"Q15", L"hidden again: the chosen file now reads \"%hs\", line endings kept",
+              saved.substr(0, 6).c_str());
+        settings.setStr(modules[M_HOTKEY]->key(), L"NoteFile", L"");
+        modules[M_HOTKEY]->loadOptions();
+        check(quickNoteFile() == settings.dir() + L"\\kex-quicknote.txt", L"Q16", L"\"Note file\" emptied: back to the note's own file");
+        ::ShowWindow(npp._nppHandle, SW_RESTORE);
+        focusEditor();
+        return until([] { return lettersStats().live == 0; }, 6000);
+    });
+
     // ---- F12 hover tabs --------------------------------------------------------------------------
     add([] {
         if (!isPostItMode()) nppMsg(NPPM_MENUCOMMAND, 0, IDM_VIEW_POSTIT);
@@ -1744,6 +1871,215 @@ void buildSteps()
         return 100;
     });
 
+    // ---- microinteractions: tab slide, copy / cut / delete flashes, paint splash ----------------
+    add([] {
+        setModuleEnabled(M_SLIDE, true, false);
+        setModuleEnabled(M_FLASH, true, false);
+        setModuleEnabled(M_SPLASH, true, false);
+        check(modules[M_SLIDE]->isEnabled() && modules[M_FLASH]->isEnabled() && modules[M_SPLASH]->isEnabled(), L"W0",
+              L"tab slide, flashes and paint splash on");
+        switchTo(L"b.py");
+        switchTo(L"a.cpp");
+        focusEditor();
+        pump(300);
+        // stop the slide half-way, so its frame can be checked and photographed
+        slideTestFreeze(0.5);
+        HWND s = curSci();
+        const int from = views.currentIndex(views.current());
+        const SlideStats before = slideStats(s);
+        switchTo(L"b.py");
+        const int to = views.currentIndex(views.current());
+        g_slideDir = to > from ? 1 : -1;
+        g_slideBefore = before.started;
+        g_slideFrames = before.frames;
+        settle(250);
+        return 100;
+    });
+    add([] {
+        HWND s = curSci();
+        const SlideStats st = slideStats(s);
+        check(curName() == L"b.py" && st.started == g_slideBefore + 1 && st.active && st.frames > g_slideFrames && std::fabs(st.fraction - 0.5f) < 0.01f
+              && st.lastDir == g_slideDir, L"W1",
+              L"switching tabs slides the new document in from the %ls (started %d, %d frames, held at %.2f; active %d, pictures %d, stopped early %d, technology %d)",
+              g_slideDir > 0 ? L"right" : L"left", st.started - g_slideBefore, st.frames - g_slideFrames, st.fraction, st.active ? 1 : 0, st.captures, st.cancelled,
+              static_cast<int>(sci(s, SCI_GETTECHNOLOGY)));
+        return shot(L"tab-slide-half-way");
+    });
+    add([] {
+        slideTestFreeze(-1);
+        ::InvalidateRect(curSci(), nullptr, FALSE);
+        return until([] { return !slideStats(curSci()).active; }, 3000);
+    });
+    add([] {
+        const SlideStats st = slideStats(curSci());
+        check(g_untilOk && std::fabs(st.fraction - 1.0f) < 0.001f, L"W2", L"the slide ends with the new document in place (last frame at %.2f)", st.fraction);
+        // and back: the other way
+        const int from = views.currentIndex(views.current());
+        switchTo(L"a.cpp");
+        const int to = views.currentIndex(views.current());
+        settle(100);
+        const SlideStats st2 = slideStats(curSci());
+        check(st2.started == st.started + 1 && st2.lastDir == (to > from ? 1 : -1) && st2.lastDir == -g_slideDir, L"W3",
+              L"switching back slides the other way (%ls)", st2.lastDir > 0 ? L"from the right" : L"from the left");
+        // Windows' "Animation effects" off: no slide
+        BOOL was = TRUE;
+        ::SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &was, 0);
+        BOOL setOk = ::SystemParametersInfoW(SPI_SETCLIENTAREAANIMATION, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(FALSE)), 0);
+        waitFor([] { return !slideStats(curSci()).active; }, 2000);
+        const SlideStats st3 = slideStats(curSci());
+        switchTo(L"b.py");
+        const SlideStats st4 = slideStats(curSci());
+        if (setOk)
+            check(st4.started == st3.started && st4.skipped == st3.skipped + 1 && !st4.active, L"W4", L"Windows animation effects off: tabs switch at once (respected by default)");
+        else
+            tlog(L"SKIP W4 this system cannot switch SPI_SETCLIENTAREAANIMATION");
+        ::SystemParametersInfoW(SPI_SETCLIENTAREAANIMATION, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(was)), 0);
+        switchTo(L"a.cpp");
+        focusEditor();
+        return until([] { return !slideStats(curSci()).active; }, 2000);
+    });
+    add([] {
+        // copy: the selection flashes once
+        HWND s = curSci();
+        focusEditor();
+        g_flashText = docText(s);
+        g_flashModified = sci(s, SCI_GETMODIFY) != 0;
+        lettersFreezeAfter(40);   // hold the effects at their brightest
+        sci(s, SCI_SETSEL, posOf(s, 1, 0), posOf(s, 1, 8));
+        const FlashStats before = flashStats();
+        tokCommand(IDM_EDIT_COPY);
+        waitFor([before] { return flashStats().copies > before.copies; }, 1500);
+        pump(120);
+        const FlashStats st = flashStats();
+        HWND ov = ::FindWindowW(L"KexSuiteOverlay", L"KEX effects");
+        check(st.copies == before.copies + 1 && st.cuts == before.cuts && st.lastRects == 1 && st.spawned == before.spawned + 1 && st.live >= 1
+              && ov && ::IsWindowVisible(ov), L"X1", L"Edit > Copy: the selection flashes (%d rectangle, %d live)", st.lastRects, st.live);
+        // over three lines: a rectangle per line, as the selection is drawn
+        sci(s, SCI_SETSEL, posOf(s, 0, 2), posOf(s, 2, 3));
+        tokCommand(IDM_EDIT_COPY);
+        waitFor([st] { return flashStats().copies > st.copies; }, 1500);
+        check(flashStats().lastRects == 3, L"X2", L"copying three lines flashes %d rectangles", flashStats().lastRects);
+        return 100;
+    });
+    add([] {
+        // cut: a double flash, not also counted as a copy
+        HWND s = curSci();
+        lettersFreezeAfter(-1);
+        waitFor([] { return flashStats().live == 0; }, 3000);
+        sci(s, SCI_SETSEL, posOf(s, 2, 0), posOf(s, 2, 5));
+        const FlashStats before = flashStats();
+        tokCommand(IDM_EDIT_CUT);
+        pump(250);
+        const FlashStats st = flashStats();
+        check(st.cuts == before.cuts + 1 && st.copies == before.copies && st.deletes == before.deletes && st.spawned == before.spawned + 1, L"X3",
+              L"Edit > Cut: one double flash (cuts %d, copies %d)", st.cuts - before.cuts, st.copies - before.copies);
+        sci(s, SCI_UNDO);
+        // delete: a red flash
+        focusEditor();
+        sci(s, SCI_SETSEL, posOf(s, 2, 0), posOf(s, 2, 5));
+        lettersFreezeAfter(40);
+        tap(VK_DELETE);
+        pump(150);
+        const FlashStats st2 = flashStats();
+        check(st2.deletes == st.deletes + 1 && st2.cuts == st.cuts && st2.lastRects == 1, L"X4", L"Delete on a selection: a red flash (deletes %d)", st2.deletes - st.deletes);
+        return shot(L"delete-flash");
+    });
+    add([] {
+        HWND s = curSci();
+        sci(s, SCI_UNDO);
+        lettersFreezeAfter(-1);
+        // typing over a selection, or deleting single characters, flashes nothing
+        focusEditor();
+        const FlashStats before = flashStats();
+        sci(s, SCI_SETSEL, posOf(s, 2, 0), posOf(s, 2, 5));
+        tap('X');
+        pump(100);
+        sci(s, SCI_SETEMPTYSELECTION, posOf(s, 2, 1));
+        tap(VK_DELETE);
+        tap(VK_BACK);
+        pump(100);
+        const FlashStats st = flashStats();
+        check(st.deletes == before.deletes && st.cuts == before.cuts && st.copies == before.copies, L"X5",
+              L"typing over a selection and deleting single characters: no flash");
+        // its own switch: copies stay quiet
+        settings.setInt(modules[M_FLASH]->key(), L"Copy", 0);
+        modules[M_FLASH]->loadOptions();
+        sci(s, SCI_SETSEL, posOf(s, 1, 0), posOf(s, 1, 4));
+        const FlashStats b2 = flashStats();
+        tokCommand(IDM_EDIT_COPY);
+        pump(200);
+        check(flashStats().spawned == b2.spawned, L"X6", L"\"Copy\" unticked: copying flashes nothing");
+        settings.setInt(modules[M_FLASH]->key(), L"Copy", 1);
+        modules[M_FLASH]->loadOptions();
+        // a.cpp as it was
+        if (docText(s) != g_flashText)
+        {
+            sci(s, SCI_TARGETWHOLEDOCUMENT);
+            sci(s, SCI_REPLACETARGET, static_cast<WPARAM>(g_flashText.size()), reinterpret_cast<LPARAM>(g_flashText.c_str()));
+        }
+        if (!g_flashModified) sci(s, SCI_SETSAVEPOINT);
+        sci(s, SCI_SETEMPTYSELECTION, posOf(s, 0, 0));
+        return until([] { return flashStats().live == 0; }, 3000);
+    });
+    add([] {
+        // paint splash: Style All Occurrences of Token splashes every new occurrence
+        waitFor([] { return lettersStats().live == 0; }, 6000);
+        writeFile(path(L"s.txt"), "paint the town red\r\nred paint, red ink\r\nred\r\n");
+        open(L"s.txt");
+        focusEditor();
+        HWND s = curSci();
+        settle(200);
+        const std::vector<intptr_t> red = wordsIn(s, "red");
+        caretOn(s, red.empty() ? 0 : red[0]);
+        const SplashStats before = splashStats();
+        lettersFreezeAfter(60);
+        tokCommand(IDM_SEARCH_MARKALLEXT2);
+        pump(150);
+        const SplashStats st = splashStats();
+        check(red.size() == 4 && st.splashes == before.splashes + 1 && st.lastTokens == 4 && st.spawned == before.spawned + 4 * 8 && st.live > 0, L"P1",
+              L"Style All Occurrences of Token: \"red\" splashes paint at its %d occurrences (%d drops and washes)", st.lastTokens, st.spawned - before.spawned);
+        return shot(L"paint-splash");
+    });
+    add([] {
+        HWND s = curSci();
+        lettersFreezeAfter(-1);
+        // the same again: nothing new is coloured, nothing splashes
+        const SplashStats before = splashStats();
+        const std::vector<intptr_t> red = wordsIn(s, "red");
+        tokCommand(IDM_SEARCH_MARKALLEXT2);
+        pump(100);
+        const bool still = !red.empty() && sci(s, SCI_INDICATORVALUEAT, 24, red[0]) != 0;
+        if (still) check(splashStats().splashes == before.splashes, L"P2", L"styling a token that already has that colour splashes nothing");
+        else tlog(L"INFO P2 this Notepad++ takes the style off again on a second Style All");
+        // Style One Token: only that occurrence
+        const std::vector<intptr_t> pa = wordsIn(s, "paint");
+        sci(s, SCI_SETSEL, pa.empty() ? 0 : pa[0], pa.empty() ? 0 : pa[0] + 5);
+        const SplashStats b2 = splashStats();
+        tokCommand(IDM_SEARCH_MARKONEEXT3);
+        pump(100);
+        const SplashStats st = splashStats();
+        check(st.splashes == b2.splashes + 1 && st.lastTokens == 1, L"P3", L"Style One Token: one splash, on that occurrence only (%d)", st.lastTokens);
+        // its switch
+        setModuleEnabled(M_SPLASH, false, false);
+        const std::vector<intptr_t> ink = wordsIn(s, "ink");
+        sci(s, SCI_SETSEL, ink.empty() ? 0 : ink[0], ink.empty() ? 0 : ink[0] + 3);
+        tokCommand(IDM_SEARCH_MARKONEEXT1);
+        pump(100);
+        check(splashStats().spawned == st.spawned, L"P4", L"paint splash off: colouring splashes nothing");
+        setModuleEnabled(M_SPLASH, true, false);
+        tokCommand(IDM_SEARCH_CLEARALLMARKS);
+        sci(s, SCI_SETEMPTYSELECTION, 0);
+        nppMsg(NPPM_MENUCOMMAND, 0, IDM_FILE_CLOSE);
+        pump(150);
+        // the Effects page: a line on how the effects are drawn and how fast
+        showPrefPage(L"KEX Effects");
+        const std::wstring info = itemText(prefPage(PAGE_EFFECTS), IDC_E_INFO);
+        check(prefPage(PAGE_EFFECTS) && !info.empty(), L"P5", L"KEX Effects page: \"%ls\"", info.c_str());
+        switchTo(L"a.cpp");
+        focusEditor();
+        return until([] { return splashStats().live == 0 && flashStats().live == 0; }, 4000);
+    });
+
     // ---- every feature off and on again from Preferences ----------------------------------------
     add([] {
         for (int i = 0; i < M_COUNT; ++i)
@@ -1758,7 +2094,14 @@ void buildSteps()
             bool restored = true;
             switch (i)
             {
-            case M_LETTERS: restored = ::FindWindowW(L"KexSuiteOverlay", L"KEX falling letters") == nullptr; extra = L"render thread and overlay gone"; break;
+            case M_LETTERS:
+                if (!modules[M_FLASH]->isEnabled() && !modules[M_SPLASH]->isEnabled())
+                { restored = ::FindWindowW(L"KexSuiteOverlay", L"KEX effects") == nullptr; extra = L"render thread and overlay gone"; }
+                else { restored = lettersStats().live == 0; extra = L"no letters left (the flashes and splashes keep the overlay)"; }
+                break;
+            case M_FLASH: restored = flashStats().live == 0; extra = L"no flashes left"; break;
+            case M_SPLASH: restored = splashStats().live == 0; extra = L"no paint left"; break;
+            case M_SLIDE: restored = !slideStats(views.sci(0)).active && !slideStats(views.sci(1)).active; extra = L"no slide running"; break;
             case M_CARET:
             {
                 int now = static_cast<int>(sci(views.sci(0), SCI_GETCARETSTYLE));
@@ -2598,6 +2941,64 @@ void buildSteps()
         pump(200);
         focusEditor();
         return 200;
+    });
+    add([] {
+        // Style One Token > Bold / Italic: only that occurrence
+        writeFile(path(L"o.txt"), "one two one three one\r\nmore one here\r\n");
+        open(L"o.txt");
+        settle(300);
+        HWND s = curSci();
+        const std::vector<intptr_t> on = wordsIn(s, "one");
+        if (on.size() != 4) { check(false, L"L24", L"o.txt has %d \"one\"", static_cast<int>(on.size())); return 100; }
+        sci(s, SCI_SETSEL, on[1], on[1] + 3);
+        tokCommand(IDM_SEARCH_MARKONEEXT2);   // Search > Style One Token > Using 2nd Style
+        settle();
+        tokCommand(static_cast<UINT>(tokenCommandId(3)));   // Style One Token > Bold
+        settle(400);
+        std::wstring why, why2;
+        const bool bold = styledAs(s, { on[1] }, 3, 1, -1, &why) && tokenOneOffAt(s) == 1;
+        const bool others = styledAs(s, { on[0], on[2], on[3] }, 3, 0, -1, &why2);
+        const bool colour = sci(s, SCI_INDICATORVALUEAT, 24, on[1]) != 0 && sci(s, SCI_INDICATORVALUEAT, 24, on[0]) == 0;
+        check(bold && others && colour, L"L24", L"Style One Token > Bold: only the second \"one\" is coloured and bold, the other three stay plain %ls %ls",
+              why.c_str(), why2.c_str());
+        tokCommand(static_cast<UINT>(tokenCommandId(4)));   // Style One Token > Italic
+        settle(400);
+        std::wstring why3;
+        check(styledAs(s, { on[1] }, 3, 3, -1, &why3) && tokenOneOffAt(s) == 3 && styledAs(s, { on[0], on[2], on[3] }, 3, 0, -1, nullptr), L"L25",
+              L"and Italic: that one is bold and italic %ls", why3.c_str());
+        // a range that has no colour can be bold too
+        sci(s, SCI_SETSEL, on[3], on[3] + 3);
+        tokCommand(static_cast<UINT>(tokenCommandId(3)));
+        settle(400);
+        std::wstring why4;
+        check(styledAs(s, { on[3] }, 3, 1, -1, &why4) && styledAs(s, { on[0], on[2] }, 3, 0, -1, nullptr), L"L26",
+              L"bold on an uncoloured occurrence: only it %ls", why4.c_str());
+        sci(s, SCI_SETEMPTYSELECTION, 0);
+        nppMsg(NPPM_SAVECURRENTFILE);
+        nppMsg(NPPM_MENUCOMMAND, 0, IDM_FILE_CLOSE);
+        pump(200);
+        return 100;
+    });
+    add([] {
+        const std::string store = readAll(tokenStoreFile());
+        open(L"o.txt");
+        settle(400);
+        HWND s = curSci();
+        const std::vector<intptr_t> on = wordsIn(s, "one");
+        std::wstring why;
+        const bool back = on.size() == 4 && styledAs(s, { on[1] }, 3, 3, -1, &why) && styledAs(s, { on[3] }, 3, 1, -1, nullptr)
+                          && styledAs(s, { on[0], on[2] }, 3, 0, -1, nullptr) && sci(s, SCI_INDICATORVALUEAT, 24, on[1]) != 0;
+        check(back && store.find("S\tO\t3\t") != std::string::npos, L"L27",
+              L"closed and opened again: the single bold/italic ranges and the colour come back (kept in %ls) %ls", fileNameOf(tokenStoreFile()).c_str(), why.c_str());
+        tokCommand(IDM_SEARCH_CLEARALLMARKS);   // Search > Clear Style > Clear all Styles
+        settle(400);
+        check(on.size() == 4 && styledAs(s, on, 3, 0, -1, nullptr) && sci(s, SCI_INDICATORVALUEAT, 24, on[1]) == 0, L"L28",
+              L"Clear all Styles takes the single bold/italic ranges away too");
+        nppMsg(NPPM_SAVECURRENTFILE);
+        nppMsg(NPPM_MENUCOMMAND, 0, IDM_FILE_CLOSE);
+        pump(200);
+        focusEditor();
+        return 100;
     });
     // ---- speed: what the features cost while typing and while idle --------------------------------
     add([] {

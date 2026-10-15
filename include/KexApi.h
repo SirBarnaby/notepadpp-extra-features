@@ -47,7 +47,7 @@
 // the command line stay last and active. LRESULT: tabs opened, -1 on failure.
 #define NPPM_KEX_LOADDESKTOPCOPY      (KEX_USER + 13)
 // wParam: a KEX Preferences page (0 "KEX Editing", 1 "KEX Tabs", 2 "KEX Windows", 3 "KEX Highlighting",
-// 4 "KEX Quick Note"). Opens Settings > Preferences on that page. LRESULT: TRUE.
+// 4 "KEX Quick Note", 5 "KEX Effects"). Opens Settings > Preferences on that page. LRESULT: TRUE.
 #define NPPM_KEX_SHOWPREFPAGE         (KEX_USER + 14)
 
 // Commands of the KEX features. They are added to a menu of the feature's, Settings > Shortcut Mapper
@@ -77,3 +77,7 @@ struct KexCommandList {
 // plugins' and KEX's) as its main loop does. LRESULT: TRUE when the message was a shortcut (then don't
 // dispatch it).
 #define NPPM_KEX_TRANSLATEACCEL       (KEX_USER + 18)
+
+// wParam: a BufferID. LRESULT: the Scintilla document of that buffer (as SCI_GETDOCPOINTER returns it for
+// a view showing it), 0 if there is no such buffer. Lets a feature read and mark any open document.
+#define NPPM_KEX_GETBUFFERDOC         (KEX_USER + 19)

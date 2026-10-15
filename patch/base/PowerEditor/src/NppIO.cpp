@@ -2352,7 +2352,13 @@ bool Notepad_plus::fileDelete(BufferID id)
 	Buffer * buf = MainFileManager.getBufferByID(bufferID);
 	const wchar_t *fileNamePath = buf->getFullPathName();
 
-	bool goAhead = (doDeleteOrNot(fileNamePath) == IDOK);
+	winVer winVersion = (NppParameters::getInstance()).getWinVersion();
+	bool goAhead = true;
+	if (winVersion >= WV_WIN8 || winVersion == WV_UNKNOWN)
+	{
+		// Windows 8 (and version after?) has no system alert, so we ask user's confirmation
+		goAhead = (doDeleteOrNot(fileNamePath) == IDOK);
+	}
 
 	if (goAhead)
 	{

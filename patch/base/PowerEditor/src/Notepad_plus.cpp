@@ -1308,14 +1308,9 @@ int Notepad_plus::getHtmlXmlEncoding(const wchar_t* fileName) const
 
 void Notepad_plus::setCodePageForInvisibleView(Buffer const *pBuffer)
 {
-	setCodePageForInvisibleView(pBuffer->getUnicodeMode());
-}
-
-void Notepad_plus::setCodePageForInvisibleView(UniMode unicodeMode)
-{
 	intptr_t detectedCp = _invisibleEditView.execute(SCI_GETCODEPAGE);
 	intptr_t cp2set = SC_CP_UTF8;
-	if (unicodeMode == uni8Bit)
+	if (pBuffer->getUnicodeMode() == uni8Bit)
 	{
 		cp2set = (detectedCp == SC_CP_UTF8 ? CP_ACP : detectedCp);
 	}
@@ -1904,29 +1899,21 @@ void Notepad_plus::removeDuplicateLines()
 class MatchedFileNameProgress final
 {
 public:
-	static constexpr std::chrono::milliseconds updateInterval{ 50 }; // 20 Hz; enough for the progress dialog
-
 	explicit MatchedFileNameProgress(Progress & progress) : _pProgress(&progress) {}
-
-	bool due() const
-	{
-		return std::chrono::steady_clock::now() - _pLastUpdateTime >= updateInterval;
-	}
-
-	void noteUpdated()
-	{
-		_pLastUpdateTime = std::chrono::steady_clock::now();
-	}
-
 	// Updates progress if enough time has passed and returns whether search should continue
 	bool report(const wchar_t * currentPath, int nbHitsSoFar)
 	{
-		if (!due())
-			return true;
-		if (_pProgress->isCancelled())
-			return false;
-		_pProgress->setInfo(currentPath, nbHitsSoFar);
-		noteUpdated();
+		static constexpr std::chrono::milliseconds updateInterval{ 50 };
+		const auto now = std::chrono::steady_clock::now();
+		if (now - _pLastUpdateTime >= updateInterval)
+		{
+			if (_pProgress->isCancelled())
+			{
+				return false;
+			}
+			_pLastUpdateTime = now;
+			_pProgress->setInfo(currentPath, nbHitsSoFar);
+		}
 		return true;
 	}
 private:
@@ -1935,17 +1922,6 @@ private:
 };
 
 void Notepad_plus::getMatchedFileNames(const wchar_t *dir, size_t level, const vector<wstring> & patterns, vector<wstring> & fileNames, bool isRecursive, bool isInHiddenDir, MatchedFileNameProgress* progress)
-{
-	vector<SearchCandidate> files;
-	getMatchedFileNames(dir, level, patterns, files, isRecursive, isInHiddenDir, progress);
-	fileNames.reserve(fileNames.size() + files.size());
-	for (auto&& file : files)
-	{
-		fileNames.push_back(std::move(file._path));
-	}
-}
-
-void Notepad_plus::getMatchedFileNames(const wchar_t *dir, size_t level, const vector<wstring> & patterns, vector<SearchCandidate> & fileNames, bool isRecursive, bool isInHiddenDir, MatchedFileNameProgress* progress)
 {
 	level++;
 
@@ -1983,10 +1959,7 @@ void Notepad_plus::getMatchedFileNames(const wchar_t *dir, size_t level, const v
 				{
 					wstring pathFile(dir);
 					pathFile += foundData.cFileName;
-					LARGE_INTEGER fileSize{};
-					fileSize.LowPart = foundData.nFileSizeLow;
-					fileSize.HighPart = foundData.nFileSizeHigh;
-					fileNames.push_back(SearchCandidate{ std::move(pathFile), fileSize.QuadPart });
+					fileNames.push_back(pathFile.c_str());
 				}
 			}
 
@@ -1999,7 +1972,7 @@ void Notepad_plus::getMatchedFileNames(const wchar_t *dir, size_t level, const v
 	}
 }
 
-bool Notepad_plus::createFilelistForFiles(vector<SearchCandidate> & fileNames)
+bool Notepad_plus::createFilelistForFiles(vector<wstring> & fileNames)
 {
 	const wchar_t *dir2Search = _findReplaceDlg.getDir2Search();
 	if (!dir2Search[0] || !doesDirectoryExist(dir2Search))
@@ -2054,14 +2027,9 @@ bool Notepad_plus::replaceInFiles()
 {
 	std::lock_guard<std::mutex> lock(replaceInFiles_mutex);
 
-	std::vector<SearchCandidate> fileList;
-	if (!createFilelistForFiles(fileList))
-		return false;
-
 	std::vector<wstring> fileNames;
-	fileNames.reserve(fileList.size());
-	for (const auto& file : fileList)
-		fileNames.push_back(file._path);
+	if (!createFilelistForFiles(fileNames))
+		return false;
 
 	return replaceInFilelist(fileNames);
 }
@@ -2197,29 +2165,29 @@ bool Notepad_plus::findInFinderFiles(FindersInfo *findInFolderInfo)
 	Progress progress(_pPublicInterface->getHinst());
 
 	size_t filesCount = fileNames.size();
+	size_t filesPerPercent = 1;
 
 	if (filesCount > 1)
 	{
+		if (filesCount >= 200)
+			filesPerPercent = filesCount / 100;
+		
 		wstring msg = _nativeLangSpeaker.getLocalizedStrFromID("find-in-files-progress-title", L"Find In Files progress...");
 		progress.open(_findReplaceDlg.getHSelf(), msg.c_str());
 	}
 
-	NppParameters& nppParam = NppParameters::getInstance();
-	const NppGUI& nppGui = nppParam.getNppGUI();
-
-	Document scratchDoc = MainFileManager.createSearchDocument();
-	MatchedFileNameProgress progressUi(progress);
-
-	for (size_t i = 0; i < filesCount; ++i)
+	for (size_t i = 0, updateOnCount = filesPerPercent; i < filesCount; ++i)
 	{
 		if (progress.isCancelled()) break;
 
-		const wchar_t* filePath = fileNames.at(i).c_str();
-		findInFolderInfo->_pFileName = filePath;
+		bool closeBuf = false;
+		BufferID id = MainFileManager.getBufferFromName(fileNames.at(i).c_str());
+		if (id == BUFFER_INVALID)
+		{
+			id = MainFileManager.loadFile(fileNames.at(i).c_str());
+			closeBuf = true;
+		}
 
-		BufferID id = nppGui._fif_ignoreunsavedChangesInOpenedFiles ? BUFFER_INVALID : MainFileManager.getBufferFromName(filePath);
-
-		int nb = 0;
 		if (id != BUFFER_INVALID)
 		{
 			Buffer * pBuf = MainFileManager.getBufferByID(id);
@@ -2227,32 +2195,30 @@ bool Notepad_plus::findInFinderFiles(FindersInfo *findInFolderInfo)
 
 			setCodePageForInvisibleView(pBuf);
 
-			nb = _findReplaceDlg.processAll(ProcessFindInFinder, &(findInFolderInfo->_findOption), true, findInFolderInfo);
-		}
-		else if (scratchDoc)
-		{
-			if (_invisibleEditView.execute(SCI_GETDOCPOINTER) != scratchDoc)
-				_invisibleEditView.execute(SCI_SETDOCPOINTER, 0, scratchDoc);
-
-			SearchLoadResult loaded = MainFileManager.loadFileContentForSearch({ scratchDoc, filePath, -1, &_invisibleEditView });
-			if (loaded._ok)
+			findInFolderInfo->_pFileName = fileNames.at(i).c_str();
+			
+			int nb = _findReplaceDlg.processAll(ProcessFindInFinder, &(findInFolderInfo->_findOption), true, findInFolderInfo);
+			if (nb == FIND_INVALID_REGULAR_EXPRESSION)
 			{
-				_invisibleEditView.execute(SCI_SETCODEPAGE, 0);
-				setCodePageForInvisibleView(loaded._unicodeMode);
-
-				nb = _findReplaceDlg.processAll(ProcessFindInFinder, &(findInFolderInfo->_findOption), true, findInFolderInfo);
+				break;
 			}
+			else
+			{
+				nbTotal += nb;
+			}
+
+			if (closeBuf)
+				MainFileManager.closeBuffer(id, _pEditView);
 		}
 
-		if (nb == FIND_INVALID_REGULAR_EXPRESSION)
-			break;
-
-		nbTotal += nb;
-
-		if (progressUi.due())
+		if (i == updateOnCount)
 		{
-			progress.setPercent(int32_t((i * 100) / filesCount), filePath, nbTotal);
-			progressUi.noteUpdated();
+			updateOnCount += filesPerPercent;
+			progress.setPercent(int32_t((i * 100) / filesCount), fileNames.at(i).c_str(), nbTotal);
+		}
+		else
+		{
+			progress.setInfo(fileNames.at(i).c_str(), nbTotal);
 		}
 	}
 	progress.close();
@@ -2261,7 +2227,6 @@ bool Notepad_plus::findInFinderFiles(FindersInfo *findInFolderInfo)
 	findInFolderInfo->_pDestFinder->finishFilesSearch(nbTotal, int(filesCount), !searchedInSelection, &(findInFolderInfo->_findOption));
 
 	_invisibleEditView.execute(SCI_SETDOCPOINTER, 0, oldDoc);
-	MainFileManager.releaseSearchDocument(scratchDoc);
 	_pEditView = pOldView;
 
 	return true;
@@ -2269,7 +2234,7 @@ bool Notepad_plus::findInFinderFiles(FindersInfo *findInFolderInfo)
 
 bool Notepad_plus::findInFiles()
 {
-	std::vector<SearchCandidate> fileNames;
+	std::vector<wstring> fileNames;
 	if (! createFilelistForFiles(fileNames))
 		return false;
 
@@ -2278,19 +2243,14 @@ bool Notepad_plus::findInFiles()
 
 bool Notepad_plus::findInProjects()
 {
-	vector<wstring> projectFiles;
-	if (! createFilelistForProjects(projectFiles))
+	vector<wstring> fileNames;
+	if (! createFilelistForProjects(fileNames))
 		return false;
-
-	vector<SearchCandidate> fileNames;
-	fileNames.reserve(projectFiles.size());
-	for (auto&& path : projectFiles)
-		fileNames.push_back(SearchCandidate{ std::move(path), -1 });
 
 	return findInFilelist(fileNames);
 }
 
-bool Notepad_plus::findInFilelist(std::vector<SearchCandidate> & fileNames)
+bool Notepad_plus::findInFilelist(std::vector<wstring> & fileNames)
 {
 	int nbTotal = 0;
 	ScintillaEditView *pOldView = _pEditView;
@@ -2302,9 +2262,13 @@ bool Notepad_plus::findInFilelist(std::vector<SearchCandidate> & fileNames)
 	Progress progress(_pPublicInterface->getHinst());
 
 	size_t filesCount = fileNames.size();
+	size_t filesPerPercent = 1;
 
 	if (filesCount > 1)
 	{
+		if (filesCount >= 200)
+			filesPerPercent = filesCount / 100;
+
 		wstring msg = _nativeLangSpeaker.getLocalizedStrFromID("find-in-files-progress-title", L"Find In Files progress...");
 		progress.open(_findReplaceDlg.getHSelf(), msg.c_str());
 	}
@@ -2315,16 +2279,19 @@ bool Notepad_plus::findInFilelist(std::vector<SearchCandidate> & fileNames)
 	NppParameters& nppParam = NppParameters::getInstance();
 	const NppGUI& nppGui = nppParam.getNppGUI();
 
-	Document scratchDoc = MainFileManager.createSearchDocument();
-	MatchedFileNameProgress progressUi(progress);
-
-	for (size_t i = 0; i < filesCount; ++i)
+	for (size_t i = 0, updateOnCount = filesPerPercent; i < filesCount; ++i)
 	{
 		if (progress.isCancelled()) break;
 
-		const wchar_t* filePath = fileNames.at(i)._path.c_str();
+		bool closeBuf = false;
 
-		BufferID id = nppGui._fif_ignoreunsavedChangesInOpenedFiles ? BUFFER_INVALID : MainFileManager.getBufferFromName(filePath);
+		BufferID id = nppGui._fif_ignoreunsavedChangesInOpenedFiles ? BUFFER_INVALID : MainFileManager.getBufferFromName(fileNames.at(i).c_str());
+
+		if (id == BUFFER_INVALID)
+		{
+			id = MainFileManager.loadFile(fileNames.at(i).c_str());
+			closeBuf = true;
+		}
 
 		if (id != BUFFER_INVALID)
 		{
@@ -2334,7 +2301,7 @@ bool Notepad_plus::findInFilelist(std::vector<SearchCandidate> & fileNames)
 			setCodePageForInvisibleView(pBuf);
 
 			FindersInfo findersInfo;
-			findersInfo._pFileName = filePath;
+			findersInfo._pFileName = fileNames.at(i).c_str();
 
 			int nb = _findReplaceDlg.processAll(ProcessFindAll, FindReplaceDlg::_env, isEntireDoc, &findersInfo);
 
@@ -2345,37 +2312,18 @@ bool Notepad_plus::findInFilelist(std::vector<SearchCandidate> & fileNames)
 			}
 
 			nbTotal += nb;
+
+			if (closeBuf)
+				MainFileManager.closeBuffer(id, _pEditView);
 		}
-		else if (scratchDoc)
+		if (i == updateOnCount)
 		{
-			if (_invisibleEditView.execute(SCI_GETDOCPOINTER) != scratchDoc)
-				_invisibleEditView.execute(SCI_SETDOCPOINTER, 0, scratchDoc);
-
-			SearchLoadResult loaded = MainFileManager.loadFileContentForSearch({ scratchDoc, filePath, fileNames.at(i)._size, &_invisibleEditView });
-			if (loaded._ok)
-			{
-				// New documents start at code page 0; a reused doc may still have the previous file's code page
-				_invisibleEditView.execute(SCI_SETCODEPAGE, 0);
-				setCodePageForInvisibleView(loaded._unicodeMode);
-
-				FindersInfo findersInfo;
-				findersInfo._pFileName = filePath;
-
-				int nb = _findReplaceDlg.processAll(ProcessFindAll, FindReplaceDlg::_env, isEntireDoc, &findersInfo);
-
-				if (nb == FIND_INVALID_REGULAR_EXPRESSION)
-				{
-					hasInvalidRegExpr = true;
-					break;
-				}
-
-				nbTotal += nb;
-			}
+			updateOnCount += filesPerPercent;
+			progress.setPercent(int32_t((i * 100) / filesCount), fileNames.at(i).c_str(), nbTotal);
 		}
-		if (progressUi.due())
+		else
 		{
-			progress.setPercent(int32_t((i * 100) / filesCount), filePath, nbTotal);
-			progressUi.noteUpdated();
+			progress.setInfo(fileNames.at(i).c_str(), nbTotal);
 		}
 	}
 
@@ -2384,7 +2332,6 @@ bool Notepad_plus::findInFilelist(std::vector<SearchCandidate> & fileNames)
 	_findReplaceDlg.finishFilesSearch(nbTotal, int(filesCount), isEntireDoc);
 
 	_invisibleEditView.execute(SCI_SETDOCPOINTER, 0, oldDoc);
-	MainFileManager.releaseSearchDocument(scratchDoc);
 	_pEditView = pOldView;
 
 	_findReplaceDlg.putFindResult(nbTotal);
@@ -4327,8 +4274,6 @@ LangType Notepad_plus::menuID2LangType(int cmdID)
             return L_ERRORLIST;
         case IDM_LANG_ESCSEQ:
             return L_ESCSEQ;
-        case IDM_LANG_STTXT:
-            return L_STTXT;
         case IDM_LANG_USER:
             return L_USER;
 		default:

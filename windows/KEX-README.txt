@@ -47,7 +47,7 @@ Four views
 KEX features (the KEX group in the Settings menu)
 -------------------------------------------------
 The bottom of the Settings menu holds the KEX group: KEX Editing, KEX Tabs, KEX Windows,
-KEX Highlighting and KEX Quick Note. Each submenu has an on/off switch for every feature on that
+KEX Highlighting, KEX Quick Note and KEX Effects. Each submenu has an on/off switch for every feature on that
 page and "Preferences...", which opens Preferences on the page of the same name. There each
 feature has its on/off tick and its settings next to it; changes apply at once.
   * Tab snapping (KEX Tabs): press a tab anywhere (its name too) and pull; the tab lifts off the
@@ -59,15 +59,17 @@ feature has its on/off tick and its settings next to it; changes apply at once.
   * A Notepad++ for each desktop (KEX Windows): starting Notepad++ (taskbar, Start, opening a
     file) on a virtual desktop that has no Notepad++ window opens a new window there instead of
     switching you back to the old one. The new window starts with the same tabs in the same
-    views, the same active tabs, carets and scroll positions, and a copy of every untitled tab;
-    files show what is saved on disk. After that the windows are independent: each desktop's
+    views, the same active tabs, carets and scroll positions, the same token styles, and a copy
+    of every untitled tab; files show what is saved on disk. After that the windows are independent: each desktop's
     window keeps its own session and crash backup (session-desktop-<id>.xml and
     backup\desktop-<id>\ in Notepad++'s settings folder) and its own log, so starting Notepad++
     on that desktop again brings back its tabs and unsaved text.
     Windows never move between desktops. On a desktop that already has one, Notepad++ behaves
     as usual.
-  * Falling letters: deleted text falls off the screen, CS2D style.
-  * Smooth caret: the caret glides to its new position.
+  * Falling letters: deleted text falls off the screen, CS2D style. Opacity (%) makes them
+    see-through.
+  * Smooth caret: the caret glides to its new position. Blink: Fade in and out (default), On and
+    off like Notepad++'s caret, or Never.
   * JetBrains shortcuts (KEX Editing): the IntelliJ editor keys in the editing views, e.g.
     Alt+J / Shift+Alt+J / Ctrl+Shift+Alt+J next / unselect / all occurrences (by default they
     match case and whole words the way Smart Highlighting does; "Alt+J case" and "Whole words"
@@ -83,7 +85,11 @@ feature has its on/off tick and its settings next to it; changes apply at once.
     (or Esc) to fade it out and go back to what you were doing. Drag its top edge to move it and
     its edges to size it. What you type is saved as you go (kex-quicknote.txt in Notepad++'s
     settings folder) and is there next time. Options: line numbers, word wrap, current line
-    highlight, always on top, and opening where you left it. With a Notepad++ on several desktops,
+    highlight, always on top, opening where you left it, hiding when you click elsewhere, and its
+    opacity. "Note file" keeps the note's text in a file of your choice instead (its encoding and
+    line endings are kept; Settings > KEX Quick Note > Open Note File in Notepad++ opens it). The
+    smooth caret, falling letters and the copy/cut/delete flashes work in the note too, each with
+    its own tick on the page. With a Notepad++ on several desktops,
     the first window answers the hotkey and opens the note on the desktop you're on.
   * F12 hover tabs: in F12 (post-it) mode, touching the top edge of any view shows that view's
     own tab bar over the text, with its close buttons, right-click menu and dragging.
@@ -101,12 +107,25 @@ feature has its on/off tick and its settings next to it; changes apply at once.
   * Live token styles (KEX Highlighting): Search > Style All Occurrences of Token (also in the
     right-click menu) keeps following the text: occurrences you type or paste later get the style
     too, and one you edit into something else loses it. The same submenu has Bold, Italic and
-    Clear This Token. Ctrl+Shift+H (Token Style Menu in Shortcut Mapper) pops the same choices
+    Clear This Token. Search > Style One Token has Bold and Italic too, for just that one
+    occurrence (or any selection, coloured or not). Ctrl+Shift+H (Token Style Menu in Shortcut Mapper) pops the same choices
     up at the caret. Clear Style
     > Clear all Styles clears them. Bold and italic work in every language, plain text included.
     Match case and whole word follow Notepad++'s Highlighting page;
     the colours are Mark Style 1-5 in the Style Configurator. The styled tokens of each file are
     remembered (kex-tokens.txt in Notepad++'s settings folder) unless you untick that.
+  * Copy, cut and delete flashes (KEX Effects): copied text flashes once, cut text flashes
+    twice, and deleting a selection flashes it red. Each can be switched off, and Strength (%)
+    makes them fainter or brighter.
+  * Tab slide (KEX Effects): switching tabs slides the next document in from the side it is on,
+    like switching desktops in Windows 10. "Slide (ms)" sets its length.
+  * Paint splash (KEX Effects): giving text a colour (Style All Occurrences of Token, Style One
+    Token, the token menu) splashes paint: the word lights up in its colour and drops fly off it.
+    "Drops per token" sets how many.
+    The effects follow Windows' "Animation effects" setting unless you untick that. The falling
+    letters, flashes and splashes are drawn on a thread of their own and put on screen by Windows'
+    compositor; the tab slide and the caret are drawn by Notepad++'s own renderer (DirectWrite,
+    on the graphics card, by default).
 
 New Notepad++ versions
 ----------------------
